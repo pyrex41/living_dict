@@ -1,0 +1,43 @@
+{
+  "nodes": [
+    {
+      "id": "cold",
+      "writes": [
+        "pipeline/cold.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "warm",
+      "writes": [
+        "pipeline/warm.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "serve",
+      "writes": [
+        "pipeline/serve.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "registry",
+      "writes": [
+        "pipeline/registry.py"
+      ],
+      "depends_on": [
+        "cold",
+        "warm",
+        "serve"
+      ]
+    },
+    {
+      "id": "verify",
+      "writes": [],
+      "depends_on": [
+        "registry"
+      ]
+    }
+  ]
+}

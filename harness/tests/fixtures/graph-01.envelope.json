@@ -1,0 +1,57 @@
+{
+  "artifacts": {
+    "pipeline/ingest.py": "NAME = 'ingest'\n\ndef apply(value):\n    return value + 2\n\ndef describe():\n    return NAME\n",
+    "pipeline/offset.py": "NAME = 'offset'\n\ndef apply(value):\n    return value - 1\n\ndef describe():\n    return NAME\n",
+    "pipeline/registry.py": "from . import ingest\nfrom . import scale\nfrom . import offset\n\nSTEPS = [ingest, scale, offset]\n\ndef run(value):\n    for step in STEPS:\n        value = step.apply(value)\n    return value\n\ndef describe_pipeline():\n    return [step.describe() for step in STEPS]\n",
+    "pipeline/scale.py": "NAME = 'scale'\n\ndef apply(value):\n    return value * 3\n\ndef describe():\n    return NAME\n"
+  },
+  "language": "forth",
+  "nodes": [
+    {
+      "depends_on": [],
+      "id": "ingest",
+      "program": "S\" pipeline/ingest.py\" USE-ARTIFACT S\" pipeline/ingest.py\" WRITE-FILE",
+      "writes": [
+        "pipeline/ingest.py"
+      ]
+    },
+    {
+      "depends_on": [],
+      "id": "scale",
+      "program": "S\" pipeline/scale.py\" USE-ARTIFACT S\" pipeline/scale.py\" WRITE-FILE",
+      "writes": [
+        "pipeline/scale.py"
+      ]
+    },
+    {
+      "depends_on": [],
+      "id": "offset",
+      "program": "S\" pipeline/offset.py\" USE-ARTIFACT S\" pipeline/offset.py\" WRITE-FILE",
+      "writes": [
+        "pipeline/offset.py"
+      ]
+    },
+    {
+      "depends_on": [
+        "ingest",
+        "scale",
+        "offset"
+      ],
+      "id": "registry",
+      "program": "S\" pipeline/registry.py\" USE-ARTIFACT S\" pipeline/registry.py\" WRITE-FILE",
+      "writes": [
+        "pipeline/registry.py"
+      ]
+    },
+    {
+      "depends_on": [
+        "registry"
+      ],
+      "id": "verify",
+      "program": "RUN-TESTS",
+      "writes": []
+    }
+  ],
+  "program": "",
+  "rationale": "canned graph-01: NAME/describe on modules, STEPS ingest-scale-offset, describe_pipeline, verify RUN-TESTS"
+}

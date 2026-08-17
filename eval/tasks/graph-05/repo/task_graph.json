@@ -1,0 +1,43 @@
+{
+  "nodes": [
+    {
+      "id": "read",
+      "writes": [
+        "pipeline/read.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "shape",
+      "writes": [
+        "pipeline/shape.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "emit",
+      "writes": [
+        "pipeline/emit.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "registry",
+      "writes": [
+        "pipeline/registry.py"
+      ],
+      "depends_on": [
+        "read",
+        "shape",
+        "emit"
+      ]
+    },
+    {
+      "id": "verify",
+      "writes": [],
+      "depends_on": [
+        "registry"
+      ]
+    }
+  ]
+}

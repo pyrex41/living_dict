@@ -1,0 +1,31 @@
+{
+  "protocol": "rho.run/v1",
+  "run_id": "fixture-grant-1",
+  "model": {
+    "provider": "test",
+    "id": "fizzbuzz"
+  },
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "hello"
+        }
+      ]
+    }
+  ],
+  "limits": {},
+  "grant": {
+    "grant_id": "scud-local",
+    "expires_at": "2030-01-01T00:00:00Z",
+    "providers": ["test"],
+    "models": ["fizzbuzz"],
+    "tools": [],
+    "read_roots": ["/tmp/ld-rho-ws"],
+    "write_roots": ["/tmp/ld-rho-ws"],
+    "network": {"mode": "provider_only"},
+    "witness": "00deadbeef"
+  }
+}

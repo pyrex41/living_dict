@@ -1,0 +1,43 @@
+{
+  "nodes": [
+    {
+      "id": "north",
+      "writes": [
+        "pipeline/north.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "east",
+      "writes": [
+        "pipeline/east.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "south",
+      "writes": [
+        "pipeline/south.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "registry",
+      "writes": [
+        "pipeline/registry.py"
+      ],
+      "depends_on": [
+        "north",
+        "east",
+        "south"
+      ]
+    },
+    {
+      "id": "verify",
+      "writes": [],
+      "depends_on": [
+        "registry"
+      ]
+    }
+  ]
+}

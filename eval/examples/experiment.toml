@@ -1,0 +1,34 @@
+name = "control-language-comparison"
+suite_version = "0.1.0"
+repetitions = 3
+randomization_seed = 41
+memory_modes = ["cold", "warm"]
+
+[budgets]
+wall_time_seconds = 180
+model_calls = 40
+total_tokens = 100000
+
+[[arms]]
+name = "react"
+command = "python /absolute/path/to/react_adapter.py"
+
+[[arms]]
+name = "json-plan"
+command = "python /absolute/path/to/json_plan_adapter.py"
+
+[[arms]]
+name = "python-plan"
+command = "python /absolute/path/to/python_plan_adapter.py"
+
+[[arms]]
+name = "forth"
+command = "python /absolute/path/to/forth_adapter.py"
+
+[[arms]]
+name = "forth-shen"
+command = "python /absolute/path/to/forth_shen_adapter.py"
+
+[[arms]]
+name = "living-dictionary"
+command = "python /absolute/path/to/living_dictionary_adapter.py"

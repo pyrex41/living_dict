@@ -1,0 +1,32 @@
+{
+  "claims": [
+    {
+      "id": "fn",
+      "kind": "source",
+      "path": "fizzbuzz.py",
+      "any": ["def fizzbuzz"],
+      "min_bytes": 80
+    },
+    {
+      "id": "fizzbuzz",
+      "kind": "source",
+      "path": "fizzbuzz.py",
+      "any": ["FizzBuzz"],
+      "min_bytes": 80
+    },
+    {
+      "id": "tests",
+      "kind": "file",
+      "path": "test_fizzbuzz.py",
+      "any": ["unittest", "fizzbuzz"],
+      "min_bytes": 80
+    },
+    {
+      "id": "readme",
+      "kind": "file",
+      "path": "README.md",
+      "any": ["fizzbuzz"],
+      "min_bytes": 20
+    }
+  ]
+}

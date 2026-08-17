@@ -1,0 +1,30 @@
+html, body, #root {
+  margin: 0;
+  height: 100%;
+  font-family: "Iowan Old Style", Palatino, Georgia, serif;
+  background: #061018;
+  color: #f4efe6;
+}
+.landing { position: relative; min-height: 100%; }
+.ocean-canvas { position: fixed; inset: 0; }
+.ocean-canvas canvas { display: block; width: 100%; height: 100%; }
+.hero {
+  position: relative;
+  z-index: 2;
+  max-width: 38rem;
+  padding: 18vh 8vw 4rem;
+  text-shadow: 0 2px 24px rgba(0, 12, 20, 0.55);
+}
+.eyebrow { letter-spacing: 0.18em; text-transform: uppercase; font-size: 0.72rem; opacity: 0.8; }
+h1 { font-weight: 500; font-size: clamp(2.4rem, 6vw, 4.2rem); line-height: 1.05; margin: 0.3em 0; }
+.lede { font-size: 1.15rem; line-height: 1.5; max-width: 32rem; opacity: 0.92; }
+.cta {
+  display: inline-block;
+  margin-top: 1.6rem;
+  padding: 0.7rem 1.3rem;
+  border: 1px solid rgba(244, 239, 230, 0.55);
+  color: inherit;
+  text-decoration: none;
+  letter-spacing: 0.04em;
+}
+.cta:hover { background: rgba(244, 239, 230, 0.12); }

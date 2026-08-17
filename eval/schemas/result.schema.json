@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://living-dictionary.invalid/schemas/result.schema.json",
+  "title": "Living Dictionary Eval protected run result",
+  "type": "object",
+  "required": [
+    "run_id",
+    "task_id",
+    "family",
+    "arm",
+    "memory_mode",
+    "success",
+    "verifier_passed",
+    "timed_out",
+    "changed_files",
+    "policy_violations",
+    "verification",
+    "telemetry"
+  ],
+  "properties": {
+    "run_id": {"type": "string"},
+    "task_id": {"type": "string"},
+    "family": {"type": "string"},
+    "sequence": {"type": "integer"},
+    "arm": {"type": "string"},
+    "memory_mode": {"enum": ["cold", "warm"]},
+    "success": {"type": "boolean"},
+    "verifier_passed": {"type": "boolean"},
+    "agent_exit_code": {"type": "integer"},
+    "timed_out": {"type": "boolean"},
+    "elapsed_seconds": {"type": "number", "minimum": 0},
+    "changed_files": {"type": "array", "items": {"type": "string"}},
+    "policy_violations": {"type": "array", "items": {"type": "string"}},
+    "verification": {"type": "object"},
+    "telemetry": {"type": "object"},
+    "workspace": {"type": "string"},
+    "trace_path": {"type": "string"},
+    "receipt_path": {"type": "string"}
+  },
+  "additionalProperties": true
+}

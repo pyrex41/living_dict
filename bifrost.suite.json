@@ -1,0 +1,16 @@
+{
+  "name": "living-dict-critic",
+  "root": ".",
+  "programs_dir": ".",
+  "default_cwd": ".",
+  "cases": [
+    {
+      "name": "critic-fixture",
+      "mode": "script",
+      "program": "shen/critic/suite.shen",
+      "expect": "agreement",
+      "marker": "ALL PASS",
+      "doc": "portable critic accepts/rejects the same fixture on every port; --shake is deploy-path parity"
+    }
+  ]
+}

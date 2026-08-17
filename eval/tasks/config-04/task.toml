@@ -1,0 +1,11 @@
+schema_version = "1.0"
+id = "config-04"
+family = "config_migration"
+sequence = 4
+title = "Migrate worker_count to max_workers"
+difficulty = "small"
+time_limit_seconds = 180
+mechanisms = ["routine_change", "warm_dictionary", "search_patch_verify"]
+allowed_effects = ["read", "write", "exec"]
+allowed_globs = ["app/config.py"]
+forbidden_globs = ["tests/**", "TASK.md"]

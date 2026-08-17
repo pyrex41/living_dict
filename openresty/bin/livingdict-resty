@@ -1,0 +1,19 @@
+#!/usr/bin/env luajit
+-- ldeval adapter: argv REQUEST.json. Same protocol as harness/adapters/forth_shen.py.
+-- Exit 0 = finished, 2 = EnvelopeError / ExecutionError. The verifier is authoritative.
+
+local function dirname(path)
+  return path:match("^(.*)/[^/]+$") or "."
+end
+
+local here = debug.getinfo(1, "S").source:match("^@(.*)$") or arg[0]
+local bin = dirname(here)
+local root = dirname(bin)
+package.path = root .. "/lua/?.lua;" .. root .. "/?.lua;" .. package.path
+
+local bridge = require("bridge")
+bridge.setup_package_path(root)
+bridge.boot()
+
+local agent = require("agent")
+os.exit(agent.main(arg))

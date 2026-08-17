@@ -1,0 +1,11 @@
+{
+  "TASK": {"inputs": 0, "outputs": 1, "effects": ["read"]},
+  "OBSERVE": {"inputs": 1, "outputs": 1, "effects": ["read"]},
+  "PROPOSE-PATCH": {"inputs": 1, "outputs": 1, "effects": ["model"]},
+  "CHECK-PATCH": {"inputs": 1, "outputs": 1, "effects": ["read"]},
+  "APPLY-PATCH": {"inputs": 1, "outputs": 1, "effects": ["write"]},
+  "RUN-TESTS": {"inputs": 1, "outputs": 1, "effects": ["exec"]},
+  "REQUIRE-PASS": {"inputs": 1, "outputs": 1, "effects": []},
+  "RECEIPT": {"inputs": 1, "outputs": 1, "effects": []}
+}
+

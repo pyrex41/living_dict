@@ -1,0 +1,43 @@
+{
+  "nodes": [
+    {
+      "id": "decode",
+      "writes": [
+        "pipeline/decode.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "adjust",
+      "writes": [
+        "pipeline/adjust.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "limit",
+      "writes": [
+        "pipeline/limit.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "registry",
+      "writes": [
+        "pipeline/registry.py"
+      ],
+      "depends_on": [
+        "decode",
+        "adjust",
+        "limit"
+      ]
+    },
+    {
+      "id": "verify",
+      "writes": [],
+      "depends_on": [
+        "registry"
+      ]
+    }
+  ]
+}

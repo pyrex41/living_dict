@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://living-dictionary.invalid/schemas/trace-event.schema.json",
+  "title": "Living Dictionary Eval trace event",
+  "type": "object",
+  "required": ["type", "data"],
+  "properties": {
+    "type": {"type": "string", "minLength": 1},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "data": {"type": "object"}
+  },
+  "additionalProperties": true
+}
+

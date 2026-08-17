@@ -1,0 +1,11 @@
+schema_version = "1.0"
+id = "validation-08"
+family = "validation_ladder"
+sequence = 8
+title = "Count only enabled events in declared order"
+difficulty = "small"
+time_limit_seconds = 180
+mechanisms = ["verifier_ladder", "hidden_invariant", "warm_dictionary", "search_patch_verify", "false_friend"]
+allowed_effects = ["read", "write", "exec"]
+allowed_globs = ["service/core.py"]
+forbidden_globs = ["tests/**", "TASK.md"]

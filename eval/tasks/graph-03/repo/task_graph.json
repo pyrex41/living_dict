@@ -1,0 +1,43 @@
+{
+  "nodes": [
+    {
+      "id": "alpha",
+      "writes": [
+        "pipeline/alpha.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "beta",
+      "writes": [
+        "pipeline/beta.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "gamma",
+      "writes": [
+        "pipeline/gamma.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "registry",
+      "writes": [
+        "pipeline/registry.py"
+      ],
+      "depends_on": [
+        "alpha",
+        "beta",
+        "gamma"
+      ]
+    },
+    {
+      "id": "verify",
+      "writes": [],
+      "depends_on": [
+        "registry"
+      ]
+    }
+  ]
+}

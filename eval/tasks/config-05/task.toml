@@ -1,0 +1,14 @@
+schema_version = "1.0"
+id = "config-05"
+family = "config_migration"
+sequence = 5
+title = "Migrate log_json to structured_logging"
+difficulty = "small"
+time_limit_seconds = 180
+mechanisms = ["routine_change", "warm_dictionary", "search_patch_verify", "crash_recovery"]
+allowed_effects = ["read", "write", "exec"]
+allowed_globs = ["app/config.py"]
+forbidden_globs = ["tests/**", "TASK.md"]
+
+[fault]
+after_event = "mutation.applied"

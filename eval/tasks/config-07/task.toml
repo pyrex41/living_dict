@@ -1,0 +1,11 @@
+schema_version = "1.0"
+id = "config-07"
+family = "config_migration"
+sequence = 7
+title = "Migrate endpoint to service_url"
+difficulty = "small"
+time_limit_seconds = 180
+mechanisms = ["routine_change", "warm_dictionary", "search_patch_verify"]
+allowed_effects = ["read", "write", "exec"]
+allowed_globs = ["app/config.py"]
+forbidden_globs = ["tests/**", "TASK.md"]

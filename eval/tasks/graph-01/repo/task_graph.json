@@ -1,0 +1,43 @@
+{
+  "nodes": [
+    {
+      "id": "ingest",
+      "writes": [
+        "pipeline/ingest.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "scale",
+      "writes": [
+        "pipeline/scale.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "offset",
+      "writes": [
+        "pipeline/offset.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "registry",
+      "writes": [
+        "pipeline/registry.py"
+      ],
+      "depends_on": [
+        "ingest",
+        "scale",
+        "offset"
+      ]
+    },
+    {
+      "id": "verify",
+      "writes": [],
+      "depends_on": [
+        "registry"
+      ]
+    }
+  ]
+}

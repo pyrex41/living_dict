@@ -1,0 +1,19 @@
+schema_version = "1.0"
+id = "graph-05"
+family = "graph_coordination"
+sequence = 5
+title = "Complete a dependency-ordered module pipeline"
+difficulty = "small"
+time_limit_seconds = 180
+mechanisms = ["project_graph", "parallel_wave", "shared_hotspot", "warm_dictionary", "crash_recovery"]
+allowed_effects = ["read", "write", "exec"]
+allowed_globs = ["pipeline/*.py"]
+forbidden_globs = ["task_graph.json", "tests/**", "TASK.md"]
+
+[fault]
+after_event = "mutation.applied"
+
+[graph]
+node_count = 5
+parallel_width = 3
+shared_hotspot = "pipeline/registry.py"

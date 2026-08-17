@@ -1,0 +1,43 @@
+{
+  "nodes": [
+    {
+      "id": "finalize",
+      "writes": [
+        "pipeline/finalize.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "compute",
+      "writes": [
+        "pipeline/compute.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "prepare",
+      "writes": [
+        "pipeline/prepare.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "registry",
+      "writes": [
+        "pipeline/registry.py"
+      ],
+      "depends_on": [
+        "finalize",
+        "compute",
+        "prepare"
+      ]
+    },
+    {
+      "id": "verify",
+      "writes": [],
+      "depends_on": [
+        "registry"
+      ]
+    }
+  ]
+}

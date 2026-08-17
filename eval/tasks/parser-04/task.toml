@@ -1,0 +1,11 @@
+schema_version = "1.0"
+id = "parser-04"
+family = "parser_repair"
+sequence = 4
+title = "Repair the ':'-delimited record parser"
+difficulty = "small"
+time_limit_seconds = 180
+mechanisms = ["search_patch_verify", "branching", "warm_dictionary", "missing_assumption"]
+allowed_effects = ["read", "write", "exec"]
+allowed_globs = ["src/records.py"]
+forbidden_globs = ["tests/**", "TASK.md"]

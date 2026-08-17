@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://living-dictionary.invalid/schemas/receipt.schema.json",
+  "title": "Living Dictionary Eval execution receipt",
+  "type": "object",
+  "required": ["protocol_version", "run_id", "task_id", "success"],
+  "properties": {
+    "protocol_version": {"const": "1.0"},
+    "run_id": {"type": "string"},
+    "task_id": {"type": "string"},
+    "success": {"type": "boolean"},
+    "program_hash": {"type": "string"},
+    "dictionary_version": {"type": "string"},
+    "workspace_before": {"type": "string"},
+    "workspace_after": {"type": "string"},
+    "changed_files": {"type": "array", "items": {"type": "string"}},
+    "effects_used": {"type": "array", "items": {"type": "string"}},
+    "verification": {"type": "object"},
+    "policy_violations": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true
+}
+

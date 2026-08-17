@@ -1,0 +1,11 @@
+schema_version = "1.0"
+id = "validation-04"
+family = "validation_ladder"
+sequence = 4
+title = "Allocate integer percentages exactly"
+difficulty = "small"
+time_limit_seconds = 180
+mechanisms = ["verifier_ladder", "hidden_invariant", "warm_dictionary", "search_patch_verify"]
+allowed_effects = ["read", "write", "exec"]
+allowed_globs = ["service/core.py"]
+forbidden_globs = ["tests/**", "TASK.md"]

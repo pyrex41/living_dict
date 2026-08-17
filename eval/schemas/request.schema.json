@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://living-dictionary.invalid/schemas/request.schema.json",
+  "title": "Living Dictionary Eval adapter request",
+  "type": "object",
+  "required": [
+    "protocol_version",
+    "run_id",
+    "arm",
+    "memory_mode",
+    "resume",
+    "task",
+    "workspace",
+    "prompt_path",
+    "trace_path",
+    "receipt_path",
+    "dictionary_dir"
+  ],
+  "properties": {
+    "protocol_version": {"const": "1.0"},
+    "run_id": {"type": "string", "minLength": 1},
+    "arm": {"type": "string", "minLength": 1},
+    "memory_mode": {"enum": ["cold", "warm"]},
+    "resume": {"type": "boolean"},
+    "task": {
+      "type": "object",
+      "required": ["id", "family", "sequence", "allowed_effects", "allowed_globs", "forbidden_globs"],
+      "properties": {
+        "id": {"type": "string"},
+        "family": {"type": "string"},
+        "sequence": {"type": "integer", "minimum": 1},
+        "allowed_effects": {"type": "array", "items": {"type": "string"}},
+        "allowed_globs": {"type": "array", "items": {"type": "string"}},
+        "forbidden_globs": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
+    "workspace": {"type": "string"},
+    "prompt_path": {"type": "string"},
+    "trace_path": {"type": "string"},
+    "receipt_path": {"type": "string"},
+    "dictionary_dir": {"type": "string"},
+    "graph_path": {"type": ["string", "null"]}
+  },
+  "additionalProperties": true
+}

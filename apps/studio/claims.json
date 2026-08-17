@@ -1,0 +1,1 @@
+{"claims":[{"id":"solid-app","kind":"source","any":["solid-js","render"],"path":"src/index.jsx"},{"id":"three-ocean","kind":"source","any":["THREE","Water","ocean"],"path":"src/OceanScene.jsx"},{"id":"beach-landing","kind":"source","any":["beach","landing"],"path":"src/App.jsx"},{"id":"pkg","kind":"file","any":["solid-js","three","vite"],"path":"package.json"}]}

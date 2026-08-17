@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Living Dictionary</title>
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+  <header>
+    <h1>Living Dictionary</h1>
+    <p id="health" class="health">booting…</p>
+  </header>
+
+  <main>
+    <section>
+      <label for="repl">Forth REPL</label>
+      <textarea id="repl" rows="5" spellcheck="false" placeholder=': SQUARE DUP * ; 5 SQUARE'></textarea>
+      <div class="row">
+        <button type="button" id="run-repl">Interpret</button>
+        <button type="button" id="reset">Reset soul</button>
+      </div>
+      <p id="repl-err"></p>
+      <p id="stamp">IDLE</p>
+    </section>
+
+    <section>
+      <label for="goal">Envelope</label>
+      <textarea id="goal" rows="8" spellcheck="false"></textarea>
+      <div class="row">
+        <button type="button" id="run-goal">Validate + run</button>
+        <button type="button" id="load-demo">Demo write</button>
+        <button type="button" id="load-forbidden">Forbidden write</button>
+      </div>
+    </section>
+
+    <div class="panes">
+      <section>
+        <label>Stack</label>
+        <pre id="stack"></pre>
+      </section>
+      <section>
+        <label>Dictionary</label>
+        <pre id="dict"></pre>
+      </section>
+      <section>
+        <label>Files</label>
+        <pre id="files"></pre>
+      </section>
+      <section>
+        <label>Critic <span id="critic-engine"></span></label>
+        <pre id="critic"></pre>
+      </section>
+    </div>
+  </main>
+
+  <section>
+    <label>Mind / receipt</label>
+    <pre id="mind">—</pre>
+    <label>Trace</label>
+    <pre id="trace">—</pre>
+  </section>
+
+  <footer>
+    Shen admits or rejects. Forth executes. No model. No API key. Reset wipes localStorage.
+  </footer>
+  <script type="module" src="js/ui.js"></script>
+</body>
+</html>

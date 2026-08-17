@@ -1,0 +1,8 @@
+{
+  "artifacts": {
+    "app/config.py": "DEFAULTS = {'timeout_seconds': 30, \"retries\": 2}\nALIASES = {'request_timeout': 'timeout_seconds'}\n\ndef normalize(user):\n    result = DEFAULTS.copy()\n    has_new = 'timeout_seconds' in user\n    for key, value in user.items():\n        if key == 'request_timeout' and has_new:\n            continue\n        target = ALIASES.get(key, key)\n        if target not in result:\n            raise KeyError(key)\n        result[target] = value\n    return result\n"
+  },
+  "language": "forth",
+  "program": "S\" app/config.py\" USE-ARTIFACT S\" app/config.py\" WRITE-FILE RUN-TESTS RECEIPT",
+  "rationale": "canned oracle for eval task config-01"
+}

@@ -1,0 +1,140 @@
+(defun allowed-effect-name? (V2568) (cond ((= "read" V2568) true) ((= "write" V2568) true) ((= "exec" V2568) true) (true false)))
+
+(defun stars-only? (V2569) (cond ((= "" V2569) true) (true (and (= (hdstr V2569) "*") (stars-only? (tlstr V2569))))))
+
+(defun glob-match? (V2570 V2571) (cond ((and (= "" V2570) (= "" V2571)) true) ((= "" V2571) false) ((= "" V2570) (stars-only? V2571)) (true (if (= (hdstr V2571) "*") (or (glob-match? V2570 (tlstr V2571)) (glob-match? (tlstr V2570) V2571)) (if (or (= (hdstr V2571) "?") (= (hdstr V2571) (hdstr V2570))) (glob-match? (tlstr V2570) (tlstr V2571)) false)))))
+
+(defun matches-any? (V2572 V2573) (cond ((= () V2573) false) ((cons? V2573) (or (glob-match? V2572 (hd V2573)) (matches-any? V2572 (tl V2573)))) (true (simple-error "partial function matches-any?"))))
+
+(defun write-ok? (V2574 V2575 V2576) (and (matches-any? V2574 V2575) (not (matches-any? V2574 V2576))))
+
+(defun write-deny-reason (V2577 V2578 V2579) (if (matches-any? V2577 V2579) (cn "forbidden path: " V2577) (if (write-ok? V2577 V2578 V2579) "" (cn "path outside allowed change set: " V2577))))
+
+(defun contract-inputs (V2580) (cond ((= "READ-FILE" V2580) 1) ((= "LIST-DIR" V2580) 1) ((= "SEARCH" V2580) 1) ((= "WRITE-FILE" V2580) 2) ((= "RUN-TESTS" V2580) 0) ((= "RUN-GATES" V2580) 0) ((= "RECEIPT" V2580) 0) ((= "USE-ARTIFACT" V2580) 1) ((= "DUP" V2580) 1) ((= "DROP" V2580) 1) ((= "SWAP" V2580) 2) ((= "OVER" V2580) 2) ((= "+" V2580) 2) ((= "-" V2580) 2) ((= "*" V2580) 2) ((= "IF" V2580) 1) ((= "ELSE" V2580) 0) ((= "THEN" V2580) 0) (true -1)))
+
+(defun contract-outputs (V2581) (cond ((= "READ-FILE" V2581) 1) ((= "LIST-DIR" V2581) 1) ((= "SEARCH" V2581) 1) ((= "WRITE-FILE" V2581) 1) ((= "RUN-TESTS" V2581) 1) ((= "RUN-GATES" V2581) 1) ((= "RECEIPT" V2581) 1) ((= "USE-ARTIFACT" V2581) 1) ((= "DUP" V2581) 2) ((= "DROP" V2581) 0) ((= "SWAP" V2581) 2) ((= "OVER" V2581) 3) ((= "+" V2581) 1) ((= "-" V2581) 1) ((= "*" V2581) 1) ((= "IF" V2581) 0) ((= "ELSE" V2581) 0) ((= "THEN" V2581) 0) (true 0)))
+
+(defun contract-effect (V2582) (cond ((= "READ-FILE" V2582) (cons "read" ())) ((= "LIST-DIR" V2582) (cons "read" ())) ((= "SEARCH" V2582) (cons "read" ())) ((= "WRITE-FILE" V2582) (cons "write" ())) ((= "RUN-TESTS" V2582) (cons "exec" ())) ((= "RUN-GATES" V2582) (cons "exec" ())) ((= "USE-ARTIFACT" V2582) (cons "read" ())) (true ())))
+
+(defun host-word? (V2583) (not (= (contract-inputs V2583) -1)))
+
+(defun ch-code (V2584) (string->n V2584))
+
+(defun ws-code? (V2585) (or (= V2585 32) (or (= V2585 9) (or (= V2585 10) (or (= V2585 13) (or (= V2585 12) (= V2585 11)))))))
+
+(defun ws? (V2586) (ws-code? (ch-code V2586)))
+
+(defun dq () (n->string 34))
+
+(defun bslash () (n->string 92))
+
+(defun nlch () (n->string 10))
+
+(defun is-digit? (V2587) (let W2588 (ch-code V2587) (and (>= W2588 48) (<= W2588 57))))
+
+(defun all-digits? (V2589) (cond ((= "" V2589) true) (true (and (is-digit? (hdstr V2589)) (all-digits? (tlstr V2589))))))
+
+(defun number-token? (V2590) (cond ((= "" V2590) false) ((= "+" V2590) false) ((= "-" V2590) false) (true (if (= (hdstr V2590) "-") (and (not (= (tlstr V2590) "")) (all-digits? (tlstr V2590))) (all-digits? V2590)))))
+
+(defun parse-nat (V2591 V2592) (cond ((= "" V2591) V2592) (true (parse-nat (tlstr V2591) (+ (* V2592 10) (- (ch-code (hdstr V2591)) 48))))))
+
+(defun parse-int (V2593) (if (= (hdstr V2593) "-") (- 0 (parse-nat (tlstr V2593) 0)) (parse-nat V2593 0)))
+
+(defun skip-line (V2594) (cond ((= "" V2594) "") (true (if (= (hdstr V2594) (nlch)) V2594 (skip-line (tlstr V2594))))))
+
+(defun skip-paren (V2595) (cond ((= "" V2595) "") (true (if (= (hdstr V2595) ")") (tlstr V2595) (skip-paren (tlstr V2595))))))
+
+(defun s-quote? (V2596) (and (not (= V2596 "")) (and (not (= (tlstr V2596) "")) (and (or (= (hdstr V2596) "S") (= (hdstr V2596) "s")) (= (hdstr (tlstr V2596)) (dq))))))
+
+(defun after-s-quote (V2597) (let W2598 (tlstr (tlstr V2597)) (if (and (not (= W2598 "")) (= (hdstr W2598) " ")) (tlstr W2598) W2598)))
+
+(defun take-string-h (V2599 V2600) (cond ((= "" V2599) (cons bad ())) (true (if (= (hdstr V2599) (dq)) (cons ok (cons V2600 (cons (tlstr V2599) ()))) (take-string-h (tlstr V2599) (cn V2600 (hdstr V2599)))))))
+
+(defun take-word-h (V2601 V2602) (cond ((= "" V2601) (cons V2602 (cons "" ()))) (true (if (ws? (hdstr V2601)) (cons V2602 (cons V2601 ())) (take-word-h (tlstr V2601) (cn V2602 (hdstr V2601)))))))
+
+(defun tokenise-h (V2603 V2604 V2605) (cond ((= "" V2603) (reverse V2605)) (true (let W2606 (hdstr V2603) (if (ws? W2606) (tokenise-h (tlstr V2603) true V2605) (if (and (= W2606 (bslash)) V2604) (tokenise-h (skip-line V2603) true V2605) (if (and (= W2606 "(") (or (= (tlstr V2603) "") (ws? (hdstr (tlstr V2603))))) (tokenise-h (skip-paren (tlstr V2603)) true V2605) (if (s-quote? V2603) (let W2607 (take-string-h (after-s-quote V2603) "") (if (= (hd W2607) bad) (simple-error (cn "unterminated S" (cn (dq) " string"))) (tokenise-h (hd (tl (tl W2607))) false (cons (cons "string" (cons (hd (tl W2607)) (cons (length V2605) ()))) V2605)))) (let W2608 (take-word-h V2603 "") (let W2609 (hd W2608) (let W2610 (hd (tl W2608)) (tokenise-h W2610 false (cons (if (number-token? W2609) (cons "number" (cons (parse-int W2609) (cons (length V2605) ()))) (cons "word" (cons W2609 (cons (length V2605) ())))) V2605)))))))))))))
+
+(defun tokenise-program (V2611) (tokenise-h V2611 true ()))
+
+(defun upcase-char (V2612) (let W2613 (ch-code V2612) (if (and (>= W2613 97) (<= W2613 122)) (n->string (- W2613 32)) V2612)))
+
+(defun upcase (V2614) (cond ((= "" V2614) "") (true (cn (upcase-char (hdstr V2614)) (upcase (tlstr V2614))))))
+
+(defun tok-kind (V2615) (hd V2615))
+
+(defun tok-value (V2616) (hd (tl V2616)))
+
+(defun tok-index (V2617) (hd (tl (tl V2617))))
+
+(defun tok-nth (V2618 V2619) (nth (+ V2619 1) V2618))
+
+(defun tok-len (V2620) (length V2620))
+
+(defun err-at (V2621 V2622) (cn "token " (cn (str V2621) (cn ": " V2622))))
+
+(defun string< (V2623 V2624) (cond ((and (= "" V2623) (= "" V2624)) false) ((= "" V2623) true) ((= "" V2624) false) (true (let W2625 (string->n (hdstr V2623)) (let W2626 (string->n (hdstr V2624)) (if (< W2625 W2626) true (if (> W2625 W2626) false (string< (tlstr V2623) (tlstr V2624)))))))))
+
+(defun insert-str (V2627 V2628) (cond ((= () V2628) (cons V2627 ())) ((cons? V2628) (if (string< V2627 (hd V2628)) (cons V2627 V2628) (cons (hd V2628) (insert-str V2627 (tl V2628))))) (true (simple-error "partial function insert-str"))))
+
+(defun sort-strings (V2629) (cond ((= () V2629) ()) ((cons? V2629) (insert-str (hd V2629) (sort-strings (tl V2629)))) (true (simple-error "partial function sort-strings"))))
+
+(defun join-comma (V2630) (cond ((= () V2630) "") ((and (cons? V2630) (= () (tl V2630))) (hd V2630)) ((cons? V2630) (cn (hd V2630) (cn ", " (join-comma (tl V2630))))) (true (simple-error "partial function join-comma"))))
+
+(defun uniq-append (V2631 V2632) (cond ((= () V2632) V2631) ((cons? V2632) (uniq-append (if (element? (hd V2632) V2631) V2631 (append V2631 (cons (hd V2632) ()))) (tl V2632))) (true (simple-error "partial function uniq-append"))))
+
+(defun not-subset (V2633 V2634) (cond ((= () V2633) ()) ((cons? V2633) (if (element? (hd V2633) V2634) (not-subset (tl V2633) V2634) (cons (hd V2633) (not-subset (tl V2633) V2634)))) (true (simple-error "partial function not-subset"))))
+
+(defun strlen (V2635) (cond ((= "" V2635) 0) (true (+ 1 (strlen (tlstr V2635))))))
+
+(defun drop-n (V2636 V2637) (cond ((= 0 V2636) V2637) (true (if (= V2637 "") "" (drop-n (- V2636 1) (tlstr V2637))))))
+
+(defun starts-with? (V2638 V2639) (cond ((= "" V2638) true) ((= "" V2639) false) (true (and (= (hdstr V2638) (hdstr V2639)) (starts-with? (tlstr V2638) (tlstr V2639))))))
+
+(defun abs-path? (V2640) (and (not (= V2640 "")) (= (hdstr V2640) "/")))
+
+(defun split-slashes-h (V2641 V2642 V2643) (cond ((= "" V2641) (if (= V2642 "") (reverse V2643) (reverse (cons V2642 V2643)))) (true (if (= (hdstr V2641) "/") (split-slashes-h (tlstr V2641) "" (if (= V2642 "") V2643 (cons V2642 V2643))) (split-slashes-h (tlstr V2641) (cn V2642 (hdstr V2641)) V2643)))))
+
+(defun split-slashes (V2644) (split-slashes-h V2644 "" ()))
+
+(defun normalise-parts (V2645 V2646) (cond ((= () V2645) (reverse V2646)) ((and (cons? V2645) (= "." (hd V2645))) (normalise-parts (tl V2645) V2646)) ((and (cons? V2645) (and (= ".." (hd V2645)) (= () V2646))) (normalise-parts (tl V2645) ())) ((and (cons? V2645) (= ".." (hd V2645))) (normalise-parts (tl V2645) (tl V2646))) ((cons? V2645) (normalise-parts (tl V2645) (cons (hd V2645) V2646))) (true (simple-error "partial function normalise-parts"))))
+
+(defun join-slashes (V2647) (cond ((= () V2647) "") ((and (cons? V2647) (= () (tl V2647))) (hd V2647)) ((cons? V2647) (cn (hd V2647) (cn "/" (join-slashes (tl V2647))))) (true (simple-error "partial function join-slashes"))))
+
+(defun normalise-path (V2648) (let W2649 (normalise-parts (split-slashes V2648) ()) (if (abs-path? V2648) (cn "/" (join-slashes W2649)) (join-slashes W2649))))
+
+(defun under-workspace? (V2650) (or (= V2650 "/workspace") (starts-with? "/workspace/" V2650)))
+
+(defun strip-workspace (V2651) (if (= V2651 "/workspace") "" (drop-n 11 V2651)))
+
+(defun workspace-rel (V2652) (let W2653 (if (abs-path? V2652) (normalise-path V2652) (normalise-path (cn "/workspace/" V2652))) (if (under-workspace? W2653) (cons ok (cons (strip-workspace W2653) ())) (cons bad (cons (cn "path escapes workspace: " V2652) ())))))
+
+(defun lookup-word (V2659 V2660) (cond ((= () V2660) ()) ((and (cons? V2660) (and (cons? (hd V2660)) (and (cons? (tl (hd V2660))) (and (cons? (tl (tl (hd V2660)))) (and (cons? (tl (tl (tl (hd V2660))))) (and (= () (tl (tl (tl (tl (hd V2660)))))) (= V2659 (hd (hd V2660))))))))) (tl (hd V2660))) ((cons? V2660) (lookup-word V2659 (tl V2660))) (true (simple-error "partial function lookup-word"))))
+
+(defun bind-word (V2661 V2662) (cons (cons V2661 (cons 0 (cons 0 (cons () ())))) V2662))
+
+(defun contract-triple (V2663) (let W2664 (contract-inputs V2663) (if (= W2664 -1) () (cons W2664 (cons (contract-outputs V2663) (cons (contract-effect V2663) ()))))))
+
+(defun word-contract (V2665 V2666) (let W2667 (lookup-word V2665 V2666) (if (empty? W2667) (contract-triple V2665) W2667)))
+
+(defun literal-before (V2668 V2669) (if (= V2669 0) () (let W2670 (tok-nth V2668 (- V2669 1)) (if (= (tok-kind W2670) "string") (cons (tok-value W2670) ()) ()))))
+
+(defun scan-colon-body (V2671 V2672 V2673 V2674) (if (>= V2672 (tok-len V2671)) (cons (tok-len V2671) (cons "" (cons (append V2674 (cons "unterminated colon definition" ())) ()))) (let W2675 (tok-nth V2671 V2672) (if (and (= (tok-kind W2675) "word") (= (upcase (tok-value W2675)) ";")) (cons (+ V2672 1) (cons V2673 (cons V2674 ()))) (if (and (= (tok-kind W2675) "word") (= (upcase (tok-value W2675)) ":")) (cons (+ V2672 1) (cons "" (cons (append V2674 (cons (err-at (tok-index W2675) "nested colon definitions are not supported") ())) ()))) (scan-colon-body V2671 (+ V2672 1) V2673 V2674))))))
+
+(defun skip-colon (V2676 V2677 V2678) (if (>= (+ V2677 1) (tok-len V2676)) (cons (+ V2677 1) (cons "" (cons (append V2678 (cons (err-at (tok-index (tok-nth V2676 V2677)) "expected name after :") ())) ()))) (let W2679 (tok-nth V2676 (+ V2677 1)) (if (not (= (tok-kind W2679) "word")) (cons (+ V2677 1) (cons "" (cons (append V2678 (cons (err-at (tok-index (tok-nth V2676 V2677)) "expected name after :") ())) ()))) (scan-colon-body V2676 (+ V2677 2) (upcase (tok-value W2679)) V2678)))))
+
+(defun write-check (V2680 V2681 V2682 V2683 V2684) (let W2685 (literal-before V2680 V2681) (if (empty? W2685) V2684 (let W2686 (workspace-rel (hd W2685)) (if (= (hd W2686) ok) (let W2687 (hd (tl W2686)) (if (write-ok? W2687 V2682 V2683) V2684 (append V2684 (cons (err-at (tok-index (tok-nth V2680 V2681)) (write-deny-reason W2687 V2682 V2683)) ())))) (append V2684 (cons (err-at (tok-index (tok-nth V2680 V2681)) (hd (tl W2686))) ())))))))
+
+(defun artifact-check (V2688 V2689 V2690 V2691) (let W2692 (literal-before V2688 V2689) (if (empty? W2692) V2691 (if (element? (hd W2692) V2690) V2691 (append V2691 (cons (err-at (tok-index (tok-nth V2688 V2689)) (cn "no artifact: " (hd W2692))) ()))))))
+
+(defun special-checks (V2693 V2694 V2695 V2696 V2697 V2698 V2699) (cond ((= "WRITE-FILE" V2693) (write-check V2694 V2695 V2696 V2697 V2699)) ((= "USE-ARTIFACT" V2693) (artifact-check V2694 V2695 V2698 V2699)) (true V2699)))
+
+(defun apply-word (V2700 V2701 V2702 V2703 V2704 V2705 V2706 V2707 V2708 V2709 V2710) (let W2711 (word-contract V2701 V2705) (if (empty? W2711) (walk V2702 (+ V2703 1) V2704 V2705 V2706 V2707 V2708 V2709 (append V2710 (cons (err-at (tok-index V2700) (cn "unknown word " (tok-value V2700))) ()))) (let W2712 (hd W2711) (let W2713 (hd (tl W2711)) (let W2714 (hd (tl (tl W2711))) (let W2715 (< V2704 W2712) (let W2716 (if W2715 W2713 (+ (- V2704 W2712) W2713)) (let W2717 (if W2715 (append V2710 (cons (err-at (tok-index V2700) (cn "stack underflow at " V2701)) ())) V2710) (let W2718 (uniq-append V2706 W2714) (let W2719 (special-checks V2701 V2702 V2703 V2707 V2708 V2709 W2717) (walk V2702 (+ V2703 1) W2716 V2705 W2718 V2707 V2708 V2709 W2719))))))))))))
+
+(defun walk (V2720 V2721 V2722 V2723 V2724 V2725 V2726 V2727 V2728) (if (>= V2721 (tok-len V2720)) (cons V2728 (cons V2722 (cons V2724 ()))) (let W2729 (tok-nth V2720 V2721) (if (or (= (tok-kind W2729) "string") (= (tok-kind W2729) "number")) (walk V2720 (+ V2721 1) (+ V2722 1) V2723 V2724 V2725 V2726 V2727 V2728) (let W2730 (upcase (tok-value W2729)) (if (= W2730 ":") (let W2731 (skip-colon V2720 V2721 V2728) (let W2732 (hd W2731) (let W2733 (hd (tl W2731)) (let W2734 (hd (tl (tl W2731))) (walk V2720 W2732 V2722 (if (= W2733 "") V2723 (bind-word W2733 V2723)) V2724 V2725 V2726 V2727 W2734))))) (apply-word W2729 W2730 V2720 V2721 V2722 V2723 V2724 V2725 V2726 V2727 V2728)))))))
+
+(defun finish (V2735 V2736 V2737 V2738) (let W2739 (sort-strings (not-subset V2737 V2738)) (let W2740 (if (empty? W2739) V2735 (append V2735 (cons (cn "effects not allowed: " (join-comma W2739)) ()))) (if (empty? W2740) (cons accept (cons V2736 (cons (sort-strings V2737) ()))) (cons reject (cons W2740 (cons V2736 (cons (sort-strings V2737) ()))))))))
+
+(defun validate-tokens (V2741 V2742 V2743 V2744 V2745) (let W2746 (walk V2741 0 0 () () V2743 V2744 V2745 ()) (finish (hd W2746) (hd (tl W2746)) (hd (tl (tl W2746))) V2742)))
+
+(defun validate (V2747 V2748 V2749 V2750 V2751) (trap-error (validate-tokens (tokenise-program V2747) V2748 V2749 V2750 V2751) (lambda Z2752 (cons reject (cons (cons (error-to-string Z2752) ()) (cons 0 (cons () ())))))))
+

@@ -1,0 +1,43 @@
+{
+  "nodes": [
+    {
+      "id": "parse",
+      "writes": [
+        "pipeline/parse.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "score",
+      "writes": [
+        "pipeline/score.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "rank",
+      "writes": [
+        "pipeline/rank.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "registry",
+      "writes": [
+        "pipeline/registry.py"
+      ],
+      "depends_on": [
+        "parse",
+        "score",
+        "rank"
+      ]
+    },
+    {
+      "id": "verify",
+      "writes": [],
+      "depends_on": [
+        "registry"
+      ]
+    }
+  ]
+}

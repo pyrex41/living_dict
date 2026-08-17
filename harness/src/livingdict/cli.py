@@ -1,0 +1,530 @@
+"""Headless livingdict loop: planner → critic → artifacts → Forth → RUN-GATES.
+
+The model is off while words run. Job state lives in the run dir.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import subprocess
+import sys
+from collections.abc import Callable
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from .envelope import EnvelopeError, PlanEnvelope, load_task_graph, parse_envelope
+from .execute import ExecutionError, metrics_line, prepare_program, run_forth
+from .gates import run_gates
+from .host import CapabilityHost
+from .preflight import validate
+from .kernel import (
+    ARTIFACTS_APPLIED,
+    BUDGET_CONSUMED,
+    CRITIC_ACCEPTED,
+    CRITIC_REJECTED,
+    DECISION_SUCCESS,
+    EPISODE_BLOCKED_DUPLICATE,
+    EPISODE_PLANNED,
+    GATES_MEASURED,
+    Decision,
+    Event,
+    KernelError,
+    State,
+    empty_state,
+    event_to_dict,
+    fingerprint,
+    reconcile,
+    reduce,
+)
+from .policy import changed_files, snapshot
+from .rho import grant_mode_require
+
+
+REPO = Path(__file__).resolve().parents[3]
+
+DEFAULT_ALLOWED = ("**",)
+DEFAULT_FORBIDDEN = (
+    ".git",
+    ".git/**",
+    ".livingdict-run",
+    ".livingdict-run/**",
+    "node_modules",
+    "node_modules/**",
+    "__pycache__",
+    "__pycache__/**",
+    ".sb",
+    ".sb/**",
+    "dist",
+    "dist/**",
+    "build",
+    "build/**",
+)
+DEFAULT_MAX_TURNS = 32
+
+
+class CLIError(Exception):
+    pass
+
+
+def default_planner_cmd() -> list[str]:
+    planner = REPO / "client" / "planner.py"
+    return [sys.executable, str(planner), "--stdin"]
+
+
+def resolve_argv_files(cmd: list[str], origin: Path | None = None) -> list[str]:
+    """Absolutize argv files before a planner subprocess uses cwd=workspace.
+
+    Lookup order: invocation directory, then the livingdict repo root.
+    `harness/tests/fizzbuzz_planner.py` must not be resolved under --cwd.
+    """
+    root = Path(origin).resolve() if origin is not None else Path.cwd().resolve()
+    resolved: list[str] = []
+    for arg in cmd:
+        if not arg or arg.startswith("-") or os.path.isabs(arg):
+            resolved.append(arg)
+            continue
+        for base in (root, REPO):
+            candidate = base / arg
+            if candidate.exists():
+                resolved.append(str(candidate.resolve()))
+                break
+        else:
+            resolved.append(arg)
+    return resolved
+
+
+def ensure_run_files(run_dir: Path, goal: str, episode: int) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    goal_path = run_dir / "GOAL.md"
+    progress_path = run_dir / "PROGRESS.md"
+    body = f"# GOAL\n\n{goal.strip()}\n"
+    if int(episode) <= 1:
+        goal_path.write_text(body, encoding="utf-8")
+        if not progress_path.is_file():
+            progress_path.write_text("# PROGRESS\n\n", encoding="utf-8")
+        return
+    if not goal_path.is_file():
+        goal_path.write_text(body, encoding="utf-8")
+    if not progress_path.is_file():
+        progress_path.write_text("# PROGRESS\n\n", encoding="utf-8")
+
+
+def append_progress(run_dir: Path, episode: int, lines: list[str]) -> None:
+    path = run_dir / "PROGRESS.md"
+    prev = path.read_text(encoding="utf-8") if path.is_file() else "# PROGRESS\n"
+    block = ["", f"## episode {episode}", ""] + lines + [""]
+    path.write_text(prev + "\n".join(block), encoding="utf-8")
+
+
+def append_reject(run_dir: Path, episode: int, errors: list[str], program: str) -> None:
+    path = run_dir / "rejects.jsonl"
+    record = {"episode": episode, "errors": errors, "program": program}
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record) + "\n")
+
+
+def forbidden_for(workspace: Path, run_dir: Path) -> tuple[str, ...]:
+    extra: list[str] = list(DEFAULT_FORBIDDEN)
+    try:
+        rel = run_dir.resolve().relative_to(workspace.resolve())
+    except ValueError:
+        return tuple(extra)
+    posix = rel.as_posix()
+    if posix and posix != ".":
+        extra.append(posix)
+        extra.append(posix + "/**")
+    return tuple(extra)
+
+
+def commit(state: State, kind: str, payload: dict[str, Any] | None, events_path: Path) -> State:
+    new = reduce(state, Event(kind=kind, payload=dict(payload or {})))
+    stored = new.events[-1]
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    with events_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event_to_dict(stored), sort_keys=True) + "\n")
+    return new
+
+
+def call_planner(cmd: list[str], observation: dict[str, Any], *, workspace: Path) -> PlanEnvelope:
+    env = os.environ.copy()
+    client = str(REPO / "client")
+    current = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = client if not current else client + os.pathsep + current
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=json.dumps(observation, ensure_ascii=False),
+            text=True,
+            capture_output=True,
+            cwd=str(workspace),
+            env=env,
+            check=False,
+        )
+    except OSError as exc:
+        raise CLIError(f"planner failed to start: {exc}") from exc
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "planner exited non-zero").strip()
+        raise CLIError(f"planner exit {proc.returncode}: {err[:800]}")
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        raise CLIError("planner wrote no envelope")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise CLIError(f"planner stdout is not JSON: {exc}") from exc
+    try:
+        return parse_envelope(payload)
+    except EnvelopeError as exc:
+        raise CLIError(str(exc)) from exc
+
+
+def measure_workspace(workspace: Path, claims_path: Path | None) -> dict[str, Any]:
+    dest = workspace / "claims.json"
+    backup: str | None = None
+    replaced = False
+    if claims_path is not None and Path(claims_path).is_file():
+        backup = dest.read_text(encoding="utf-8") if dest.is_file() else None
+        dest.write_text(Path(claims_path).read_text(encoding="utf-8"), encoding="utf-8")
+        replaced = True
+    try:
+        return run_gates(workspace)
+    finally:
+        if replaced:
+            if backup is None:
+                dest.unlink(missing_ok=True)
+            else:
+                dest.write_text(backup, encoding="utf-8")
+
+
+def critic_extra(errors: list[str]) -> str:
+    if not errors:
+        return ""
+    return "\n".join(f"critic: {item}" for item in errors)
+
+
+def _host(
+    workspace: Path,
+    run_dir: Path,
+    forbidden: tuple[str, ...],
+    *,
+    allowed_globs: tuple[str, ...] = DEFAULT_ALLOWED,
+    run_id: str = "livingdict",
+) -> CapabilityHost:
+    return CapabilityHost(
+        workspace=workspace,
+        allowed_effects=("read", "write", "exec"),
+        allowed_globs=allowed_globs or DEFAULT_ALLOWED,
+        forbidden_globs=forbidden,
+        trace_path=run_dir / "trace.jsonl",
+        receipt_path=run_dir / "receipt.json",
+        run_id=run_id,
+        task_id="goal",
+        test_timeout_seconds=180,
+    )
+
+
+def run_job(
+    goal: str,
+    workspace: Path,
+    *,
+    max_turns: int = DEFAULT_MAX_TURNS,
+    claims: Path | None = None,
+    run_dir: Path | None = None,
+    planner_cmd: list[str] | None = None,
+    wave_workers: int = 4,
+    serial: bool = False,
+    allowed_globs: tuple[str, ...] | None = None,
+    event_sink: Callable[[str, dict[str, Any]], None] | None = None,
+    print_receipt: bool = True,
+    deadline: datetime | None = None,
+    run_id: str = "livingdict",
+    system_prompt: str = "",
+    receipt_extra: dict[str, Any] | None = None,
+    grant_verified: bool = False,
+) -> tuple[int, dict[str, Any]]:
+    workspace = Path(workspace).resolve()
+    workspace.mkdir(parents=True, exist_ok=True)
+    run_dir = Path(run_dir).resolve() if run_dir is not None else workspace / ".livingdict-run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    receipt_fields = dict(receipt_extra or {})
+    if grant_mode_require() and not grant_verified:
+        return _finish(
+            Decision("grant_invalid", "grant.witness is required"),
+            empty_state(),
+            workspace,
+            run_dir,
+            snapshot(workspace),
+            {},
+            print_receipt=print_receipt,
+            receipt_extra=receipt_fields,
+        )
+    (run_dir / "dictionary" / "words").mkdir(parents=True, exist_ok=True)
+    (run_dir / "GOAL.md").write_text(f"# GOAL\n\n{goal.strip()}\n", encoding="utf-8")
+    (run_dir / "PROGRESS.md").write_text("# PROGRESS\n\n", encoding="utf-8")
+
+    events_path = run_dir / "events.jsonl"
+    forbidden = forbidden_for(workspace, run_dir)
+    cmd = list(planner_cmd) if planner_cmd else default_planner_cmd()
+    state = empty_state()
+    extra = ""
+    before = snapshot(workspace)
+    last_changed: list[str] = []
+    last_graph: dict[str, Any] = {}
+    globs = allowed_globs if allowed_globs is not None else DEFAULT_ALLOWED
+
+    def _commit(current: State, kind: str, payload: dict[str, Any] | None) -> State:
+        new = commit(current, kind, payload, events_path)
+        if event_sink is not None:
+            event_sink(kind, dict(payload or {}))
+        return new
+
+    while True:
+        if deadline is not None and datetime.now(timezone.utc) >= deadline:
+            return _finish(
+                Decision("cancelled", "deadline"),
+                state,
+                workspace,
+                run_dir,
+                before,
+                last_graph,
+                print_receipt=print_receipt,
+                receipt_extra=receipt_fields,
+            )
+        decision = reconcile(state, max_turns)
+        if decision.kind != "plan":
+            return _finish(
+                decision,
+                state,
+                workspace,
+                run_dir,
+                before,
+                last_graph,
+                print_receipt=print_receipt,
+                receipt_extra=receipt_fields,
+            )
+
+        episode = state.used + 1
+        ensure_run_files(run_dir, goal, episode)
+        observation = {
+            "dictionary": str(run_dir / "dictionary"),
+            "episode": episode,
+            "errors": list(state.last_errors),
+            "extra": extra,
+            "goal": goal,
+            "run_dir": str(run_dir),
+            "workspace": str(workspace),
+        }
+        if system_prompt:
+            observation["system"] = system_prompt
+        graph_file = workspace / "task_graph.json"
+        if graph_file.is_file():
+            observation["task_graph"] = graph_file.read_text(encoding="utf-8")
+        envelope = call_planner(cmd, observation, workspace=workspace)
+        fp = fingerprint(envelope)
+        state = _commit(
+            state,
+            EPISODE_PLANNED,
+            {
+                "artifact_keys": sorted(envelope.artifacts),
+                "fingerprint": fp,
+                "program": envelope.program,
+                "rationale": envelope.rationale,
+            },
+        )
+        if not state.pending_execute:
+            state = _commit(
+                state,
+                EPISODE_BLOCKED_DUPLICATE,
+                {"fingerprint": fp},
+            )
+            state = _commit(state, BUDGET_CONSUMED, {"steps": 1})
+            extra = f"critic: duplicate plan {fp}"
+            append_progress(run_dir, episode, [envelope.rationale or extra, extra])
+            continue
+
+        host = _host(workspace, run_dir, forbidden, allowed_globs=globs, run_id=run_id)
+        program = prepare_program(envelope, str(run_dir / "dictionary"))
+        critic = validate(
+            program,
+            set(host.allowed_effects),
+            host.allowed_globs,
+            host.forbidden_globs,
+            envelope.artifacts,
+            nodes=envelope.nodes,
+            task_graph=load_task_graph(workspace / "task_graph.json"),
+        )
+        if not critic["valid"]:
+            errors = [str(item) for item in critic["errors"]]
+            state = _commit(state, CRITIC_REJECTED, {"errors": errors})
+            state = _commit(state, BUDGET_CONSUMED, {"steps": 1})
+            extra = critic_extra(errors)
+            append_reject(run_dir, episode, errors, envelope.program)
+            append_progress(run_dir, episode, [envelope.rationale or "rejected", extra or "critic: reject"])
+            continue
+
+        state = _commit(state, CRITIC_ACCEPTED, {})
+        request = {
+            "dictionary_dir": str(run_dir / "dictionary"),
+            "receipt_path": str(run_dir / "receipt.json"),
+            "trace_path": str(run_dir / "trace.jsonl"),
+            "workspace": str(workspace),
+            "wave_workers": 1 if serial else wave_workers,
+            "serial": serial,
+        }
+        trap: str | None = None
+        try:
+            executed = run_forth(
+                host,
+                envelope,
+                preflight=True,
+                request=request,
+                wave_workers=wave_workers,
+                serial=serial,
+            )
+            last_graph = dict(executed.get("graph") or host.graph_metrics or {})
+        except ExecutionError as exc:
+            last_graph = dict(getattr(host, "graph_metrics", {}) or {})
+            backpressure = exc.code == "preflight" or exc.node is not None
+            if backpressure:
+                errors = [str(item) for item in (exc.details or [f"{exc.code}: {exc.message}"])]
+                state = _commit(state, CRITIC_REJECTED, {"errors": errors})
+                state = _commit(state, BUDGET_CONSUMED, {"steps": 1})
+                extra = critic_extra(errors)
+                append_reject(run_dir, episode, errors, envelope.program)
+                append_progress(run_dir, episode, [envelope.rationale or "rejected", extra])
+                continue
+            trap = f"{exc.code}: {exc.message}"
+
+        state = _commit(
+            state,
+            ARTIFACTS_APPLIED,
+            {"keys": sorted(envelope.artifacts)},
+        )
+        report = measure_workspace(workspace, claims)
+        state = _commit(state, GATES_MEASURED, {"report": report})
+        state = _commit(state, BUDGET_CONSUMED, {"steps": 1})
+        after = snapshot(workspace)
+        last_changed = changed_files(before, after)
+        bits = [envelope.rationale or "accepted"]
+        if trap:
+            bits.append(f"trap: {trap}")
+        bits.append("changed: " + (", ".join(last_changed) if last_changed else "none"))
+        if report.get("gates"):
+            marks = []
+            for gate in report["gates"]:
+                mark = "pass" if gate.get("passed") else ("skip" if gate.get("skipped") else "fail")
+                marks.append(f"{gate.get('name')}={mark}")
+            bits.append("gates: " + " ".join(marks))
+        append_progress(run_dir, episode, bits)
+        extra = critic_extra(list(state.last_errors))
+        if not report.get("passed"):
+            extra = (extra + "\n" if extra else "") + f"gates: {report.get('stderr') or 'not discharged'}"
+
+
+def _finish(
+    decision: Decision,
+    state: State,
+    workspace: Path,
+    run_dir: Path,
+    before: dict[str, str],
+    graph: dict[str, Any] | None = None,
+    *,
+    print_receipt: bool = True,
+    receipt_extra: dict[str, Any] | None = None,
+) -> tuple[int, dict[str, Any]]:
+    after = snapshot(workspace)
+    changed = changed_files(before, after)
+    receipt = {
+        "changed_files": changed,
+        "decision": decision.kind,
+        "discharged": decision.kind == DECISION_SUCCESS,
+        "episodes": state.used,
+        "gates": state.last_gates,
+        "ok": decision.kind == DECISION_SUCCESS,
+        "reason": decision.reason,
+        "run_dir": str(run_dir),
+        "workspace": str(workspace),
+    }
+    for key, value in (graph or {}).items():
+        receipt[key] = value
+    for key, value in (receipt_extra or {}).items():
+        receipt[key] = value
+    (run_dir / "receipt.json").write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    line = metrics_line(graph)
+    if line:
+        print(line, file=sys.stderr)
+    if print_receipt:
+        print(json.dumps(receipt, indent=2, sort_keys=True))
+    return (0 if decision.kind == DECISION_SUCCESS else 2), receipt
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Living Dictionary headless loop",
+        epilog="SCUD child: livingdict run --request-file - --events jsonl; policy: livingdict policy",
+    )
+    parser.add_argument("-p", "--goal", required=True, help="natural-language goal")
+    parser.add_argument("--cwd", type=Path, default=Path("."), help="product workspace")
+    parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
+    parser.add_argument("--claims", type=Path, help="hidden claims.json used for discharge")
+    parser.add_argument("--run-dir", type=Path, help="job state directory (default: CWD/.livingdict-run)")
+    parser.add_argument(
+        "--planner-cmd",
+        nargs="+",
+        metavar="ARG",
+        help="argv that reads observation JSON on stdin and writes envelope JSON on stdout",
+    )
+    parser.add_argument(
+        "--wave-workers",
+        type=int,
+        default=4,
+        metavar="N",
+        help="max parallel graph nodes per wave (default: min(width, 4))",
+    )
+    parser.add_argument(
+        "--serial",
+        action="store_true",
+        help="force graph width 1 (Kahn levels still apply)",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "run":
+        from .runner import run_main
+
+        return run_main(argv[1:])
+    if argv and argv[0] == "policy":
+        from .policy_eval import main as policy_main
+
+        return policy_main(argv[1:])
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    planner_cmd = list(args.planner_cmd) if args.planner_cmd else None
+    if planner_cmd and len(planner_cmd) == 1:
+        planner_cmd = shlex.split(planner_cmd[0])
+    if planner_cmd:
+        planner_cmd = resolve_argv_files(planner_cmd)
+    try:
+        code, _receipt = run_job(
+            args.goal,
+            args.cwd,
+            max_turns=args.max_turns,
+            claims=args.claims,
+            run_dir=args.run_dir,
+            planner_cmd=planner_cmd,
+            wave_workers=args.wave_workers,
+            serial=args.serial,
+        )
+    except (CLIError, EnvelopeError, KernelError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return code

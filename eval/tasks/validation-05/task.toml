@@ -1,0 +1,14 @@
+schema_version = "1.0"
+id = "validation-05"
+family = "validation_ladder"
+sequence = 5
+title = "Paginate with strict bounds"
+difficulty = "small"
+time_limit_seconds = 180
+mechanisms = ["verifier_ladder", "hidden_invariant", "warm_dictionary", "search_patch_verify", "crash_recovery"]
+allowed_effects = ["read", "write", "exec"]
+allowed_globs = ["service/core.py"]
+forbidden_globs = ["tests/**", "TASK.md"]
+
+[fault]
+after_event = "mutation.applied"
