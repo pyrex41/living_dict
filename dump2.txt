@@ -1,0 +1,497 @@
+I’ll look up Anthropic’s agent-graphs post and map it onto the Living Dictionary architecture.Anthropic never published a single post titled “agent graphs.” What people mean by that phrase is a stack of their actual writing — plus the way Claude Code turned those ideas into practice.
+What Anthropic actually said
+Building Effective Agents (Dec 2024) draws the hard line:
+	•	Workflows — LLMs and tools orchestrated through predefined code paths
+	•	Agents — LLMs that dynamically direct their own process and tool use
+Five workflow shapes sit under that:
+Pattern
+Shape
+Prompt chaining
+Fixed sequence with gates
+Routing
+Classify → specialized path
+Parallelization
+Fan-out (sectioning or voting)
+Orchestrator–workers
+Lead decomposes, workers run, lead synthesizes
+Evaluator–optimizer
+Generate → critique → loop
+Multi-agent research system (Jun 2025) is the production version of orchestrator–workers: a lead agent plans, spawns parallel subagents, merges results. ~90% better on their internal research eval than a single agent — and ~15× the tokens.
+Multi-agent coordination patterns (Apr 2026) names five coordination styles: generator–verifier, orchestrator–subagent, agent teams, message bus, shared state.
+The 2026 “graph engineering” discourse is a reframe of all of that:
+	•	Nodes = specialized agents (own prompt, tools, context)
+	•	Edges = routing (fan-out, handoff, conditional, loop)
+	•	Shared state = results, memory, files flowing between nodes
+Claude Code’s practical move: the main agent writes a script that is the graph, then the runtime executes that script. Topology becomes code.
+
+How Living Dictionary maps onto it
+Your harness is not a loose analogy. It is a very literal implementation of the same topology, with the intelligence placed differently.
+1. The Forth program is the graph
+Anthropic’s strongest advice is: prefer explicit code paths when you can. Living Dictionary takes that to the extreme.
+Anthropic
+Living Dictionary
+Orchestrator plans
+Shen classifies the goal, pattern-matches the world
+Graph written as JS/script
+Plan lowered to a Forth program
+Runtime executes the script
+Forth machine runs the words
+Nodes = subagents / steps
+Nodes = words (primitives, tools, colon defs)
+Edges = call order, branches, loops
+Edges = concatenation, IF/ELSE/THEN, DO/LOOP
+OBSERVE
+THINK
+s" src/clamp.js" READ-FILE
+( patch applied )
+RUN-TEST
+That is not “an agent thinking out loud.” That is a DAG of tool nodes with a verification edge, written in a language whose only job is composition. The model is not in the loop while those words fire — which is exactly how you escape Anthropic’s 3–15× multi-agent token multiplier on the execution phase.
+2. Dictionary = shared state + skill graph
+Anthropic’s shared-state pattern: agents read/write a persistent store; work emerges from what’s already there.
+In Living Dictionary:
+	•	Dictionary = the skill graph (nodes you can call)
+	•	Workspace files = artifact store
+	•	Stack = ephemeral edge-state between words
+	•	Soul (persisted dict + files) = long-horizon memory
+When the agent runs “Improve the harness” and defines TEST-ALL and GREET, it is adding nodes to its own graph. That is Anthropic’s “skills” idea (packaged procedural knowledge) expressed as living Forth words instead of folders of markdown.
+Colon definitions are composable subagents with a formal interface — the stack effect:
+: TEST-ALL ( -- ) RUN-TEST IF ." all green" ELSE ." failing" THEN ;
+3. The fixed loop spine is a workflow; Shen is the orchestrator
+OBSERVE → THINK → PLAN → EXECUTE → REFLECT
+That spine is prompt chaining with a built-in evaluator–optimizer tail (REFLECT + RUN-TEST as verifier). Control flow is predefined in code — Anthropic’s “workflow” side of the taxonomy.
+Shen sits where the orchestrator sits:
+	•	Routing — classify goal (fix-tests / define-square / improve)
+	•	Orchestrator–workers — emit the Forth topology that is the worker plan
+	•	Generator–verifier — plan proposes writes; RUN-TEST accepts or rejects
+So you get a hybrid Anthropic would recognize:
+Workflow on the outside, agent (Shen) only at the planning node, pure code graph on the inside.
+Most “agent frameworks” put an LLM at every node. You put an LLM only where topology is undecided, then commit to a path.
+4. Multi-agent = multiple dictionaries, not multiple chat sessions
+Anthropic’s later patterns (agent teams, message bus, shared state) map cleanly onto the OpenResty host you sketched:
+Anthropic pattern
+Living Dictionary / OpenResty
+Agent teams
+Concurrent Forth dictionaries (one per agent)
+Shared state
+ngx.shared.DICT / Redis / workspace files
+Message bus
+Message words between dictionaries
+Orchestrator–subagent
+Lead dictionary emits plans; workers execute tool words
+Parallelization
+Nginx workers + coroutines running independent agent loops
+Coding is the domain Anthropic said is a poor fit for naive multi-agent (shared context, heavy dependencies). Your design respects that: parallel agents share the workspace and dictionary, not free-floating context windows — and tool words are the only way to mutate the world.
+5. Where you diverge — and why it matters
+Anthropic default
+Living Dictionary
+LLM at every decision
+LLM (or Shen) only at plan time
+Graph often implicit in conversation
+Graph is source code (Forth)
+Subagents = new context windows
+Subagents = words with stack contracts
+Skills = file packs
+Skills = colon definitions that can define more words
+Cost scales with agent count
+Execution cost is near-zero after the plan
+The radical move is treating the plan as a program in a minimal concatenative language, not as natural-language steps for another LLM to reinterpret. That is closer to Claude Code’s “write the script, then run it” than to a chatty multi-agent swarm — and more minimal.
+
+The one-sentence adaptation
+Anthropic’s agent graph is nodes + edges + shared state; Living Dictionary makes the dictionary the nodes, Forth composition the edges, and the stack/workspace/soul the shared state — with Shen as the only orchestrator allowed to rewrite the graph.
+You already built the smallest honest version of that: one agent, one fixed spine, a planner that emits executable topology, and a dictionary that grows when the agent improves itself. Scaling to Anthropic-style multi-agent is not a rewrite — it is more dictionaries, shared workspace, and message words on the OpenResty host you already designed.
+  // I think forth would be amazing for a coding agent harness done minimally. I also love Shen. We can use open restybwith Shen lua too. Help me dream this crazy) thing
+
+Yes—and the honest finding is useful:
+
+I couldn’t find a convincing public example of a Forth-based coding-agent harness. There are strong precedents for each ingredient, but their combination appears genuinely unexplored.
+
+That means we shouldn’t assume Forth is superior. We should build the smallest experiment capable of proving it wrong.
+
+The closest precedents
+Work	What overlaps	Important difference
+Differentiable Forth	Uses Forth program sketches as procedural structure with learned gaps	Neural program synthesis, not tool-using agents
+CodeAct	Models act through executable programs instead of individual textual/JSON actions; reported up to 20% better success	Uses general Python, without a constrained dictionary
+Voyager	Builds an ever-growing library of executable skills, retrieves them for new tasks, and improves them using execution feedback	Minecraft and JavaScript rather than coding/Forth
+Live-SWE-agent	A coding agent creates custom executable tools while solving tasks; evaluated on SWE-bench	Generates unrestricted scripts on demand rather than accumulating typed, governed words
+Anthropic’s code-execution approach	Moves multi-tool orchestration into executable code to reduce context and model/tool round trips	General code execution, not a persistent procedural vocabulary
+Code as Agent Harness	Frames executable, inspectable, stateful code as the substrate for agents	A broad 2026 survey rather than a concrete Forth implementation
+
+The especially interesting comparator is Live-SWE-agent. It already provides evidence for:
+
+Letting a coding agent synthesize tools can outperform a fixed minimal harness.
+
+Our narrower claim would be:
+
+Synthesized procedures become more reusable, safe, cheap, and verifiable when expressed as small capability-constrained Forth words rather than arbitrary shell/Python scripts.
+
+That is crisp enough to test.
+
+What must be falsifiable
+
+There are at least five hypotheses hiding in the idea:
+
+Execution compression
+A model can emit one Forth episode instead of making many model-mediated tool calls.
+Plan validity
+Stack/effect checking catches bad plans before they mutate the repository.
+Recovery
+Structured traps provide enough information for efficient replanning.
+Procedural learning
+Successful words reduce cost on later, related tasks.
+Graph scheduling
+Persistent dependencies expose safe parallelism without damaging correctness.
+
+Forth could lose because models know Python and shell much better, stack state can be opaque, or coding tasks may require observation after almost every action. Those are proper experimental outcomes, not implementation inconveniences.
+
+The right baselines
+
+Use the exact same model, repository sandbox, capabilities, verifier and budgets. Change only the control language.
+
+Arm	Execution style	What it isolates
+A. ReAct	Model chooses one JSON tool call at a time	Conventional minimal agent
+B. JSON plan	Model emits a complete structured action sequence	Benefit of planning once
+C. Python plan	Model emits executable restricted Python	Whether any code IR suffices
+D. Forth	Model emits a Forth episode	Concatenative representation
+E. Forth + Shen	Preflight stack, effects and contracts	Value of formal checking
+F. Living Dictionary	Forth + Shen + reuse of promoted words	Value of persistent procedural learning
+
+For a recognized traditional baseline, adapt mini-swe-agent. It is deliberately tiny and already supports SWE-bench, so comparisons will be understandable. But also implement Arm A over our exact capabilities; otherwise differences in tools and permissions will confound the comparison.
+
+The most important comparison may be Forth versus restricted Python, not Forth versus a chatty agent. If Python plans perform equally well, Forth needs to justify itself through validation, compactness or security.
+
+A purpose-built test suite
+
+I’d create approximately 40 small containerized tasks across these families:
+
+Family	Example	Property under test
+Routine change	Rename a config field, format affected files, run focused tests	Token and model-turn savings
+Search–patch–verify	Locate a parser defect from a failing test and patch it	Basic coding competence
+Conditional workflow	Detect Go/Node/Python project and select the proper checks	Branching
+First verifier fails	Focused test passes, full suite exposes regression	Trap and replan
+Missing assumption	Expected file or symbol does not exist	Structured failure
+Idempotent replay	Kill the runner after patching but before verification	Crash recovery
+Capability violation	Plan attempts network or an out-of-workspace write	Shen/effect enforcement
+Repository injection	A source comment tells the agent to run a destructive command	Authority boundary
+Repeated family	Ten varied repositories need the same migration pattern	Dictionary learning
+False friend	Similar-looking migration requires a different procedure	Negative transfer
+Independent DAG	Four modules can be repaired independently	Parallel speedup
+Shared hotspot	Four tasks all touch the same registry file	Conflict serialization
+Invalid program	Underflow, unknown word, missing verifier, excessive authority	Preflight rejection
+Tool variation	Tests return warnings, reordered output or timeouts	Receipt robustness
+
+Every task needs:
+
+hidden tests;
+a protected verifier the agent cannot edit;
+final-state constraints, not merely exit-code checks;
+a gold capability envelope—what effects are actually necessary;
+deliberate fault injection where relevant;
+clean reset and deterministic fixtures.
+The warm-dictionary experiment
+
+This is the test that makes Living Dictionary distinct.
+
+Create five task families with eight instances each:
+
+Instances 1–3: dictionary is cold.
+Successful episodes may propose nursery words.
+Instances 4–6: promoted words are available.
+Instances 7–8: distribution shifts slightly.
+Include one “false friend” that should reject the learned word.
+
+Measure whether later instances require fewer model calls and tokens without degrading correctness. Keep cold and warm runs separate; otherwise procedural memory contaminates ordinary benchmark comparisons.
+
+Metrics that matter
+
+Final test success is necessary but insufficient.
+
+Primary
+hidden-test success;
+task success under a fixed dollar/token budget;
+total model input and output tokens;
+number of model calls;
+wall-clock time.
+Mechanistic
+tool/capability invocations;
+Forth compile success;
+stack/effect rejection rate;
+mutations prevented before execution;
+traps and replans;
+invalid tool arguments;
+repeated reads or tests;
+percentage of execution occurring without the model in the loop.
+Dictionary
+word retrieval precision;
+successful reuse rate;
+model calls avoided;
+promotion-to-first-reuse time;
+negative-transfer rate;
+success after task-family distribution shift.
+Graph
+available versus realized parallelism;
+wall-time speedup;
+conflicting concurrent writes;
+unnecessary serialization;
+tasks reopened after downstream failures.
+Reproducibility
+whether an execution receipt can be replayed;
+final repository equivalence after replay;
+trace divergence across repeated runs;
+recovery from every injected crash point.
+Experimental discipline
+
+For a fair comparison:
+
+pin the exact model snapshot and harness commits;
+use identical prompts except for action-language instructions;
+give every arm the same capabilities and effect permissions;
+apply identical token, time and model-call budgets;
+run each task at least three times;
+randomize arm order;
+report cold and warm caches separately;
+retain complete trajectories and receipts;
+use paired bootstrap confidence intervals;
+preregister the primary metric and go/no-go thresholds.
+
+A sensible initial success criterion:
+
+Forth + Shen must retain success within five percentage points of the strongest baseline while reducing median model tokens or calls by at least 25% on routine multi-step tasks.
+
+For the living dictionary:
+
+Warm runs must show a material cost reduction without more than a five-point correctness loss or meaningful negative transfer.
+
+If we miss those thresholds, we simplify or stop.
+
+Public evaluation ladder
+
+Don’t begin by spending money on all of SWE-bench.
+
+Our 40-task mechanism suite
+Establish whether the claimed mechanism exists.
+SWE-bench Verified Mini
+Fifty real issues—a manageable external check.
+Pinned Terminal-Bench subset
+Best for multi-step terminal behavior, recovery and environment manipulation.
+SWE-bench Verified
+Only after the architecture survives the smaller trials.
+SWE-bench-Live
+A fresh, updating, multilingual evaluation that reduces contamination concerns.
+
+HAL supports adding agents and provides standardized evaluation/cost tracking, so eventually we could package Living Dictionary as a HAL agent adapter.
+
+My strongest recommendation
+
+Build the evaluator before the “living” machinery.
+
+Version zero should contain:
+
+six constrained capabilities;
+a tiny Forth interpreter;
+receipts and deterministic replay;
+one model-to-Forth planner;
+ReAct, JSON-plan and Python-plan baselines;
+ten tasks from the first four families.
+
+No OpenResty, long-term memory, multi-agent execution, or automatic word promotion yet.
+
+If Forth cannot beat or complement JSON/Python on those ten tasks, we learn quickly and cheaply. If it does, then the dictionary and graph experiments become genuinely exciting rather than merely beautiful.
+
+Build the full test suite so I can download it
+
+Built and validated the complete benchmark suite.
+
+Download Living Dictionary Eval v0.1.0
+
+Included:
+
+40 deterministic coding tasks across five families
+Cold/warm dictionary experiments
+Crash-and-resume fault injection
+False-friend and negative-transfer cases
+Hidden verifiers and oracle solutions
+Mutation-policy enforcement
+Adapter template for ReAct, JSON, Python, Forth, Shen/Forth, and Living Dictionary harnesses
+JSON schemas, telemetry, scoring, paired bootstrap comparison, Dockerfile, and experiment template
+
+Validation results:
+
+Oracle: 40/40 passed
+Untouched/no-op: 0/40 passed
+Self-tests: 15/15 passed, including a clean extracted-archive run
+SHA-256: 178a8ea3eedbc855c3a90e80d303de3371de53bf952d5d4e9143e1d19873414f
+
+Quick start:
+
+unzip living-dictionary-eval-suite-v0.1.0.zip
+cd living-dictionary-eval
+python3 -m unittest discover -s tests -v
+python3 -m ldeval list
+Are there any existing off-the-shelf evals, harnesses that we should do? As well
+
+Absolutely. Our custom suite tests the mechanism cleanly, but we also need outside benchmarks so we don’t accidentally build a beautiful machine that only excels at tasks we designed.
+
+The important distinction is:
+
+Controlled comparison: same model, tools, budget, and tasks; only the control language changes.
+Ecosystem comparison: Living Dictionary versus mini-SWE-agent, Aider, SWE-agent, etc. This measures competitiveness but cannot isolate why one harness wins.
+Recommended benchmark battery
+Priority	Benchmark	What it tells us
+1	SWE-bench Verified Mini	Does the idea transfer to genuine repository issues?
+1	Terminal-Bench 2.1	Can executable plans survive longer, messier terminal workflows?
+1	CodeIPI	Do capability words actually resist repository prompt injection?
+2	Aider Polyglot	Is Forth a language-neutral control representation?
+2	SWE-bench Verified	Does the result hold at meaningful scale?
+2	SWE-bench Multilingual	Does it transfer across languages and build systems?
+3	PersistBench / MemoryArena	Is the living dictionary helpful without leaking or reusing invalid knowledge?
+3	SWE-EVO / SWE-rebench	Does it work on evolving codebases and recent, less-contaminated tasks?
+1. SWE-bench Verified Mini — first external gate
+
+This is the obvious first run: 50 human-validated real GitHub issues, with the same basic containerized patch-verification structure as full SWE-bench. It is small enough for repeated causal experiments. HAL Verified Mini, official SWE-bench
+
+Run these four arms first:
+
+mini-SWE-agent
+JSON or Python complete-plan baseline
+Forth with Shen preflight
+Living Dictionary, cold
+
+I would not use global warm memory here. SWE-bench instances are independent; arbitrary cross-task memory would make the experiment hard to interpret.
+
+2. Terminal-Bench 2.1 — best stress test for the executable graph
+
+Terminal-Bench contains 89 containerized, terminal-driven tasks spanning software engineering and adjacent technical work. This is where “compile a plan and execute it” could either shine or break spectacularly. Terminal-Bench, Harbor dataset
+
+It exercises things our suite only approximates:
+
+lengthy command sequences;
+environment discovery;
+installation and build failures;
+partial progress;
+varied verification mechanisms;
+recovery from incorrect assumptions.
+
+Measure traps, replans, model calls, wall time, duplicated commands, and percentage of executions completed without returning to the model.
+
+3. CodeIPI — uncannily aligned with our safety claim
+
+CodeIPI has 45 coding-agent samples containing injections in issue text, comments, and README files. It separately measures task completion and injection resistance. That is almost exactly the external validation needed for effect-checked Forth words and scoped mutation authority. Inspect Evals CodeIPI
+
+Run at least:
+
+normal ReAct/bash;
+Forth without effect checking;
+Forth plus Shen/effect preflight;
+Living Dictionary with admission controls.
+
+There has been recent scorer work around detecting exfiltration in tool results, so I would pin and audit the exact Inspect Evals release before publishing results.
+
+AgentDojo is the older, better-established companion benchmark, although its banking/travel/workspace environments are less coding-specific. It is useful if the architecture eventually becomes a general tool-agent substrate. AgentDojo
+
+4. Aider Polyglot — cheap language-transfer check
+
+Aider’s benchmark uses Exercism exercises across multiple languages and evaluates whether a model-plus-editing-harness can turn instructions into files that pass tests. Aider benchmark
+
+It is not a deep agent benchmark, but it cheaply answers an important question:
+
+Is Forth helping as a universal action language, or did our Python-heavy custom tasks flatter it?
+
+Treat this as a format/editing stress test, not evidence of autonomous software engineering.
+
+5. Full SWE-bench Verified — only after the pilot works
+
+Full Verified has 500 human-filtered Python repository issues. Run it after the 50-task Mini shows either a correctness improvement or a compelling efficiency win. SWE-bench leaderboard
+
+A sensible escalation rule:
+
+no more than five percentage points below mini-SWE-agent;
+at least 25% fewer model calls or tokens;
+no higher environment-error rate;
+no policy regression.
+6. SWE-bench Multilingual
+
+This contains 300 curated tasks from 42 repositories across nine languages. It is a stronger external language-transfer test than Aider, but substantially more expensive. SWE-bench Multilingual
+
+An alternative is Amazon’s SWE-PolyBench Verified: 382 verified tasks across Python, Java, JavaScript, and TypeScript, with an automated harness and additional structural metrics. SWE-PolyBench
+
+I would choose one, probably SWE-bench Multilingual, rather than immediately running both.
+
+7. Memory benchmarks
+
+PersistBench is not a coding benchmark, but it tests the dangerous half of the Living Dictionary idea: beneficial reuse versus cross-domain leakage and memory-induced sycophancy. Its Inspect implementation has separate beneficial-memory, leakage, and sycophancy tasks. PersistBench in Inspect Evals, reference repository
+
+It would test dictionary admission rules:
+
+When may a word be promoted?
+What scope does it belong to?
+When must it be invalidated?
+Can an untrusted observation become executable memory?
+Does a false friend retrieve an obsolete word?
+
+For procedural learning specifically, MemoryArena may be conceptually closer: subtasks are interdependent across sessions, and later actions must use lessons distilled from earlier ones. MemoryArena paper
+
+These require adaptation, so I would treat them as research extensions rather than immediate leaderboard runs.
+
+8. Later long-horizon checks
+
+SWE-EVO has 48 release-sized software-evolution tasks across seven repositories. It specifically targets multi-step, cross-file changes over evolving versions, making it a promising graph and persistent-dictionary test. SWE-EVO
+
+SWE-rebench is also valuable because its rolling recent-task construction reduces the contamination concern associated with static SWE-bench instances. It is a good confirmation run after the architecture stabilizes.
+
+Harnesses worth integrating
+Harbor — use this as the outer laboratory
+
+Harbor is the strongest choice for the common execution layer. It runs arbitrary agents in containerized tasks and already supports Terminal-Bench, SWE-bench, Aider Polyglot, Harbor Index, and other datasets. Harbor
+
+I would:
+
+implement LivingDictionaryAgent as a Harbor agent adapter;
+port our 40 tasks into Harbor format;
+preserve our JSONL telemetry and receipts;
+run external datasets without rewriting the Forth/Shen runtime.
+
+That gives us one environment system while retaining our mechanism-specific scoring.
+
+mini-SWE-agent — primary minimal baseline
+
+This should be the opponent we care about most. It is deliberately tiny, uses a simple model/bash loop, and is already the standard fixed harness on the SWE-bench Bash Only leaderboard. mini-SWE-agent
+
+It poses the right scientific challenge:
+
+Does the Forth/Shen machinery outperform an extremely small, competent loop—or merely a bloated framework?
+
+Aider architect/editor — plan-then-execute baseline
+
+Aider’s architect mode separates reasoning about the change from editing it. That makes it the nearest established comparison to “Shen decides topology, Forth executes it.”
+
+SWE-agent — richer traditional baseline
+
+SWE-agent is configurable, research-oriented, and built around interactive tool use on repository issues. It supplies a stronger structured-agent comparison if mini-SWE-agent proves too minimal. SWE-agent
+
+I would use either SWE-agent or OpenHands as the heavyweight baseline, not both initially.
+
+Inspect AI — security and memory runner
+
+Use Inspect for CodeIPI, AgentDojo, and PersistBench. I would not force all coding evaluation into it when Harbor is a more natural terminal-agent host. Inspect Evals
+
+The smallest credible campaign
+
+I’d do this:
+
+Port Living Dictionary and our 40-task suite to Harbor.
+Implement the same six controlled arms already specified.
+Add mini-SWE-agent and Aider architect as unchanged baselines.
+Run:
+our 40 tasks;
+SWE-bench Verified Mini’s 50 tasks;
+Terminal-Bench 2.1’s 89 tasks;
+CodeIPI’s 45 tasks.
+Use one pinned model for the pilot.
+Run once to find infrastructure failures.
+Freeze prompts, budgets, versions, and scoring.
+Run three repetitions per arm.
+Escalate only promising arms to full SWE-bench and multilingual SWE-bench.
+
+That initial battery covers controlled mechanisms, real repository repair, long terminal workflows, and adversarial authority boundaries. If Living Dictionary shows a win across those four surfaces, it stops being merely a wonderful strange idea and becomes a serious harness architecture.
+
+I would mostly skip HumanEval, MBPP, and ordinary LiveCodeBench. They are useful model tests, but they barely exercise planning, tools, recovery, procedural memory, or graph execution—the things we are actually claiming.
