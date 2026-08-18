@@ -22,6 +22,7 @@ ARTIFACTS_APPLIED = "artifacts.applied"
 GATES_MEASURED = "gates.measured"
 BUDGET_CONSUMED = "budget.consumed"
 EPISODE_BLOCKED_DUPLICATE = "episode.blocked_duplicate"
+DICTIONARY_PROMOTED = "dictionary.promoted"
 
 EVENT_KINDS = frozenset(
     {
@@ -32,6 +33,7 @@ EVENT_KINDS = frozenset(
         GATES_MEASURED,
         BUDGET_CONSUMED,
         EPISODE_BLOCKED_DUPLICATE,
+        DICTIONARY_PROMOTED,
     }
 )
 
@@ -208,6 +210,8 @@ def reduce(state: State, event: Event) -> State:
         if steps <= 0:
             raise KernelError("budget delta is empty")
         new = State(**{**new.__dict__, "used": new.used + steps})
+    elif event.kind == DICTIONARY_PROMOTED:
+        pass
 
     stored = Event(
         kind=event.kind,

@@ -12,6 +12,7 @@ from livingdict.kernel import (
     DECISION_HALT_CAP,
     DECISION_PLAN,
     DECISION_SUCCESS,
+    DICTIONARY_PROMOTED,
     EPISODE_BLOCKED_DUPLICATE,
     EPISODE_PLANNED,
     GATES_MEASURED,
@@ -244,6 +245,16 @@ class ReconcileTests(unittest.TestCase):
             Event(kind=ARTIFACTS_APPLIED, payload={"keys": ["claims.json", "fizzbuzz.py"]}),
         )
         self.assertEqual(state.last_artifact_keys, ("claims.json", "fizzbuzz.py"))
+
+    def test_dictionary_promoted_is_recorded_without_changing_reconcile(self) -> None:
+        prior = reconcile(empty_state(), 8)
+        state = reduce(
+            empty_state(),
+            Event(kind=DICTIONARY_PROMOTED, payload={"episode": 1, "sha256": "ab", "word": "INSTALL"}),
+        )
+        self.assertEqual(state.revision, 1)
+        self.assertEqual(state.events[0].kind, DICTIONARY_PROMOTED)
+        self.assertEqual(reconcile(state, 8).kind, prior.kind)
 
 
 if __name__ == "__main__":

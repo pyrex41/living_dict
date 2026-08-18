@@ -3,7 +3,7 @@
 // Forth 5 SQUARE, artifact write, Shen-gated forbidden write never mutates.
 
 import assert from "node:assert/strict";
-import { CapabilityHost, sha256 } from "../js/host.js";
+import { CapabilityHost, sha256, treeCanonical } from "../js/host.js";
 import { ForthVM } from "../js/forth.js";
 import { boot, bridge, validate } from "../js/bridge.js";
 import { FORBIDDEN_ENVELOPE, parseEnvelope, runRequest } from "../js/agent.js";
@@ -17,6 +17,14 @@ function check(label, cond, detail) {
     console.log(`  FAIL ${label}${detail ? ` — ${detail}` : ""}`);
   }
 }
+
+// Cross-body parity: must equal Python's json.dumps(sort_keys, ensure_ascii).
+const canon = treeCanonical({ "café.txt": "aa", "a.py": "bb" });
+check(
+  "treeCanonical matches Python ensure_ascii",
+  canon === '{"a.py":"bb","caf\\u00e9.txt":"aa"}',
+  canon,
+);
 
 const empty = await sha256("");
 check(

@@ -89,7 +89,16 @@ fn path_forbidden(p) {
     if s == "" {
         return false;
     }
-    contains_str(s, "eval/")
+    if contains_str(s, "eval/") {
+        return true;
+    }
+    if contains_str(s, "compare/runs/") {
+        return true;
+    }
+    if contains_str(s, "/scud/") {
+        return true;
+    }
+    false
 }
 
 fn files_violate(files) {
@@ -234,7 +243,7 @@ fn p_equiv(repo, run_json, hashes_json) {
     p += "Run make test. Run the canned fizzbuzz CLI e2e and the graph-01 e2e; confirm both still discharge/behave as before and the final workspaces are correct. ";
     p += "Run the rho.run/v1 runner path on a canned request and pipe the stream through tools/scudcheck (if go is present) — exit 0 required; if go is absent, validate the stream rules by hand (monotonic seq, single terminal). ";
     p += "This repo has commits — ALSO re-hash eval/schemas and one task's protected files and compare against the explore hashes; git diff on eval/ must be empty. ";
-    p += "Confirm receipts gained tree_before/tree_after WITHOUT losing any pre-existing field (compare against a pre-change receipt from git show). ";
+    p += "Confirm receipts gained tree_before/tree_after WITHOUT losing any pre-existing field. There is no committed receipt.json — extract the pre-change key sets with `git show HEAD:harness/src/livingdict/cli.py` (the `_finish` receipt dict) and `git show HEAD:harness/src/livingdict/host.py` (the `receipt()` payload), then assert every one of those keys is still present on a live fizzbuzz CLI receipt and a live adapter RECEIPT. Extra keys are fine. ";
     p += "If anything cannot run, pass=false with what is missing — do not fake a pass. evidence must include command output. Do not edit product files.";
     p
 }
@@ -357,14 +366,21 @@ let impl_prompt = "";
 impl_prompt += "Implement docs/design/STORE.md Layer A in " + repo + ". `.` is the current workspace root.\n";
 impl_prompt += "Survey notes (untrusted, verify before following):\n" + brief_json + "\n\n";
 impl_prompt += "Read docs/design/STORE.md first and treat it as the spec of record; where these instructions and the doc disagree, the doc wins and you note the conflict.\n\n";
+impl_prompt += "Land on THIS tree (do not invent a second event log or a second receipt type):\n";
+impl_prompt += "- kernel EVENT_KINDS is a closed set in kernel.py (episode.planned, critic.accepted/rejected, artifacts.applied, gates.measured, budget.consumed, episode.blocked_duplicate). reduce() rejects unknown kinds. Prefer ADDITIVE PAYLOAD FIELDS on existing kinds. If word provenance cannot be derived from events.jsonl as it stands, you may add one optional kernel kind (register it in EVENT_KINDS; reduce records it without changing reconcile). Never persist facts(); they are a derived view.\n";
+impl_prompt += "- dictionary.promote is a TRACE event in execute.py today, not a kernel event. Word facts in STORE.md ([word/NAME :word/content blob:…], [:word/promoted-by episode/N]) must be derivable from the tx log after you land — intern the .fs source at save_colon_words and put the hash + promoting episode on an event payload (or that optional kind).\n";
+impl_prompt += "- Two receipts already exist. CLI `_finish` in cli.py writes run_dir/receipt.json with keys changed_files, decision, discharged, episodes, gates, ok, reason, run_dir, workspace plus graph metrics. host.receipt() writes the eval 1.0 adapter receipt (protocol_version 1.0, run_id, task_id, success, workspace_before/after digests, changed_files, effects_used, policy_violations) via receipts.py. Add tree_before/tree_after to BOTH as additive fields. eval/schemas/receipt.schema.json already has additionalProperties:true — do not edit eval/.\n";
+impl_prompt += "- policy.snapshot() already returns {relpath: sha256} and skips .livingdict-run, .sb, node_modules, etc. Tree intern MUST use that same skip set or as_of will not match recorded snapshots.\n";
+impl_prompt += "- events.jsonl does not currently record workspace trees. as_of can only work if you persist tree hashes onto events (gates.measured is the natural home; reject/duplicate episodes do not measure — as_of at those seqs is the last recorded tree, or empty if none).\n";
+impl_prompt += "- There is no committed receipt.json to `git show`. Equivalence is: live receipt keys are a superset of the `_finish` / `receipt()` key sets at HEAD.\n\n";
 impl_prompt += "Build:\n";
 impl_prompt += "1. harness/src/livingdict/store.py — the object store. Blobs under run_dir/objects/<first-2-hex>/<sha256> (override root via LIVINGDICT_OBJECTS for a shared store). ";
 impl_prompt += "API: intern(bytes) -> sha256 (idempotent, write-once via temp file + atomic rename), get(sha) -> bytes (verify hash on read; mismatch is a typed error, never silent corruption), ";
 impl_prompt += "intern_tree({path: sha}) -> sha (canonical JSON: sorted keys, no whitespace), get_tree(sha), has(sha). Append-only; no GC; no daemon.\n";
-impl_prompt += "2. Interning hooks: on envelope receipt, intern every artifact body (the model-facing envelope KEEPS full bodies — interning is host-side); on snapshot, intern file contents and build a tree object. ";
-impl_prompt += "gates.measured events and CLI receipts gain tree_before/tree_after hashes — STRICTLY ADDITIVE, every existing field stays. episode.planned may gain artifact content hashes next to artifact_keys; it must not lose the program text (fingerprint and replay need it).\n";
-impl_prompt += "3. Dictionary provenance: when a colon word is promoted, intern its source and record facts on the promote event: word content hash, promoting episode. Additive fields only.\n";
-impl_prompt += "4. facts/as_of: in store.py (or a small facts.py), facts(events) yielding [e, a, v, tx] rows per the STORE.md mapping (tx = event sequence), and as_of(events, seq) -> workspace tree {path: sha} reconstructed from recorded snapshots/mutations at or before seq. Iteration + as_of only — NO query language.\n";
+impl_prompt += "2. Interning hooks: on envelope receipt, intern every artifact body (the model-facing envelope KEEPS full bodies — interning is host-side); on snapshot, intern file contents (same skip set as policy.snapshot) and build a tree object. ";
+impl_prompt += "gates.measured events and BOTH receipts gain tree_before/tree_after hashes — STRICTLY ADDITIVE, every existing field stays. episode.planned may gain artifact content hashes next to artifact_keys; it must not lose the program text (fingerprint and replay need it).\n";
+impl_prompt += "3. Dictionary provenance: when save_colon_words writes a .fs, intern its source and put word content hash + promoting episode on the tx log (additive payload or one optional kernel kind). facts() derives the STORE.md word/* rows from that; do not write a facts file.\n";
+impl_prompt += "4. facts/as_of: in store.py (or a small facts.py), facts(events) yielding [e, a, v, tx] rows per the STORE.md mapping (tx = event sequence; map the REAL kernel kinds — critic.rejected → :critic/verdict :reject, gates.measured → :gates/passed, etc.), and as_of(events, seq) -> workspace tree {path: sha} reconstructed from recorded tree hashes / interned file facts at or before seq. Iteration + as_of only — NO query language.\n";
 impl_prompt += "5. Backward compatibility: a run dir with events.jsonl and no objects/ must still replay (kernel.replay must not require the store); loading old receipts without tree_* fields must work.\n";
 impl_prompt += "6. Tests, added to make test: store unit tests (intern idempotency and object count, atomic write, corrupt-blob detection on get, canonical tree roundtrip, LIVINGDICT_OBJECTS sharing across two run dirs); ";
 impl_prompt += "an as_of test driving the canned fizzbuzz e2e (reuse harness/tests/fizzbuzz_planner.py) and asserting the reconstructed tree at each episode equals the recorded snapshot; ";

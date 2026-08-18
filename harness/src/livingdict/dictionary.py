@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from .forth import Token, tokenize
 
@@ -111,7 +111,11 @@ def used_names(program: str, names: Iterable[str]) -> list[str]:
     return used
 
 
-def save_colon_words(dictionary_dir: str | Path | None, colon: dict[str, list[Token]]) -> list[str]:
+def save_colon_words(
+    dictionary_dir: str | Path | None,
+    colon: dict[str, list[Token]],
+    store: Any | None = None,
+) -> list[str]:
     root = words_dir(dictionary_dir)
     if root is None:
         return []
@@ -123,10 +127,13 @@ def save_colon_words(dictionary_dir: str | Path | None, colon: dict[str, list[To
             continue
         source = f": {key} {tokens_to_source(body)} ;\n" if body else f": {key} ;\n"
         target = root / f"{key}.fs"
+        data = source.encode("utf-8")
+        if store is not None:
+            store.intern(data)
         try:
-            if target.is_file() and target.read_text(encoding="utf-8") == source:
+            if target.is_file() and target.read_bytes() == data:
                 continue
-            target.write_text(source, encoding="utf-8")
+            target.write_bytes(data)
         except OSError:
             continue
         written.append(key)

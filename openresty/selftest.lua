@@ -50,6 +50,15 @@ print("== sha256 ==")
 check("empty", hostmod.sha256("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
 check("abc", hostmod.sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
 do
+  local root = tmpdir() .. "/objects"
+  local a = hostmod.intern(root, "abc")
+  local b = hostmod.intern(root, "abc")
+  check("intern idempotent", a == b)
+  check("intern digest", a == hostmod.sha256("abc"))
+  local tree = hostmod.intern_tree(root, { x = a })
+  check("intern tree compact", tree == hostmod.sha256('{"x":"' .. a .. '"}'))
+end
+do
   local arrow = hostmod.decode_json('"\\u2192"')
   check("json \\u2192 is utf-8 arrow", arrow == "\226\134\146", arrow and string.byte(arrow, 1, #arrow))
   local round = hostmod.decode_json(hostmod.encode_json({ goal = "15 \226\134\146 FizzBuzz" }))

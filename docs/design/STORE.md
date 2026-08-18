@@ -94,8 +94,11 @@ typed tuple patterns are a natural later extension of the critic —
   workers `take` them. Atomic removal makes double execution
   unrepresentable, the same way disjoint write sets make conflicts
   unrepresentable. Wave barriers and wave-boundary `RUN-GATES` stay.
-- **Backpressure.** Rejects, traps, and failed gates are tuples the next
-  planner observation consumes. Same behavior as today, one mechanism.
+- **Backpressure.** For the sequential planner loop the kernel event log
+  is the one carrier of rejects, traps, and failed gates — a second copy
+  in the space would be a second source of truth, which Layer A forbids.
+  The `critic.reject` / `gate.result` tuple shapes are reserved for
+  Layer C, where concurrent consumers exist and atomic take pays rent.
 - **Leases.** `take` carries a lease; a worker that dies returns its
   tuple to the space. This is td's attempt/execution fencing in local
   form, and the two must stay one concept at the scud seam.

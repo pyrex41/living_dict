@@ -447,6 +447,13 @@ function M.run_forth(h, envelope, opts)
   if request ~= nil and not resume then
     M.save_checkpoint(request, envelope)
   end
+  if h._objects_root and envelope.artifacts then
+    for path, body in pairs(envelope.artifacts) do
+      if type(body) == "string" then
+        hostmod.intern(h._objects_root, body)
+      end
+    end
+  end
   if request ~= nil and prelude ~= "" then
     local known = dictionary.loaded_names(dict_dir)
     hostmod.emit(h.trace_path, "dictionary.retrieve", { candidates = known, query = "*" })
@@ -468,7 +475,7 @@ function M.run_forth(h, envelope, opts)
     raise(code, message)
   end
   if dict_dir and dict_dir ~= "" then
-    local written = dictionary.save_colon(dict_dir, vm)
+    local written = dictionary.save_colon(dict_dir, vm, h._objects_root)
     for i = 1, #written do
       hostmod.emit(h.trace_path, "dictionary.promote", {
         evidence = "colon",

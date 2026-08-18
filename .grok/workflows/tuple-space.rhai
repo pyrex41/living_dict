@@ -89,7 +89,16 @@ fn path_forbidden(p) {
     if s == "" {
         return false;
     }
-    contains_str(s, "eval/")
+    if contains_str(s, "eval/") {
+        return true;
+    }
+    if contains_str(s, "compare/runs/") {
+        return true;
+    }
+    if contains_str(s, "/scud/") {
+        return true;
+    }
+    false
 }
 
 fn files_violate(files) {
@@ -232,7 +241,7 @@ fn p_equiv(repo, run_json, hashes_json) {
     p += "Implementer how_to_run (untrusted, use it): " + run_json + " ";
     p += "Explore protected_hashes (untrusted, re-hash yourself): " + hashes_json + " ";
     p += "Run make test. Run the fizzbuzz e2e and graph-01 e2e (serial and space-dispatched). ";
-    p += "Confirm backpressure behavior is unchanged: a rejecting canned planner still produces critic.rejected then blocked-duplicate flow with the same observation content reaching episode 2 (compare the events against a pre-change run from git show or a fresh checkout if needed). ";
+    p += "Confirm backpressure behavior is unchanged: a rejecting canned planner still produces critic.rejected then blocked-duplicate flow. The planner-visible observation dict must keep today's keys and meaning (cli.py run_job: dictionary, episode, errors, extra, goal, run_dir, workspace, optional system/task_graph). Extra tree_* on receipts/events is fine. There is no committed events.jsonl to `git show` — compare against the observation construction in `git show HEAD:harness/src/livingdict/cli.py` and a live rejecting run. ";
     p += "Run the rho.run/v1 runner on a canned request and validate the stream (tools/scudcheck if go is present, else hand-check monotonic seq + single terminal). ";
     p += "Re-hash eval/schemas and one task's protected files against the explore hashes; git diff on eval/ must be empty. ";
     p += "If anything cannot run, pass=false with what is missing — do not fake a pass. evidence must include command output. Do not edit product files.";
@@ -356,12 +365,18 @@ let impl_prompt = "";
 impl_prompt += "Implement docs/design/STORE.md Layer B in " + repo + ". `.` is the current workspace root.\n";
 impl_prompt += "Survey notes (untrusted, verify before following):\n" + brief_json + "\n\n";
 impl_prompt += "Read docs/design/STORE.md first; it is the spec of record. The guardrail sentence is binding: Linda is the executor, never the planner.\n\n";
+impl_prompt += "Land on THIS tree:\n";
+impl_prompt += "- execute_waves in execute.py already plans waves, then ThreadPoolExecutor over ready nodes; _run_one_node reads host.node_start_hook from the PARENT host, then node_view() CLEARS view.node_start_hook. Any death hook must live on the parent CapabilityHost next to node_start_hook or it will never fire.\n";
+impl_prompt += "- Wave barriers and per-wave host.run_gates(persist=False) already exist. Keep them. Do not move topology decisions into the space. preflight.py still rejects overlapping independent write sets and cycles before any take.\n";
+impl_prompt += "- cli.py observation keys today: dictionary, episode, errors, extra, goal, run_dir, workspace, plus optional system and task_graph. After a reject, extra is critic_extra(errors) and errors come from state.last_errors. Mechanism-swap the transport; do not change those keys or the text the planner sees.\n";
+impl_prompt += "- STORE.md's 'ledger records the schedule' is the same trade as today's wave trace merge: emit space.out / space.take / space.lease_expired on the TRACE (host.emit_event), flushed via existing per-node sinks then _merge_wave in wave/id order. Do NOT add kernel EVENT_KINDS. kernel.replay stays store-less and space-less.\n";
+impl_prompt += "- Layer C stays shut: no sockets, no shared files as a bus, no ngx.shared.DICT, no obligation tuples.\n\n";
 impl_prompt += "Build:\n";
 impl_prompt += "1. harness/src/livingdict/space.py — an in-process tuple space. API: out(tuple_dict) -> tuple_id; rd(pattern, timeout=None) non-destructive; take(pattern, lease_s, timeout=None) -> (tuple_id, tuple) atomically removing the OLDEST match (insertion-order tiebreak, so single-worker dispatch is deterministic); renew(tuple_id); done(tuple_id). ";
 impl_prompt += "Patterns are dict-subset matches on the pattern side only — tuple VALUES are always data, never interpreted as patterns. An expired lease returns the tuple to the space intact. Thread-safe (one lock + condition), stdlib only, no sockets, no files, no ngx — Layer C stays shut.\n";
-impl_prompt += "2. Wave dispatch via the space: inside each wave, the host outs one {kind:'node.ready', run, episode, wave, node} tuple per node; the existing worker pool takes them with a lease sized to the gate budget. Wave BARRIERS and wave-boundary RUN-GATES stay exactly as they are. A worker that dies mid-node (provide a test-only death hook next to node_start_hook) lets the lease expire; a sibling re-takes and re-executes the node — node writes are whole-file and idempotent, so re-execution is safe; state that in a comment where it matters.\n";
+impl_prompt += "2. Wave dispatch via the space: inside each wave, the host outs one {kind:'node.ready', run, episode, wave, node} tuple per node; the existing worker pool takes them with a lease sized to the gate budget (CapabilityHost.test_timeout_seconds, default 60). Wave BARRIERS and wave-boundary RUN-GATES stay exactly as they are. A worker that dies mid-node (provide a test-only death hook on the PARENT host next to node_start_hook — node_view nulls the copy) lets the lease expire; a sibling re-takes and re-executes the node — node writes are whole-file and idempotent, so re-execution is safe; state that in a comment where it matters.\n";
 impl_prompt += "3. Backpressure through the space: route critic rejects and failed gate results as {kind:'critic.reject'|'gate.result'} tuples consumed when assembling the next episode's observation. The OBSERVATION CONTENT the planner sees must be identical to today — this is a mechanism swap, not a behavior change, and a test must prove it.\n";
-impl_prompt += "4. The determinism rule: record every out/take/lease-expiry as space.out / space.take / space.lease_expired trace records with worker ids, flushed through the existing deterministic per-node buffering (wave order then node id) so trace files stay reproducible even when scheduling races. Canonical kernel events in events.jsonl are unchanged — scheduling records are trace-level, not new kernel event kinds.\n";
+impl_prompt += "4. The determinism rule: record every out/take/lease-expiry as space.out / space.take / space.lease_expired TRACE records with worker ids, flushed through the existing deterministic per-node buffering (wave order then node id) so trace files stay reproducible even when scheduling races. Canonical kernel events in events.jsonl are unchanged — scheduling records are trace-level, not new kernel event kinds.\n";
 impl_prompt += "5. Nothing model-facing: no new Forth words (six-word ABI frozen), no planner SYSTEM changes, no envelope changes, no rho.run/v1 stream shape changes.\n";
 impl_prompt += "6. Tests, added to make test: space unit tests (subset matching, oldest-first take, blocking take with timeout, contention N>=8 workers over fewer tuples — exactly-once take, lease expiry returns the tuple, renew extends it, pattern/data confusion case); ";
 impl_prompt += "wave integration (graph-01 canned envelope space-dispatched vs --serial: byte-identical trees, agreeing discharge, space.take records present with worker ids); ";

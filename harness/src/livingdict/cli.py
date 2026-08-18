@@ -27,6 +27,7 @@ from .kernel import (
     CRITIC_ACCEPTED,
     CRITIC_REJECTED,
     DECISION_SUCCESS,
+    DICTIONARY_PROMOTED,
     EPISODE_BLOCKED_DUPLICATE,
     EPISODE_PLANNED,
     GATES_MEASURED,
@@ -42,6 +43,8 @@ from .kernel import (
 )
 from .policy import changed_files, snapshot
 from .rho import grant_mode_require
+from .space import Space
+from .store import artifact_digests, capture_tree, intern_snapshot, open_store
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -271,7 +274,10 @@ def run_job(
     cmd = list(planner_cmd) if planner_cmd else default_planner_cmd()
     state = empty_state()
     extra = ""
-    before = snapshot(workspace)
+    store = open_store(run_dir)
+    space = Space(store=store)
+    before, job_tree_before = capture_tree(workspace, store)
+    episode_tree_before = job_tree_before
     last_changed: list[str] = []
     last_graph: dict[str, Any] = {}
     globs = allowed_globs if allowed_globs is not None else DEFAULT_ALLOWED
@@ -293,6 +299,7 @@ def run_job(
                 last_graph,
                 print_receipt=print_receipt,
                 receipt_extra=receipt_fields,
+                tree_before=job_tree_before,
             )
         decision = reconcile(state, max_turns)
         if decision.kind != "plan":
@@ -305,6 +312,7 @@ def run_job(
                 last_graph,
                 print_receipt=print_receipt,
                 receipt_extra=receipt_fields,
+                tree_before=job_tree_before,
             )
 
         episode = state.used + 1
@@ -325,16 +333,14 @@ def run_job(
             observation["task_graph"] = graph_file.read_text(encoding="utf-8")
         envelope = call_planner(cmd, observation, workspace=workspace)
         fp = fingerprint(envelope)
-        state = _commit(
-            state,
-            EPISODE_PLANNED,
-            {
-                "artifact_keys": sorted(envelope.artifacts),
-                "fingerprint": fp,
-                "program": envelope.program,
-                "rationale": envelope.rationale,
-            },
-        )
+        planned: dict[str, Any] = {
+            "artifact_keys": sorted(envelope.artifacts),
+            "artifact_sha256": artifact_digests(envelope.artifacts, store),
+            "fingerprint": fp,
+            "program": envelope.program,
+            "rationale": envelope.rationale,
+        }
+        state = _commit(state, EPISODE_PLANNED, planned)
         if not state.pending_execute:
             state = _commit(
                 state,
@@ -347,6 +353,9 @@ def run_job(
             continue
 
         host = _host(workspace, run_dir, forbidden, allowed_globs=globs, run_id=run_id)
+        host.episode = episode
+        host._space = space
+        space.record = lambda kind, payload: host.emit_event(kind, payload)
         program = prepare_program(envelope, str(run_dir / "dictionary"))
         critic = validate(
             program,
@@ -376,6 +385,7 @@ def run_job(
             "serial": serial,
         }
         trap: str | None = None
+        promoted: list[dict[str, str]] = []
         try:
             executed = run_forth(
                 host,
@@ -386,6 +396,7 @@ def run_job(
                 serial=serial,
             )
             last_graph = dict(executed.get("graph") or host.graph_metrics or {})
+            promoted = list(executed.get("promoted") or [])
         except ExecutionError as exc:
             last_graph = dict(getattr(host, "graph_metrics", {}) or {})
             backpressure = exc.code == "preflight" or exc.node is not None
@@ -404,11 +415,31 @@ def run_job(
             ARTIFACTS_APPLIED,
             {"keys": sorted(envelope.artifacts)},
         )
+        for item in promoted:
+            word = str(item.get("word") or "")
+            digest = str(item.get("sha256") or "")
+            if not word or not digest:
+                continue
+            state = _commit(
+                state,
+                DICTIONARY_PROMOTED,
+                {"episode": episode, "sha256": digest, "word": word},
+            )
         report = measure_workspace(workspace, claims)
-        state = _commit(state, GATES_MEASURED, {"report": report})
+        after, tree_after = capture_tree(workspace, store)
+        state = _commit(
+            state,
+            GATES_MEASURED,
+            {
+                "files": after,
+                "report": report,
+                "tree_after": tree_after,
+                "tree_before": episode_tree_before,
+            },
+        )
         state = _commit(state, BUDGET_CONSUMED, {"steps": 1})
-        after = snapshot(workspace)
         last_changed = changed_files(before, after)
+        episode_tree_before = tree_after
         bits = [envelope.rationale or "accepted"]
         if trap:
             bits.append(f"trap: {trap}")
@@ -435,8 +466,12 @@ def _finish(
     *,
     print_receipt: bool = True,
     receipt_extra: dict[str, Any] | None = None,
+    tree_before: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
-    after = snapshot(workspace)
+    store = open_store(run_dir)
+    after, tree_after = capture_tree(workspace, store)
+    if tree_before is None:
+        tree_before = intern_snapshot(store, workspace, before)
     changed = changed_files(before, after)
     receipt = {
         "changed_files": changed,
@@ -447,6 +482,8 @@ def _finish(
         "ok": decision.kind == DECISION_SUCCESS,
         "reason": decision.reason,
         "run_dir": str(run_dir),
+        "tree_after": tree_after,
+        "tree_before": tree_before,
         "workspace": str(workspace),
     }
     for key, value in (graph or {}).items():

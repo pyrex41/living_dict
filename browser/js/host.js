@@ -94,6 +94,17 @@ export async function sha256(data) {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
+function escapeNonAscii(text) {
+  // Python json.dumps(ensure_ascii=True) escapes every code unit >= 0x7f;
+  // JSON.stringify does not. Match Python so tree hashes agree across bodies.
+  return text.replace(/[\u007f-\uffff]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+
+export function treeCanonical(files) {
+  const keys = Object.keys(files || {}).sort();
+  return `{${keys.map((key) => `${escapeNonAscii(JSON.stringify(key))}:${escapeNonAscii(JSON.stringify(files[key]))}`).join(",")}}`;
+}
+
 function isoNow() {
   return new Date().toISOString();
 }
@@ -120,12 +131,34 @@ export class CapabilityHost {
     this._allowed_set = new Set(this.allowed_effects);
     this._effects_used = new Set();
     this._before = null;
+    this._objects = opts.objects instanceof Map ? opts.objects : new Map();
+    this._tree_before = null;
     this.runTestsHook = opts.runTestsHook || null;
     this.onChange = opts.onChange || null;
   }
 
+  async intern(data) {
+    const digest = await sha256(data);
+    if (!this._objects.has(digest)) this._objects.set(digest, data ?? "");
+    return digest;
+  }
+
+  async internTree(files) {
+    return this.intern(treeCanonical(files));
+  }
+
+  async internSnapshot(files) {
+    for (const [rel, text] of this.files.entries()) {
+      if (files[rel] !== undefined) await this.intern(text);
+    }
+    return this.internTree(files);
+  }
+
   async ready() {
-    if (this._before === null) this._before = await this.snapshot();
+    if (this._before === null) {
+      this._before = await this.snapshot();
+      this._tree_before = await this.internSnapshot(this._before);
+    }
     return this;
   }
 
@@ -227,7 +260,7 @@ export class CapabilityHost {
     if (typeof content !== "string") {
       throw new CapabilityError("type", "WRITE-FILE expected string content");
     }
-    const digest = await sha256(content);
+    const digest = await this.intern(content);
     const rec = { bytes: content.length, path: rel, sha256: digest };
     if (this.files.has(rel) && this.files.get(rel) === content) {
       this._tool("WRITE-FILE", { bytes: content.length, idempotent: true, path: rel });
@@ -280,6 +313,7 @@ export class CapabilityHost {
   async receipt(extra) {
     await this.ready();
     const after = await this.snapshot();
+    const treeAfter = await this.internSnapshot(after);
     const changed = this.changedFiles(this._before, after);
     const messages = [];
     for (const item of changed) {
@@ -297,6 +331,8 @@ export class CapabilityHost {
       task_id: this.task_id,
       workspace_after: await this.workspaceDigest(after),
       workspace_before: await this.workspaceDigest(this._before),
+      tree_after: treeAfter,
+      tree_before: this._tree_before,
       ...(extra || {}),
     };
     const target = this.receipt_path || "receipt.json";

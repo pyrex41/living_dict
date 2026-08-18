@@ -12,6 +12,7 @@ from .check import detect_check, run_workspace_check
 from .gates import run_gates as measure_gates
 from .policy import PathPolicy, changed_files, snapshot, workspace_digest
 from .receipts import write_receipt
+from .store import intern_blob, intern_snapshot, open_store
 from .trace import emit, make_event
 from .wave import METRIC_KEYS
 
@@ -40,6 +41,8 @@ class CapabilityHost:
     task_id: str = ""
     test_timeout_seconds: int = 60
     node_start_hook: Callable[[str], None] | None = None
+    node_death_hook: Callable[[str], None] | None = None
+    episode: int = 0
     _policy: PathPolicy = field(init=False, repr=False)
     _before: dict[str, str] = field(init=False, repr=False)
     _effects_used: set[str] = field(init=False, repr=False)
@@ -63,6 +66,10 @@ class CapabilityHost:
         self._write_receipt = True
         self._outer_policy: PathPolicy | None = None
         self.graph_metrics: dict[str, Any] = {}
+        self._store = open_store(workspace=self.workspace, receipt_path=self.receipt_path)
+        self._tree_before = intern_snapshot(self._store, self.workspace, self._before)
+        self._space = None
+        self._space_claim = None
 
     @classmethod
     def from_request(cls, request: dict[str, Any]) -> CapabilityHost:
@@ -99,6 +106,8 @@ class CapabilityHost:
         view.task_id = self.task_id
         view.test_timeout_seconds = self.test_timeout_seconds
         view.node_start_hook = None
+        view.node_death_hook = None
+        view.episode = self.episode
         view._policy = PathPolicy(self.workspace, view.allowed_globs, view.forbidden_globs)
         view._before = self._before
         view._effects_used = set()
@@ -107,6 +116,10 @@ class CapabilityHost:
         view._write_receipt = False
         view._outer_policy = self._outer_policy or self._policy
         view.graph_metrics = {}
+        view._store = self._store
+        view._tree_before = self._tree_before
+        view._space = getattr(self, "_space", None)
+        view._space_claim = None
         return view
 
     def emit_event(self, event_type: str, data: dict[str, Any] | None = None) -> None:
@@ -165,6 +178,12 @@ class CapabilityHost:
     def write_file(self, content: str, path: str) -> dict[str, Any]:
         self._require_effect("write")
         rel = self._rel(path)
+        claim = getattr(self, "_space_claim", None)
+        space = getattr(self, "_space", None)
+        if claim is not None and space is not None and not space.is_current(claim):
+            self._tool("WRITE-FILE", {"path": rel, "denied": True, "fence": True})
+            self.emit_event("execution.trap", {"reason": "fence", "detail": "stale generation", "path": rel})
+            raise CapabilityError("fence", "stale generation")
         reason = self._policy.write_allowed(rel)
         if reason is None and self._outer_policy is not None:
             reason = self._outer_policy.write_allowed(rel)
@@ -174,11 +193,13 @@ class CapabilityHost:
             raise CapabilityError("policy", reason)
         target = self._policy.resolve(path)
         data = content.encode("utf-8")
-        digest = hashlib.sha256(data).hexdigest()
+        digest = intern_blob(self._store, data)
         receipt = {"path": rel, "bytes": len(data), "sha256": digest}
-        if target.is_file() and target.read_bytes() == data:
-            self._tool("WRITE-FILE", {"path": rel, "bytes": len(data), "idempotent": True})
-            return receipt
+        if target.is_file():
+            existing = target.read_bytes()
+            if existing == data or hashlib.sha256(existing).hexdigest() == digest:
+                self._tool("WRITE-FILE", {"path": rel, "bytes": len(data), "idempotent": True})
+                return receipt
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         self._tool("WRITE-FILE", {"path": rel, "bytes": len(data)})
@@ -208,6 +229,7 @@ class CapabilityHost:
 
     def receipt(self, extra: dict[str, Any] | None = None) -> dict[str, Any]:
         after = snapshot(self.workspace)
+        tree_after = intern_snapshot(self._store, self.workspace, after)
         changed = changed_files(self._before, after)
         violations = [item for item in changed if self._policy.write_allowed(item) is not None]
         payload: dict[str, Any] = {
@@ -219,6 +241,8 @@ class CapabilityHost:
             "changed_files": changed,
             "effects_used": sorted(self._effects_used),
             "policy_violations": [f"path outside policy after the fact: {item}" for item in violations],
+            "tree_before": self._tree_before,
+            "tree_after": tree_after,
         }
         if self._last_check is not None:
             payload["check"] = self._last_check

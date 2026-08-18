@@ -140,7 +140,7 @@ function M.used_names(program, loaded)
   return used
 end
 
-function M.save_colon(dictionary_dir, vm)
+function M.save_colon(dictionary_dir, vm, objects_root)
   local dir = M.words_dir(dictionary_dir)
   if not dir or type(vm) ~= "table" or type(vm.colon) ~= "table" then
     return {}
@@ -155,6 +155,9 @@ function M.save_colon(dictionary_dir, vm)
         src = ": " .. key .. " " .. M.tokens_to_source(body) .. " ;\n"
       else
         src = ": " .. key .. " ;\n"
+      end
+      if objects_root and objects_root ~= "" then
+        hostmod.intern(objects_root, src)
       end
       local path = dir .. "/" .. key .. ".fs"
       local existing = hostmod.read_bytes(path)

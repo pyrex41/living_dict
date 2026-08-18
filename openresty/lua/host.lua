@@ -697,6 +697,66 @@ function M.write_bytes(path, data)
   return true
 end
 
+function M.objects_root(opts)
+  opts = opts or {}
+  local env = os.getenv("LIVINGDICT_OBJECTS")
+  if env and env ~= "" then
+    return env
+  end
+  if opts.run_dir and opts.run_dir ~= "" then
+    return opts.run_dir .. "/objects"
+  end
+  local receipt = opts.receipt_path
+  local workspace = opts.workspace
+  if receipt and receipt ~= "" then
+    local parent = receipt:match("^(.*)/[^/]+$") or "."
+    if workspace and workspace ~= "" then
+      if parent == workspace or parent:sub(1, #workspace + 1) == workspace .. "/" then
+        return workspace .. "/.livingdict-run/objects"
+      end
+    end
+    return parent .. "/objects"
+  end
+  return nil
+end
+
+function M.intern(root, data)
+  data = data or ""
+  local digest = M.sha256(data)
+  if not root or root == "" then
+    return digest
+  end
+  local dir = root .. "/" .. digest:sub(1, 2)
+  local dest = dir .. "/" .. digest
+  if M.is_file(dest) then
+    return digest
+  end
+  M.mkdir_p(dir)
+  local tmp = dest .. ".tmp." .. tostring(os.time()) .. "." .. tostring(math.random(1000000000))
+  local ok = M.write_bytes(tmp, data)
+  if not ok then
+    return digest
+  end
+  os.rename(tmp, dest)
+  return digest
+end
+
+function M.intern_tree(root, files)
+  return M.intern(root, M.encode_json(files))
+end
+
+function M.intern_snapshot(root, workspace, files)
+  if root and root ~= "" and workspace and files then
+    for rel, _ in pairs(files) do
+      local data = M.read_bytes(workspace .. "/" .. rel)
+      if data then
+        M.intern(root, data)
+      end
+    end
+  end
+  return M.intern_tree(root, files or {})
+end
+
 function M.is_dir(path)
   local d = io.open(path .. "/.", "r")
   if d then
@@ -910,12 +970,14 @@ function M.new(opts)
     _before = M.snapshot(workspace),
     _effects_used = {},
     _last_check = nil,
+    _objects_root = M.objects_root({ receipt_path = opts.receipt_path, workspace = workspace }),
   }, Host)
   local allowed = {}
   for _, e in ipairs(self.allowed_effects) do
     allowed[e] = true
   end
   self._allowed_set = allowed
+  self._tree_before = M.intern_snapshot(self._objects_root, workspace, self._before)
   return self
 end
 
@@ -1107,11 +1169,11 @@ function Host:write_file(content, path)
   if type(data) ~= "string" then
     fail("type", "WRITE-FILE expected string content")
   end
-  local digest = M.sha256(data)
+  local digest = M.intern(self._objects_root, data)
   local receipt = { bytes = #data, path = rel, sha256 = digest }
   if M.is_file(target) then
     local existing = M.read_bytes(target)
-    if existing == data then
+    if existing == data or M.sha256(existing) == digest then
       self:_tool("WRITE-FILE", { bytes = #data, idempotent = true, path = rel })
       return receipt
     end
@@ -1199,6 +1261,7 @@ end
 
 function Host:receipt(extra)
   local after = M.snapshot(self.workspace)
+  local tree_after = M.intern_snapshot(self._objects_root, self.workspace, after)
   local changed = M.changed_files(self._before, after)
   local violations = M.json_array({})
   local messages = M.json_array({})
@@ -1223,6 +1286,8 @@ function Host:receipt(extra)
     task_id = self.task_id,
     workspace_after = M.workspace_digest(after),
     workspace_before = M.workspace_digest(self._before),
+    tree_after = tree_after,
+    tree_before = self._tree_before,
     check = self._last_check,
   }
   if extra then
