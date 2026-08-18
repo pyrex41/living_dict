@@ -40,9 +40,12 @@ planner observes workspace
 Shen Accept | Reject              ← policy / unknown word
     │  Reject → record errors, next episode (not halt)
     ▼
+host interns artifact bodies          ← run_dir/objects; envelope stays full-body
 host applies envelope.artifacts       ← each key is a graph node
+    waves: out node.ready; workers take
 Forth runs remaining words
     RUN-GATES measures claims/build/look
+    receipts / gates.measured gain tree_* hashes
     │
     ▼
 reconcile: success if claims discharged, else plan until cap
@@ -65,9 +68,15 @@ to be the thing that creates the job stack. The host owns that.
 5. **Stop on discharged claims, or halt at the cap.** Cap is 32, and
    it is a halt, not success. Structural green is not success.
    Critic reject is backpressure (see [`GRAPH.md`](design/GRAPH.md)).
+   The sequential loop carries that on `events.jsonl`, not a second
+   tuple copy (see [`STORE.md`](design/STORE.md)).
 6. **Eval stays on six words.** Live host may grow words later
    (`READ-FILE?`, `RUN-CMD`). Missing-file traps stay for real
-   product reads.
+   product reads. There is no model-facing `TAKE` / `OUT`.
+7. **Job state includes a store, not a second log.** Blobs live under
+   `run_dir/objects` (or `LIVINGDICT_OBJECTS`). `as_of(seq)` rebuilds
+   the workspace tree from recorded hashes. Old runs without `objects/`
+   still replay.
 
 To score this loop against grok headless and pi headless on the same
 prompt, see [`COMPARE.md`](COMPARE.md).

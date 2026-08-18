@@ -14,7 +14,7 @@ S" app/config.py" USE-ARTIFACT S" app/config.py" WRITE-FILE
 
 | Path | Role |
 |---|---|
-| `lua/host.lua` | `READ-FILE` `LIST-DIR` `SEARCH` `WRITE-FILE` `RUN-TESTS` `RECEIPT` |
+| `lua/host.lua` | six words + intern (`objects/<aa>/<sha256>`); receipts gain `tree_*` |
 | `lua/forth.lua` | `S"` integers `: ;` `IF ELSE THEN` `USE-ARTIFACT` + host words; Lua `validate` mirror for comparison only |
 | `lua/bridge.lua` | boot shaken lua critic when `dist/critic/app.lua` exists; else full kernel + portable `shen/critic/validate.shen` |
 | `lua/agent.lua` | envelope → preflight → Forth → traces / receipts / checkpoint; HTTP `handle` |
@@ -31,15 +31,21 @@ S" app/config.py" USE-ARTIFACT S" app/config.py" WRITE-FILE
 
 ## Graph waves stay serial here
 
-Stage 2 wave parallelism (`--wave-workers`, `--serial`) lives in the Python
-CLI body (`livingdict.execute.execute_waves`). OpenResty `install_artifacts`
+Stage 2 wave parallelism (`--wave-workers`, `--serial`) and Layer B
+`take` dispatch live in the Python CLI body
+(`livingdict.execute.execute_waves`). OpenResty `install_artifacts`
 in `lua/agent.lua` remains Kahn width 1: one node after another, worker
 always `"host"`. That is intentional. Do not port ThreadPool-style waves
-into Lua until a compare shows the serial apply losing on `graph-01`.
+or a Linda space into Lua until a compare shows the serial apply losing
+on `graph-01`.
 
 Wave-boundary `RUN-GATES` after each Python wave is also Python-only.
 This host still applies artifacts, then interprets the concatenated
 program, then measures once.
+
+Layer A interning is on this host: artifact bodies and snapshots land
+under the run objects root, and `RECEIPT` carries additive
+`tree_before` / `tree_after`. No `TAKE` / `OUT` words.
 
 ## shen-lua (not vendored)
 

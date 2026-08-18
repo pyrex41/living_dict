@@ -70,7 +70,7 @@ browser/
   README.md
   index.html              one page, no bundler required for the UI
   css/app.css
-  js/host.js              six words; in-memory Map workspace (OPFS later)
+  js/host.js              six words; intern + tree hashes; in-memory Map (OPFS later)
   js/forth.js             hosted Forth + USE-ARTIFACT
   js/bridge.js            boot shaken critic once; call validate
   js/agent.js             envelope → preflight → Forth → traces/receipts

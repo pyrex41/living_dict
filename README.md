@@ -24,12 +24,15 @@ The eval suite must not have its oracles or protected tests edited to flatter an
 goal + observation
         │
         ▼
-  planner (not shipped)          ← only this may call a model
-        │  plan envelope
+  planner                        ← only this may call a model
+        │  plan envelope (full artifact bodies)
         ▼
   critic  validate → Accept | Reject
         │  Python livingdict.preflight    (harness/adapters/forth_shen.py)
         │  or shen-lua named validate     (openresty/)
+        ▼
+  host intern + wave take        ← CAS store; Linda space; not model-facing
+        │
         ▼
   Forth body runs tool words     ← no model in the loop
         │
@@ -39,7 +42,8 @@ goal + observation
 
 The envelope is `{ language, program, artifacts, rationale }`. Patches are
 artifact files. Forth says `S" app/config.py" USE-ARTIFACT … WRITE-FILE`, not a
-multiline string of Python.
+multiline string of Python. Interning is the host's job on receipt; the
+model still emits bytes. Spec: [`docs/design/STORE.md`](docs/design/STORE.md).
 
 ## Capabilities
 
@@ -92,22 +96,26 @@ Go / no-go, from [`eval/docs/EVALUATION.md`](eval/docs/EVALUATION.md):
 
 - Eval suite vendored; oracle 40/40, suite tests green.
 - Python host, Forth VM, envelopes, Python preflight, two ldeval adapters.
-- OpenResty host with a real shen-lua critic (selftest requires the kernel).
+- Event-sourced loop kernel; graph critic (declared `writes` / `depends_on`); Kahn waves.
+- Layer A store: `run_dir/objects/<aa>/<sha256>`, derived `facts()` / `as_of(seq)`, additive `tree_before` / `tree_after` on receipts and `gates.measured`. `LIVINGDICT_OBJECTS` may share one store across runs. Old events replay without a store.
+- Layer B space: in-process `out` / `rd` / `take` + leases behind wave dispatch. Scheduling records (`space.out` / `space.take` / `space.lease_expired`) are trace-only. Linda is the executor, never the planner. Layer C (cross-process) stays shut.
+- OpenResty host with a real shen-lua critic (selftest requires the kernel). Lua/JS intern the same blobs; OpenResty waves stay serial.
 - Canned `config-01` through `livingdict-resty` + ldeval succeeds (hidden verifier + policy).
 - `GET /health` and `POST /think` serve that same path.
 - Browser body specified in [`docs/BROWSER.md`](docs/BROWSER.md); built by `/shenscript-browser` (vanilla JS + `ratatoskr --target js --web`, same critic shaken `--target lua`).
 - Planner: grok-4.6 via SpaceXAI OAuth (`~/.grok/auth.json`) or `XAI_API_KEY`. Client default turn is a goal.
 - Live `/think` persists colon words under `dictionary_dir/words/` and reloads them next turn.
 - Live loop contract: [`docs/HARNESS.md`](docs/HARNESS.md). Host allocates job files before plan; every episode runs `RUN-GATES`.
+- SCUD child: `livingdict run` speaks `rho.run/v1` (`docs/SCUD.md`).
 - Side-by-side compare (grok headless / pi headless / this host): [`docs/COMPARE.md`](docs/COMPARE.md).
-- Not started: promotion evidence gates, ReAct/JSON/Python arms, Harbor / SWE-bench.
+- Not started: Layer C, promotion evidence gates, ReAct/JSON/Python arms, Harbor / SWE-bench.
 
 ## Commands
 
 Python 3.11+, `luajit`, and a shen-lua checkout (see [`openresty/README.md`](openresty/README.md)). OpenResty only for the HTTP host.
 
 ```bash
-make test                  # eval + harness + openresty + client
+make test                  # eval + harness + openresty + scudcheck
 make eval-oracle           # 40/40 expected
 make eval-resty-config-01  # ldeval config-01 via livingdict-resty
 make openresty-serve       # http://127.0.0.1:8080  (blocks)
@@ -133,7 +141,7 @@ python3 harness/adapters/forth_shen.py /path/to/request.json
 
 ```
 eval/                         benchmark (do not edit oracles)
-harness/src/livingdict/       Python ABI
+harness/src/livingdict/       Python ABI (host, Forth, kernel, store, space)
 harness/adapters/             forth, forth-shen
 harness/shen/                 portable spec + port decision
 openresty/lua/                host, Forth, shen-lua bridge, agent
@@ -141,13 +149,16 @@ openresty/shen/               contracts.shen + preflight.shen
 openresty/bin/livingdict-resty
 openresty/examples/           canned envelopes
 docs/ARCHITECTURE.md
-shen/critic/              portable eval-free critic (shake entry: validate.shen)
-bifrost.suite.json        critic fixture (marker ALL PASS)
-browser/                  vanilla JS host + shaken ShenScript critic
+docs/design/STORE.md          Layer A/B spec of record (C deferred)
+docs/design/GRAPH.md          envelope nodes + Kahn waves
+docs/SCUD.md                  rho.run/v1 child
+shen/critic/                  portable eval-free critic (shake entry: validate.shen)
+bifrost.suite.json            critic fixture (marker ALL PASS)
+browser/                      vanilla JS host + shaken ShenScript critic
 ```
 
 ## What this is not (yet)
 
-A planner, automatic word promotion, WAForth, multi-agent dictionaries, Harbor,
-or SWE-bench. The IR and the OpenResty critic are in-tree; those next pieces
-are not.
+Layer C (shared space, obligation tuples), automatic promotion evidence gates,
+WAForth, Harbor, or SWE-bench. The planner, IR, store, in-process space, and
+OpenResty critic are in-tree; those next pieces are not.

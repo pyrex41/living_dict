@@ -2,6 +2,9 @@
 
 SCUD owns goal/DAG orchestration; livingdict owns bounded episode
 execution; the Shen critic is the policy evaluator at both seams.
+The in-process store and tuple space (`docs/design/STORE.md`) are
+host-side: they do not change this wire. Layer C (a shared space, scud
+obligations as tuples) stays shut.
 
 SCUD never writes its in-process Go `executor.Request` to the child.
 The child reads one `rho.run/v1` `wireRequest` JSON object and writes
@@ -63,7 +66,7 @@ stdin is written.
 |---|---|---|
 | `run.started` | `{provider, id}` | first event |
 | kernel kinds (`episode.planned`, `critic.accepted`, `artifacts.applied`, `gates.measured`, …) | kernel payload | pass-through; unknown types are valid |
-| `livingdict.receipt` | CLI receipt (`changed_files`, `decision`, `request_sha256`, …) | pre-terminal; **not** the `run.completed` payload |
+| `livingdict.receipt` | CLI receipt (`changed_files`, `decision`, `request_sha256`, additive `tree_before` / `tree_after`, …) | pre-terminal; **not** the `run.completed` payload |
 | `message.delta` | `{text}` | concatenated by the parent |
 | `run.completed` | `{status: "succeeded", usage?}` | only success terminal; extra keys ignored; receipt-shaped data is invalid |
 | `run.failed` | `{code, message}` | protocol-valid failure; process still exits 0 |

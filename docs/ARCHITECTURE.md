@@ -9,7 +9,7 @@ in the loop while words run.
 
 ```
                     ┌─────────────────────────────────────┐
-  goal + observe    │  Planner (not shipped)              │
+  goal + observe    │  Planner (client/planner.py)        │
  ──────────────────►│  emits a plan envelope              │
                     └─────────────────┬───────────────────┘
                                       │ { language, program, artifacts }
@@ -23,6 +23,8 @@ in the loop while words run.
                     ┌─────────────────────────────────────┐
                     │  Capability host (only I/O)         │
                     │  Forth VM runs READ / WRITE / …     │
+                    │  intern blobs/trees (Layer A)       │
+                    │  wave take from in-process space    │
                     │  policy + JSONL traces + receipts   │
                     └─────────────────┬───────────────────┘
                                       ▼
@@ -36,6 +38,8 @@ Two bodies share that ABI:
 | Host | `livingdict.host.CapabilityHost` | `lua/host.lua` |
 | Forth | `livingdict.forth.ForthVM` | `lua/forth.lua` |
 | Critic | `livingdict.preflight.validate` | `shen/preflight.shen` via shen-lua |
+| Store | `livingdict.store` (`run_dir/objects`) | `host.intern` / `intern_tree` |
+| Space | `livingdict.space` (wave `take`) | — (waves stay serial) |
 | Adapter | `adapters/forth.py`, `forth_shen.py` | `bin/livingdict-resty` |
 | HTTP | — | `GET /health`, `POST /think` |
 
@@ -87,6 +91,11 @@ Shen does not write files, does not call an LLM, and does not execute the plan.
 Writes must match `allowed_globs` and must not match `forbidden_globs`. Paths
 must stay inside the workspace. `RUN-TESTS` sets `PYTHONDONTWRITEBYTECODE=1`.
 Identical `WRITE-FILE` bytes are idempotent (no second `mutation.applied`).
+The host interns artifact bodies and workspace snapshots into
+`run_dir/objects/<aa>/<sha256>` (override with `LIVINGDICT_OBJECTS`).
+Receipts and `gates.measured` gain additive `tree_before` / `tree_after`
+hashes. `facts(events)` / `as_of(seq)` are derived views; events.jsonl
+stays the only transaction log. See [`design/STORE.md`](design/STORE.md).
 
 ldeval snapshots the workspace after the adapter exits. Sidecar files
 (checkpoints, traces, Shen caches, `.pyc`) must not land in the task tree
@@ -137,12 +146,23 @@ lives in the run dir, not the product tree. The host appends
 `RUN-GATES` if the program forgot. Structural green is not success.
 Cap (32) is a halt. `POST /think` is one episode; a reject is 200.
 
+## Graph waves
+
+When the envelope carries `nodes`, the Python CLI plans Kahn waves
+(`livingdict.wave`) and dispatches each ready node through an in-process
+Linda space (`out` of `{kind: node.ready, …}`, workers `take` with a
+lease). Wave-boundary `RUN-GATES` stay. OpenResty still applies nodes
+serially. The critic never consults the space: declared `writes` /
+`depends_on` are checked before any take. See [`design/GRAPH.md`](design/GRAPH.md)
+and [`design/STORE.md`](design/STORE.md).
+
 ## What stays out
 
 ReAct / JSON-plan / Python-plan arms, promotion evidence gates, Forth `PAR` /
-`FORK` words, Harbor, SWE-bench. Graph *events* (`graph.node.start` /
-`finish`) fire when the host applies `envelope.artifacts`. See
-[`design/GRAPH.md`](design/GRAPH.md).
+`FORK` words, a query language or GC over the store, model-facing `TAKE` /
+`OUT`, Layer C (cross-process space, obligation tuples), Harbor, SWE-bench.
+Graph *events* (`graph.node.start` / `finish`) fire when the host applies
+`envelope.artifacts`. `space.*` records are traces, not kernel kinds.
 
 The browser body is specified in [`BROWSER.md`](BROWSER.md) and built by
 the `shenscript-browser` workflow: vanilla JS + a Ratatoskr-shaken

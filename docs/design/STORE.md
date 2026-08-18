@@ -141,7 +141,12 @@ the Layer C gates open.
 
 ## Staging and exit tests
 
-| stage | ships | exit test |
-|---|---|---|
-| A | `store.py` (blobs, trees, intern, `as_of`), events/receipts reference hashes, dictionary provenance facts | full suite green; fizzbuzz + graph-01 e2e byte-identical external behavior; `as_of(seq)` tree equals the recorded snapshot at every episode; interning idempotent |
-| B | `space.py` (out/rd/take + leases), wave dispatch and backpressure routed through it, scheduling recorded | serial vs space-dispatched trees byte-identical; N contending workers, exactly one take per tuple; injected worker death → lease expiry → sibling completes it; scudcheck and ldeval contracts unchanged |
+| stage | status | ships | exit test |
+|---|---|---|---|
+| A | **shipped** | `store.py` (blobs, trees, intern, `as_of`), events/receipts reference hashes, `dictionary.promoted` facts | full suite green; fizzbuzz + graph-01 e2e byte-identical external behavior; `as_of(seq)` tree equals the recorded snapshot at every episode; interning idempotent |
+| B | **shipped** | `space.py` (out/rd/take + leases), wave dispatch via `take`, `space.*` traces | serial vs space-dispatched trees byte-identical; N contending workers, exactly one take per tuple; injected worker death → lease expiry → sibling completes it; scudcheck and ldeval contracts unchanged |
+| C | deferred | shared space / obligation tuples | gated on A+B byte-identical behavior, a live compare win, and hypothesis-5 numbers |
+
+Sequential-loop backpressure stays on `events.jsonl`. `critic.reject` /
+`gate.result` tuple kinds exist in the type set and are reserved for
+Layer C; they are not a second copy of the kernel log.

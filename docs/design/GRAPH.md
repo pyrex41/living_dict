@@ -78,7 +78,7 @@ SCUD is a good **scheduler**. It is not a plan language.
 | graph engineering | SCUD | Living Dictionary |
 |---|---|---|
 | node | task + Rho agent | artifact write, or a colon word |
-| edge | `@edges` / `depends_on` | Forth sequence, `IF`, later a wave over write-sets |
+| edge | `@edges` / `depends_on` | Forth sequence, `IF`, Kahn wave over disjoint write-sets |
 | orchestrator | `scud swarm` | planner emits one envelope, then is off |
 | worker | model in a tool loop | host word / VM, no model |
 | shared state | git working tree | workspace snapshot |
@@ -112,6 +112,7 @@ a critic.
 a node. The host applies them (Kahn width 1, or in parallel when
 write-sets are disjoint). Emit `graph.node.start` / `graph.node.finish`
 on every write. `RUN-GATES` is the verify node after the wave.
+**Shipped** on the Python CLI.
 
 **Step 2 — reuse is a named subgraph.** Colon words that survive
 Accept persist. The next episode calls `NORMALIZE-CONFIG`, not
@@ -120,10 +121,12 @@ only host prelude, not a warm session’s folklore.
 
 **Step 3 — eval `graph_coordination` becomes live.** `task_graph.json`
 is the SCUD DAG in miniature (independent modules, then a shared
-hotspot). The host may run disjoint write-sets in one wave. Registry
-waits. Verify last. Parallelism is a scheduler fact, not a new Forth
-dialect. Do not add `PAR` / `FORK` until a compare shows sequential
-artifact apply losing to grok/pi on `graph-01`.
+hotspot). The host runs disjoint write-sets in one wave: it `out`s
+`node.ready` tuples and workers `take` them (`livingdict.space`).
+Registry waits. Verify last. Parallelism is a scheduler fact, not a
+new Forth dialect. Do not add `PAR` / `FORK` until a compare shows
+sequential artifact apply losing to grok/pi on `graph-01`.
+**Shipped** on the Python CLI; OpenResty stays Kahn width 1.
 
 **Step 4 — wave-boundary backpressure.** After a wave, `RUN-GATES`.
 Failed claims schedule a repair episode with the discharge report,

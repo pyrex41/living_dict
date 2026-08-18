@@ -17,13 +17,24 @@ python3 adapters/forth_shen.py /path/to/request.json
 
 | Module | Role |
 |---|---|
-| `host.py` | six capabilities + glob/effect policy |
+| `host.py` | six capabilities + glob/effect policy + intern |
 | `forth.py` | hosted Forth |
-| `preflight.py` | Python critic |
+| `preflight.py` | Python critic (declared topology; never the space) |
 | `envelope.py` | `{ language, program, artifacts }` |
-| `execute.py` / `adapter.py` | run + ldeval glue |
+| `kernel.py` | event-sourced reducer; `events.jsonl` is the tx log |
+| `store.py` | CAS blobs/trees, `facts()`, `as_of(seq)` |
+| `space.py` | in-process `out` / `rd` / `take` + leases |
+| `wave.py` / `execute.py` | Kahn waves; dispatch via `take` |
+| `cli.py` | `livingdict -p` loop; additive `tree_*` on receipts |
+| `rho.py` / `runner.py` | `rho.run/v1` child (`livingdict run`) |
+| `adapter.py` | ldeval glue |
 | `adapters/forth.py` | no preflight |
 | `adapters/forth_shen.py` | Python preflight |
+
+`LIVINGDICT_OBJECTS` points several runs at one store. Default is
+`run_dir/objects`. Corrupt blobs raise `StoreCorruption` on read.
+`dictionary.promoted` is a kernel kind so word provenance is a derived
+fact. Scheduling records (`space.*`) are traces, not kernel kinds.
 
 `RUN-TESTS` sets `PYTHONDONTWRITEBYTECODE=1` so ldeval does not see `__pycache__`
 as a policy violation.

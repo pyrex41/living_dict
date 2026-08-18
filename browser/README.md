@@ -9,7 +9,7 @@ Vanilla JS. No bundler, no React/Vue/Svelte/Elm, no planner, no `XAI_API_KEY`.
 |---|---|
 | `index.html` | one page |
 | `css/app.css` | small machine, not a dashboard |
-| `js/host.js` | six words; in-memory Map (localStorage soul) |
+| `js/host.js` | six words; in-memory Map (localStorage soul); intern + `tree_*` |
 | `js/forth.js` | hosted Forth + `USE-ARTIFACT` |
 | `js/bridge.js` | boot shaken critic; call `validate` |
 | `js/agent.js` | envelope → preflight → Forth |
@@ -19,6 +19,10 @@ Vanilla JS. No bundler, no React/Vue/Svelte/Elm, no planner, no `XAI_API_KEY`.
 | `test/node-selftest.mjs` | SQUARE, artifact write, gated forbidden write |
 
 `RUN-TESTS` cannot spawn `python -m unittest` in the tab. The demo envelope omits it. An optional in-tab `runTestsHook` may be attached on the host.
+
+`host.js` interns artifact and snapshot bytes the same way as Python/Lua
+(canonical JSON trees, `ensure_ascii` so hashes agree). Receipts gain
+`tree_before` / `tree_after`. There is no in-tab tuple space.
 
 ## Shake the critic
 
