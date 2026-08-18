@@ -28,6 +28,10 @@ livingdict run --request-file - --events jsonl
 - stdout: JSONL events consumed by `ConsumeRhoV1`.
 - stderr: captured by the parent; never parsed.
 - cwd: parent `cmd.Dir` / livingdict `--cwd`. Working directory is **not** a JSON field.
+  Bare-cwd fallback is gated: without `context.working_dir` or an explicit `--cwd`,
+  the process cwd is used only when it lies inside an absolute `grant.write_roots`
+  / `read_roots` entry (SCUD's normal shape). Otherwise the run refuses with
+  `invalid_request: workspace is ambiguous` before any effect.
 - `--planner-cmd` file args are resolved from the invocation directory (then the livingdict repo), **before** `--cwd` / `os.chdir`. The planner process still runs with cwd = workspace.
 - exit 0 after a single terminal event, including `run.failed` / `run.cancelled`.
 
@@ -43,7 +47,7 @@ livingdict run --request-file - --events jsonl
 | `limits` | always present (may be `{}`); `max_turns` caps episodes; `deadline` cancels |
 | `grant.grant_id` | recorded on the grant object; not interpreted as a path |
 | `grant.expires_at` | RFC3339 UTC; refuse if missing in require-mode or if it is in the past |
-| `grant.providers`, `grant.models`, `grant.tools` | carried on the grant; tools are not a separate JSON field |
+| `grant.providers`, `grant.models`, `grant.tools` | enforced when non-empty: a provider/model outside the list refuses with `grant_invalid`. Without `--planner-cmd`, only providers the default live planner serves (`xai`) are accepted — anything else refuses with `provider_unmapped` before any planner spawn |
 | `grant.read_roots`, `grant.write_roots` | mapped to workspace-relative allowed globs |
 | `grant.network.mode` | carried; default from SCUD is `provider_only` |
 | `grant.witness` | required when `RHO_PROTOCOL_GRANT_MODE=require` |
@@ -126,9 +130,13 @@ uses the critic's typed reason string (`effects not allowed: …`,
 `forbidden path: …`, …). Evaluate errors (malformed stdin) exit
 non-zero; a deny is exit 0 with `allowed: false`.
 
-Stock SCUD only sends the four ref strings. Empty program + default
-`read,write,exec` / `**` passes this seam; the episode critic still
-runs inside `livingdict run`.
+Deny-by-default: `attributes.allowed_globs` (or `globs`) and
+`attributes.allowed_effects` (or `effects`) are required. Stock SCUD
+sends only the four ref strings, and that alone is **denied** — the
+integration must map the obligation's grant onto explicit globs and
+effects. A policy seam must never widen a request it does not
+understand to `**`. The episode critic still runs inside
+`livingdict run` regardless.
 
 ## Drive one obligation by hand
 

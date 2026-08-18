@@ -22,7 +22,8 @@ def _env() -> dict[str, str]:
 
 
 class PolicyEvaluateTests(unittest.TestCase):
-    def test_execute_with_stock_attributes_is_allowed(self) -> None:
+    def test_execute_without_explicit_globs_is_denied(self) -> None:
+        """Deny-by-default: stock scud refs alone carry no authority."""
         decision = evaluate(
             {
                 "run_id": "r1",
@@ -36,9 +37,38 @@ class PolicyEvaluateTests(unittest.TestCase):
                 },
             }
         )
-        self.assertTrue(decision["allowed"])
-        self.assertEqual(decision["reason"], "accepted")
-        self.assertIn("allowed_effects", decision["constraints"])
+        self.assertFalse(decision["allowed"])
+        self.assertIn("allowed_globs is required", decision["reason"])
+        self.assertEqual(decision["constraints"], {})
+
+    def test_unrecognized_glob_attribute_name_is_denied_not_widened(self) -> None:
+        """A caller using the wrong key must not get a blanket `**` allow."""
+        decision = evaluate(
+            {
+                "run_id": "r1",
+                "action": "execute",
+                "resource": "ob-2",
+                "attributes": {
+                    "goal_id": "g",
+                    "write_globs": "../outside/**",
+                    "effects": "read,write",
+                },
+            }
+        )
+        self.assertFalse(decision["allowed"])
+        self.assertIn("allowed_globs is required", decision["reason"])
+
+    def test_execute_without_effects_is_denied(self) -> None:
+        decision = evaluate(
+            {
+                "run_id": "r1",
+                "action": "execute",
+                "resource": "ob-3",
+                "attributes": {"goal_id": "g", "allowed_globs": "src/**"},
+            }
+        )
+        self.assertFalse(decision["allowed"])
+        self.assertIn("allowed_effects is required", decision["reason"])
 
     def test_execute_denies_disallowed_effect_with_critic_reason(self) -> None:
         decision = evaluate(

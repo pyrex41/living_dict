@@ -36,11 +36,35 @@ def _read_request(path: str) -> Any:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def _workspace(req: WireRequest) -> Path:
+def _cwd_under_absolute_roots(grant: dict[str, Any], cwd: Path) -> bool:
+    """SCUD transmits the workspace as cmd.Dir, corroborated by absolute grant roots."""
+    for key in ("write_roots", "read_roots"):
+        roots = grant.get(key)
+        if not isinstance(roots, list):
+            continue
+        for root in roots:
+            if not isinstance(root, str) or not os.path.isabs(root):
+                continue
+            try:
+                resolved = Path(root).resolve()
+            except OSError:
+                continue
+            if cwd == resolved or resolved in cwd.parents:
+                return True
+    return False
+
+
+def _workspace(req: WireRequest, *, explicit_cwd: bool = False) -> Path:
     context_dir = req.context.get("working_dir")
     if isinstance(context_dir, str) and context_dir.strip():
         return Path(context_dir).expanduser().resolve()
-    return Path.cwd().resolve()
+    cwd = Path.cwd().resolve()
+    if explicit_cwd or _cwd_under_absolute_roots(req.grant, cwd):
+        return cwd
+    raise WireError(
+        "workspace is ambiguous: set context.working_dir, pass --cwd, or run with "
+        "cwd inside an absolute grant write_roots/read_roots entry"
+    )
 
 
 def _max_turns(req: WireRequest, override: int | None) -> int:
@@ -105,6 +129,39 @@ def _fail(stream: EventStream, code: str, message: str, receipt: dict[str, Any] 
     return 0
 
 
+LIVE_PLANNER_PROVIDERS = ("xai",)
+
+
+def _grant_list(grant: dict[str, Any], key: str) -> list[str]:
+    value = grant.get(key)
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
+def _provider_gate(req: WireRequest, planner_cmd: list[str] | None) -> tuple[str, str] | None:
+    """Refuse unrecognized providers before any planner can be spawned.
+
+    grant.providers / grant.models are enforced whenever present. Without an
+    explicit --planner-cmd, only providers the default live planner actually
+    serves are accepted — an unknown provider must never silently route to
+    the live model.
+    """
+    providers = _grant_list(req.grant, "providers")
+    if providers and req.model_provider not in providers:
+        return "grant_invalid", f"provider {req.model_provider!r} is not in grant.providers"
+    models = _grant_list(req.grant, "models")
+    if models and req.model_id not in models:
+        return "grant_invalid", f"model {req.model_id!r} is not in grant.models"
+    if not planner_cmd and req.model_provider not in LIVE_PLANNER_PROVIDERS:
+        return (
+            "provider_unmapped",
+            f"no planner for provider {req.model_provider!r}: pass --planner-cmd "
+            f"or use a provider in {', '.join(LIVE_PLANNER_PROVIDERS)}",
+        )
+    return None
+
+
 def _grant_receipt(digest: str, code: str, message: str) -> dict[str, Any]:
     payload = {
         "decision": code,
@@ -126,6 +183,7 @@ def execute_request(
     wave_workers: int = 4,
     serial: bool = False,
     max_turns: int | None = None,
+    explicit_cwd: bool = False,
 ) -> int:
     stream = EventStream(req.run_id, out)
     stream.emit(
@@ -151,13 +209,17 @@ def execute_request(
                 "grant expires_at is in the past",
                 _grant_receipt(digest, "grant_expired", "grant expires_at is in the past"),
             )
+        gate = _provider_gate(req, planner_cmd)
+        if gate is not None:
+            code, message = gate
+            return _fail(stream, code, message, _grant_receipt(digest, code, message))
         deadline = parse_rfc3339(req.limits.get("deadline"))
         if deadline is not None and utc_now() >= deadline:
             _emit_limit_budget(stream, req)
             stream.emit("run.cancelled", {"reason": "deadline"})
             return 0
         _emit_limit_budget(stream, req)
-        workspace = _workspace(req)
+        workspace = _workspace(req, explicit_cwd=explicit_cwd)
         workspace.mkdir(parents=True, exist_ok=True)
         write_globs = globs_from_roots(req.grant.get("write_roots"), workspace)
         read_globs = globs_from_roots(req.grant.get("read_roots"), workspace)
@@ -292,4 +354,5 @@ def run_main(argv: list[str] | None = None) -> int:
         wave_workers=args.wave_workers,
         serial=args.serial,
         max_turns=args.max_turns,
+        explicit_cwd=args.cwd is not None,
     )

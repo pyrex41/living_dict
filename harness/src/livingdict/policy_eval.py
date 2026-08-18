@@ -3,6 +3,12 @@
 Reads one JSON object {run_id, action, resource, attributes} and writes
 {allowed, reason, constraints}. Action `execute` is allowed iff the
 attributes' program/globs/effects pass livingdict.preflight.validate.
+
+Deny-by-default: a request whose attributes carry no explicit
+`allowed_globs`/`globs` and `allowed_effects`/`effects` is denied. A policy
+seam must never invent authority the caller did not state — an unrecognized
+attribute name silently widening to `**` is how an authorization gate fails
+open.
 """
 
 from __future__ import annotations
@@ -32,8 +38,12 @@ def evaluate(request: Any) -> dict[str, Any]:
         return _deny("resource is required")
 
     program = attrs.get("program") or ""
+    allowed_globs = _globs(attrs, "allowed_globs", "globs", default=())
+    if not allowed_globs:
+        return _deny("attributes.allowed_globs is required (deny-by-default)")
     allowed_effects = _effects(attrs)
-    allowed_globs = _globs(attrs, "allowed_globs", "globs", default=("**",))
+    if not allowed_effects:
+        return _deny("attributes.allowed_effects is required (deny-by-default)")
     forbidden_globs = _globs(attrs, "forbidden_globs", default=())
     artifacts = _json_map(attrs.get("artifacts"))
     nodes = _json_list(attrs.get("nodes"))
@@ -107,7 +117,7 @@ def _effects(attrs: dict[str, str]) -> set[str]:
     elif "effects" in attrs:
         raw = attrs["effects"]
     else:
-        return {"read", "write", "exec"}
+        return set()
     return {item for item in _split_list(raw)}
 
 

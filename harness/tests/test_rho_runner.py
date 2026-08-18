@@ -373,6 +373,89 @@ class RunnerContractTests(unittest.TestCase):
         tmp.cleanup()
 
 
+class WorkspaceAndProviderGateTests(unittest.TestCase):
+    def _run(self, request: dict, cwd: Path, *, planner: bool = True) -> subprocess.CompletedProcess[str]:
+        argv = [sys.executable, str(CLI), "run", "--request-file", "-", "--events", "jsonl"]
+        if planner:
+            argv += ["--planner-cmd", sys.executable, str(PLANNER)]
+        return subprocess.run(
+            argv,
+            input=json.dumps(request),
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            check=False,
+            env=_env(),
+        )
+
+    def test_ambiguous_workspace_is_refused_before_any_effect(self) -> None:
+        """No context.working_dir, no --cwd, glob roots: never fall back to bare cwd."""
+        tmp = tempfile.TemporaryDirectory()
+        somewhere = Path(tmp.name) / "somewhere"
+        somewhere.mkdir()
+        request = _canned_request("ws-ambiguous", "Write fizzbuzz.", Path(tmp.name) / "ws")
+        request["grant"]["read_roots"] = ["**"]
+        request["grant"]["write_roots"] = ["**"]
+        proc = self._run(request, somewhere)
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        result = consume_rho_v1(proc.stdout, "ws-ambiguous")
+        self.assertEqual(result["outcome"], "failed")
+        self.assertEqual(result["failure"]["code"], "invalid_request")
+        self.assertIn("workspace is ambiguous", result["failure"]["message"])
+        self.assertEqual(sorted(p.name for p in somewhere.iterdir()), [])
+        tmp.cleanup()
+
+    def test_context_working_dir_wins_over_cwd(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        somewhere = Path(tmp.name) / "somewhere"
+        somewhere.mkdir()
+        workspace = Path(tmp.name) / "ws"
+        workspace.mkdir()
+        request = _canned_request("ws-context", "Write fizzbuzz.", workspace)
+        request["context"] = {"working_dir": str(workspace)}
+        proc = self._run(request, somewhere)
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        result = consume_rho_v1(proc.stdout, "ws-context")
+        self.assertEqual(result["outcome"], "completed")
+        self.assertTrue((workspace / "fizzbuzz.py").is_file())
+        self.assertEqual(sorted(p.name for p in somewhere.iterdir()), [])
+        tmp.cleanup()
+
+    def test_provider_outside_grant_providers_is_refused(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        workspace = Path(tmp.name) / "ws"
+        workspace.mkdir()
+        request = _canned_request("provider-grant", "Write fizzbuzz.", workspace)
+        request["model"] = {"provider": "other", "id": "fizzbuzz"}
+        proc = self._run(request, workspace)
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        result = consume_rho_v1(proc.stdout, "provider-grant")
+        self.assertEqual(result["outcome"], "failed")
+        self.assertEqual(result["failure"]["code"], "grant_invalid")
+        self.assertIn("grant.providers", result["failure"]["message"])
+        self.assertFalse((workspace / "fizzbuzz.py").exists())
+        tmp.cleanup()
+
+    def test_unknown_provider_never_routes_to_live_planner(self) -> None:
+        """Without --planner-cmd, an unrecognized provider must refuse, not spend model calls."""
+        tmp = tempfile.TemporaryDirectory()
+        workspace = Path(tmp.name) / "ws"
+        workspace.mkdir()
+        request = _canned_request("provider-unmapped", "Write fizzbuzz.", workspace)
+        request["model"] = {"provider": "canned", "id": "fixture"}
+        request["grant"].pop("providers", None)
+        request["grant"].pop("models", None)
+        proc = self._run(request, workspace, planner=False)
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        result = consume_rho_v1(proc.stdout, "provider-unmapped")
+        self.assertEqual(result["outcome"], "failed")
+        self.assertEqual(result["failure"]["code"], "provider_unmapped")
+        self.assertIn("no planner for provider", result["failure"]["message"])
+        self.assertNotIn("episode.planned", [event["type"] for event in result["events"]])
+        self.assertFalse((workspace / "fizzbuzz.py").exists())
+        tmp.cleanup()
+
+
 class GrantGateTests(unittest.TestCase):
     def test_require_mode_refuses_without_witness(self) -> None:
         tmp = tempfile.TemporaryDirectory()
