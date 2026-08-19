@@ -54,6 +54,11 @@ It also embeds: `livingdict run` speaks a bounded-runner protocol
 ([SCUD](docs/SCUD.md) `rho.run/v1` — stdin request, JSONL events, signed
 grants), and `livingdict policy` is a deny-by-default policy evaluator.
 
+**See it happen:** [examples/shen-todo](examples/shen-todo/) is one real,
+unedited session — a five-round contract negotiation, an honest red on
+episode 1, a working HTTP todo service on episode 2, and the model caught
+planting strings to game the one weak claim in the contract.
+
 The rest of this README is the reference: the lab, the bodies, the ABI.
 
 ## Three trees

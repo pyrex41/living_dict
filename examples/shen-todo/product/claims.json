@@ -1,0 +1,39 @@
+{
+  "claims": [
+    {
+      "id": "backend-todo-api",
+      "kind": "source",
+      "any": ["todo", "get-todos", "add-todo", "shen"],
+      "path": "backend/todo.shen",
+      "min_bytes": 200
+    },
+    {
+      "id": "backend-http",
+      "kind": "source",
+      "any": ["handle", "route", "todo"],
+      "path": "backend/main.shen",
+      "min_bytes": 200
+    },
+    {
+      "id": "frontend-shenscript",
+      "kind": "source",
+      "any": ["todo", "render", "shenscript"],
+      "path": "frontend/todo.shen",
+      "min_bytes": 200
+    },
+    {
+      "id": "bifrost-shake",
+      "kind": "source",
+      "any": ["bifrost", "--shake", "shen-go"],
+      "path": "scripts/setup.sh",
+      "min_bytes": 200
+    },
+    {
+      "id": "gomod",
+      "kind": "source",
+      "any": ["module"],
+      "path": "go.mod",
+      "min_bytes": 20
+    }
+  ]
+}

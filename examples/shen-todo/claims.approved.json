@@ -1,0 +1,50 @@
+{
+  "claims": [
+    {
+      "any": [
+        "module",
+        "pyrex41"
+      ],
+      "id": "gomod",
+      "kind": "source",
+      "min_bytes": 20,
+      "path": "go.mod"
+    },
+    {
+      "command": "go build -o /tmp/shengo-web .",
+      "id": "build",
+      "kind": "check",
+      "timeout_seconds": 60
+    },
+    {
+      "command": "grep -RqiE 'pyrex41/bifrost|github.com/pyrex41/bifrost' . && grep -RqiE -- '--shake|bifrost --shake' .",
+      "id": "bifrost_used",
+      "kind": "check",
+      "timeout_seconds": 60
+    },
+    {
+      "command": "grep -RqiE 'pyrex41/ShenScript|github.com/pyrex41/ShenScript' .",
+      "id": "shenscript",
+      "kind": "check",
+      "timeout_seconds": 60
+    },
+    {
+      "command": "find . -name '*.shen' | grep -q . && grep -RqiE 'todo' --include='*.shen' . && grep -RqiE 'html|http|web|frontend|dom|page|route' --include='*.shen' .",
+      "id": "shen_todo",
+      "kind": "check",
+      "timeout_seconds": 60
+    },
+    {
+      "command": "go test ./...",
+      "id": "go_test",
+      "kind": "check",
+      "timeout_seconds": 60
+    },
+    {
+      "command": "pkill -f /tmp/shengo-web >/dev/null 2>&1 || true; /tmp/shengo-web >/tmp/shengo-web.log 2>&1 & sleep 2; curl -sf http://127.0.0.1:8080/ | grep -qiE 'todo'",
+      "id": "http_ok",
+      "kind": "check",
+      "timeout_seconds": 60
+    }
+  ]
+}
