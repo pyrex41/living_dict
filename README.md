@@ -1,12 +1,60 @@
 # Living Dictionary
 
-A coding agent whose plan is a Forth program. Skills are colon definitions.
-The model writes (or rewrites) the program; it is not in the loop while words
-run. Shen (or a Shen-shaped critic) rejects a bad plan before it touches the
-repo.
+**A coding agent that plans, then proves it.** You give it a goal. It
+negotiates the acceptance criteria with you, writes the entire change as
+one inspectable program, gets that program past a non-LLM safety critic
+before a single file is touched, executes it with the model switched off,
+and only claims success when *your* approved checks actually pass — build
+it, test it, run it, curl it.
 
-This repository is the experiment: a 40-task lab, a Python harness, and an
-OpenResty host that runs the same ABI on shen-lua.
+Every other coding agent is a model in a tool loop: it acts one call at a
+time, "done" means the model stopped talking, and the transcript is the
+only record. Living Dictionary inverts all three:
+
+- **The plan is a program, not a conversation.** The model emits one
+  envelope — full file contents plus a tiny Forth control program over a
+  dependency graph of nodes. Independent nodes run in parallel waves;
+  write conflicts are impossible by construction, not detected after.
+- **A critic gates every plan before any I/O.** A deterministic,
+  non-LLM validator (Python, or Shen on the OpenResty/browser bodies)
+  rejects bad stack effects, forbidden paths, cycles, and out-of-node
+  writes. Rejection is backpressure — the errors feed the next attempt —
+  and an identical resubmitted plan is fingerprint-blocked, so the loop
+  cannot thrash.
+- **"Done" is a contract you signed, not a vibe.** Before work starts,
+  the model drafts acceptance claims — including executable `check`
+  commands — and you approve, amend, or iterate. After sign-off the
+  contract is frozen outside the model's reach. Success means those
+  checks exited 0. A run judged only by claims the model wrote itself is
+  loudly labeled as such.
+- **Every run is a replayable ledger.** Episodes, critic verdicts,
+  installs, gate results, and scheduling land in an append-only,
+  hash-sequenced event log with content-addressed snapshots. You can
+  reconstruct the workspace at any step and replay a run without a model.
+- **Skills persist as code.** Accepted colon definitions live in a
+  dictionary the next run loads and the critic re-checks — executable
+  memory, not advice in a markdown file.
+
+## Try it
+
+```bash
+ln -s "$PWD/bin/livingdict" ~/.local/bin/ldh   # or call bin/livingdict directly
+
+mkdir /tmp/demo && cd /tmp/demo
+ldh tui                    # type a goal; approve/amend the drafted claims; watch it work
+ldh -p "goal" --cwd .      # headless: exit 0 iff the claims discharged
+```
+
+The TUI streams everything live: the model's reasoning, each episode's
+plan and rationale, per-node wave execution, gate verdicts with the
+exact failing claim, and the provenance of the judge
+(`[approved contract]` vs `[model-authored claims]`).
+
+It also embeds: `livingdict run` speaks a bounded-runner protocol
+([SCUD](docs/SCUD.md) `rho.run/v1` — stdin request, JSONL events, signed
+grants), and `livingdict policy` is a deny-by-default policy evaluator.
+
+The rest of this README is the reference: the lab, the bodies, the ABI.
 
 ## Three trees
 
