@@ -543,6 +543,10 @@ def main(argv: list[str] | None = None) -> int:
         from .policy_eval import main as policy_main
 
         return policy_main(argv[1:])
+    if argv and argv[0] == "tui":
+        from .tui import main as tui_main
+
+        return tui_main(argv[1:])
     parser = build_parser()
     args = parser.parse_args(argv)
     planner_cmd = list(args.planner_cmd) if args.planner_cmd else None
