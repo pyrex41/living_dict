@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from arms import ArmResult
 
 REPO = Path(__file__).resolve().parents[1]
 GATES_PY = REPO / "harness" / "src" / "livingdict" / "gates.py"
@@ -354,6 +357,26 @@ def run_livingdict(
     return raw
 
 
+def run_external_arm(
+    command: list[str],
+    prompt: str,
+    cwd: Path,
+    *,
+    timeout: float,
+) -> dict[str, Any]:
+    """Run an experimental arm command with the shared prompt on stdin.
+
+    The command is responsible for its representation (ReAct, JSON, or
+    restricted Python) and must mutate only ``cwd``.  JSON stdout is parsed
+    when available; raw output is retained for auditability.
+    """
+    raw = run_cmd(command, cwd=cwd, timeout=timeout, env={"LIVINGDICT_PROMPT": prompt})
+    parsed = parse_grok_json(raw.get("stdout") or "")
+    raw["parsed"] = parsed
+    raw["ok"] = raw.get("exit") == 0 and not raw.get("timed_out")
+    return raw
+
+
 def measure_hidden_claims(workspace: Path, claims_path: Path) -> dict[str, Any]:
     dest = workspace / "claims.json"
     backup: str | None = None
@@ -406,6 +429,7 @@ def write_summary(out: Path, prompt: str, rows: list[dict[str, Any]]) -> None:
                 "judge": r.get("judge"),
                 "error": r.get("error") or ((r.get("stderr") or "")[:200] if not r.get("ok") else None),
                 "workspace": r.get("workspace"),
+                "metrics": ArmResult.from_raw(str(r.get("arm") or "unknown"), r).to_dict(),
             }
             for r in rows
         ],
@@ -496,7 +520,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prompt-file", type=Path, help="read prompt from a file")
     parser.add_argument("--seed", type=Path, help="copy this tree into each arm (default: empty)")
     parser.add_argument("--out", type=Path, help="output directory")
-    parser.add_argument("--arms", default="grok,pi,livingdict", help="comma list: grok,pi,livingdict")
+    parser.add_argument("--arms", default="grok,pi,livingdict", help="comma list of arm names")
+    parser.add_argument(
+        "--arm-cmd",
+        action="append",
+        default=[],
+        metavar="NAME=COMMAND",
+        help="external experimental arm command (repeatable; prompt is in LIVINGDICT_PROMPT)",
+    )
     parser.add_argument("--parallel", action="store_true", help="run arms concurrently (default: serial)")
     parser.add_argument("--serial", action="store_true", help="run arms one after another (default)")
     parser.add_argument("--timeout", type=float, default=600.0, help="seconds per arm")
@@ -528,7 +559,18 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     arms = [a.strip() for a in args.arms.split(",") if a.strip()]
-    known = {"grok", "pi", "livingdict"}
+    external: dict[str, list[str]] = {}
+    for spec in args.arm_cmd:
+        if "=" not in spec:
+            print("compare: --arm-cmd must be NAME=COMMAND", file=sys.stderr)
+            return 2
+        name, command = spec.split("=", 1)
+        name = name.strip()
+        if name not in {"react", "json-plan", "python-plan"} or not command.strip():
+            print(f"compare: invalid experimental arm command {name!r}", file=sys.stderr)
+            return 2
+        external[name] = shlex.split(command)
+    known = {"grok", "pi", "livingdict", *external}
     unknown = [a for a in arms if a not in known]
     if unknown:
         print(f"compare: unknown arm(s): {', '.join(unknown)}", file=sys.stderr)
@@ -566,6 +608,8 @@ def main(argv: list[str] | None = None) -> int:
                 max_turns=args.max_turns,
                 timeout=args.timeout,
             )
+        elif name in external:
+            raw = run_external_arm(external[name], prompt, arm_dir, timeout=args.timeout)
         else:
             raw = {"ok": False, "exit": 2, "stderr": f"unknown arm {name}", "stdout": ""}
         after = snapshot(arm_dir)

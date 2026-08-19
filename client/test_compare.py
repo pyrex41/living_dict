@@ -19,6 +19,7 @@ from compare import (
     write_summary,
 )
 from job import ensure_run_gates
+from arms import ArmResult, validate_arm_name
 
 
 class SnapshotTests(unittest.TestCase):
@@ -37,6 +38,29 @@ class SnapshotTests(unittest.TestCase):
         after = snapshot(root)
         self.assertEqual(changed(before, after), ["a.txt", "b.txt"])
         tmp.cleanup()
+
+
+class ArmProtocolTests(unittest.TestCase):
+    def test_normalizes_cost_and_failure_metrics(self) -> None:
+        result = ArmResult.from_raw(
+            "json-plan",
+            {
+                "ok": True,
+                "exit": 0,
+                "duration_ms": 12,
+                "changed_files": ["a.py"],
+                "parsed": {"turns": 2, "tool_calls": 3, "usage": {"input_tokens": 10}},
+            },
+        )
+        self.assertEqual(result.model_calls, 2)
+        self.assertEqual(result.tool_calls, 3)
+        self.assertEqual(result.input_tokens, 10)
+        self.assertEqual(result.changed_files, ["a.py"])
+
+    def test_arm_names_are_explicit(self) -> None:
+        self.assertEqual(validate_arm_name("python-plan"), "python-plan")
+        with self.assertRaises(ValueError):
+            validate_arm_name("unknown")
 
     def test_seed_copy_empty_and_ignore_node_modules(self) -> None:
         tmp = tempfile.TemporaryDirectory()
