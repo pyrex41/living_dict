@@ -6,11 +6,13 @@ The model is off while words run. Job state lives in the run dir.
 from __future__ import annotations
 
 import argparse
+import contextvars
 import json
 import os
 import shlex
 import subprocess
 import sys
+import threading
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -159,21 +161,45 @@ def call_planner(cmd: list[str], observation: dict[str, Any], *, workspace: Path
     current = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = client if not current else client + os.pathsep + current
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
-            input=json.dumps(observation, ensure_ascii=False),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            capture_output=True,
             cwd=str(workspace),
             env=env,
-            check=False,
         )
     except OSError as exc:
         raise CLIError(f"planner failed to start: {exc}") from exc
+
+    stderr_lines: list[str] = []
+
+    def pump_stderr() -> None:
+        # The planner's stderr is the live "thinking" channel: forward each
+        # line as a planner.stderr trace event while the call is in flight.
+        assert proc.stderr is not None
+        for line in proc.stderr:
+            text = line.rstrip("\n")
+            stderr_lines.append(text)
+            trace_emit(None, "planner.stderr", {"line": text})
+
+    ctx = contextvars.copy_context()  # carry the live sink into the thread
+    pump = threading.Thread(target=lambda: ctx.run(pump_stderr), daemon=True)
+    pump.start()
+    try:
+        assert proc.stdin is not None
+        proc.stdin.write(json.dumps(observation, ensure_ascii=False))
+        proc.stdin.close()
+    except (BrokenPipeError, OSError):
+        pass
+    out = proc.stdout.read() if proc.stdout is not None else ""
+    proc.wait()
+    pump.join(timeout=5)
     if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "planner exited non-zero").strip()
+        err = ("\n".join(stderr_lines) or out or "planner exited non-zero").strip()
         raise CLIError(f"planner exit {proc.returncode}: {err[:800]}")
-    raw = (proc.stdout or "").strip()
+    raw = (out or "").strip()
     if not raw:
         raise CLIError("planner wrote no envelope")
     try:
@@ -184,6 +210,16 @@ def call_planner(cmd: list[str], observation: dict[str, Any], *, workspace: Path
         return parse_envelope(payload)
     except EnvelopeError as exc:
         raise CLIError(str(exc)) from exc
+
+
+def claims_source(workspace: Path, claims_path: Path | None) -> str:
+    """Who authored the judge: 'hidden' (host/user file), 'workspace'
+    (a claims.json the model wrote — weak evidence), or 'none'."""
+    if claims_path is not None and Path(claims_path).is_file():
+        return "hidden"
+    if (Path(workspace) / "claims.json").is_file():
+        return "workspace"
+    return "none"
 
 
 def measure_workspace(workspace: Path, claims_path: Path | None) -> dict[str, Any]:
@@ -255,6 +291,7 @@ def run_job(
     run_dir = Path(run_dir).resolve() if run_dir is not None else workspace / ".livingdict-run"
     run_dir.mkdir(parents=True, exist_ok=True)
     receipt_fields = dict(receipt_extra or {})
+    receipt_fields.setdefault("claims_source", claims_source(workspace, claims))
     if grant_mode_require() and not grant_verified:
         return _finish(
             Decision("grant_invalid", "grant.witness is required"),
@@ -342,6 +379,15 @@ def run_job(
             "program": envelope.program,
             "rationale": envelope.rationale,
         }
+        if envelope.nodes:
+            planned["nodes"] = [
+                {
+                    "id": node.id,
+                    "writes": list(node.writes or []),
+                    "depends_on": list(node.depends_on or []),
+                }
+                for node in envelope.nodes
+            ]
         state = _commit(state, EPISODE_PLANNED, planned)
         if not state.pending_execute:
             state = _commit(
@@ -429,10 +475,12 @@ def run_job(
             )
         report = measure_workspace(workspace, claims)
         after, tree_after = capture_tree(workspace, store)
+        receipt_fields["claims_source"] = claims_source(workspace, claims)
         state = _commit(
             state,
             GATES_MEASURED,
             {
+                "claims_source": receipt_fields["claims_source"],
                 "files": after,
                 "report": report,
                 "tree_after": tree_after,

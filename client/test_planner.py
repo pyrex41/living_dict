@@ -3,7 +3,16 @@ from __future__ import annotations
 import unittest
 
 from job import ensure_job_files, ensure_run_gates, imply_artifact_writes
-from planner import SYSTEM, extract_json_object, normalize_envelope, observe_dictionary, observe_graph, observe_workspace
+from planner import (
+    SYSTEM,
+    _consume_stream,
+    extract_json_object,
+    normalize_envelope,
+    observe_dictionary,
+    observe_graph,
+    observe_workspace,
+    parse_stream_chunk,
+)
 
 
 class PlannerParseTests(unittest.TestCase):
@@ -89,6 +98,46 @@ class PlannerParseTests(unittest.TestCase):
         self.assertIn('S" fizzbuzz.py" WRITE-FILE', out)
         already = 'S" fizzbuzz.py" USE-ARTIFACT S" fizzbuzz.py" WRITE-FILE'
         self.assertEqual(imply_artifact_writes(already, {"fizzbuzz.py": "x"}), already)
+
+
+class StreamParseTests(unittest.TestCase):
+    def test_parse_stream_chunk_splits_reasoning_and_content(self) -> None:
+        chunk = {
+            "choices": [
+                {"delta": {"reasoning_content": "hmm, ", "content": ""}},
+                {"delta": {"content": '{"language"'}},
+            ],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+        }
+        content, reasoning, usage = parse_stream_chunk(chunk)
+        self.assertEqual(content, '{"language"')
+        self.assertEqual(reasoning, "hmm, ")
+        self.assertEqual(usage["prompt_tokens"], 5)
+
+    def test_consume_stream_accumulates_content_and_echoes_reasoning(self) -> None:
+        import contextlib
+        import io
+        import json as _json
+
+        def sse(obj) -> bytes:
+            return b"data: " + _json.dumps(obj).encode("utf-8") + b"\n"
+
+        lines = [
+            sse({"choices": [{"delta": {"reasoning_content": "thinking about it\n"}}]}),
+            sse({"choices": [{"delta": {"content": '{"language": "forth"'}}]}),
+            sse({"choices": [{"delta": {"content": ', "program": ""}'}}]}),
+            sse({"usage": {"prompt_tokens": 9, "completion_tokens": 4}, "choices": []}),
+            b"data: [DONE]\n",
+            sse({"choices": [{"delta": {"content": "IGNORED-AFTER-DONE"}}]}),
+        ]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            content, usage = _consume_stream(lines)
+        self.assertEqual(content, '{"language": "forth", "program": ""}')
+        self.assertEqual(usage["completion_tokens"], 4)
+        self.assertIn("thinking about it", err.getvalue())
+        self.assertIn("envelope:", err.getvalue())
+        self.assertNotIn("IGNORED-AFTER-DONE", content)
 
 
 if __name__ == "__main__":

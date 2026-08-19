@@ -61,17 +61,36 @@ class Painter:
 class Renderer:
     """One event, one line. Kernel events and trace events share this."""
 
-    def __init__(self, paint: Painter) -> None:
+    def __init__(self, paint: Painter, verbose: bool = False) -> None:
         self.paint = paint
+        self.verbose = verbose
         self.episode = 0
+        self._plan_started: float | None = None
 
     def kernel(self, kind: str, payload: dict[str, Any]) -> None:
         p = self.paint
         if kind == "episode.planned":
             self.episode += 1
+            took = ""
+            if self._plan_started is not None:
+                took = f"  ({time.monotonic() - self._plan_started:.1f}s)"
+                self._plan_started = None
             keys = ",".join(payload.get("artifact_keys") or []) or "-"
             fp = str(payload.get("fingerprint") or "")[:8]
-            p.line(p.dim(f"∙ e{self.episode} plan  fp={fp}  artifacts={keys}"))
+            p.line(p.dim(f"∙ e{self.episode} plan  fp={fp}  artifacts={keys}{took}"))
+            rationale = str(payload.get("rationale") or "").strip()
+            if rationale:
+                p.line(p.dim(f'  "{rationale[:200]}"'))
+            nodes = payload.get("nodes") or []
+            if nodes:
+                for node in nodes:
+                    deps = ",".join(node.get("depends_on") or []) or "-"
+                    writes = ",".join(node.get("writes") or []) or "-"
+                    p.line(p.dim(f"  ▤ {node.get('id')}  after: {deps}  writes: {writes}"))
+            if self.verbose:
+                program = str(payload.get("program") or "").strip()
+                for src_line in program.splitlines()[:12]:
+                    p.line(p.dim(f"  ¦ {src_line}"))
         elif kind == "critic.accepted":
             p.line(p.green("✓ critic accept"))
         elif kind == "critic.rejected":
@@ -88,16 +107,43 @@ class Renderer:
             report = payload.get("report") or {}
             names = [g.get("name") for g in report.get("gates") or []]
             verdict = p.green("pass") if report.get("passed") else p.red("fail")
-            p.line(f"⚖ gates {verdict}  ({', '.join(str(n) for n in names) or 'none'})")
+            judge = ""
+            if payload.get("claims_source") == "workspace":
+                judge = p.yellow("  [model-authored claims]")
+            p.line(f"⚖ gates {verdict}  ({', '.join(str(n) for n in names) or 'none'}){judge}")
+            if not report.get("passed"):
+                self._gate_failures(report)
         elif kind == "dictionary.promoted":
             p.line(p.dim(f"※ word {payload.get('word')} promoted"))
+
+    def _gate_failures(self, report: dict[str, Any]) -> None:
+        p = self.paint
+        for gate in report.get("gates") or []:
+            if gate.get("passed") or gate.get("skipped"):
+                continue
+            claims = gate.get("claims")
+            if claims:
+                for claim in claims:
+                    if claim.get("passed"):
+                        continue
+                    wanted = ", ".join(claim.get("wanted") or []) or "presence"
+                    where = claim.get("path") or "workspace"
+                    p.line(p.red(f"    ✗ claim {claim.get('id')}: wanted {wanted} in {where}"))
+                continue
+            detail = str(gate.get("stderr") or gate.get("stdout") or "").strip()
+            if detail:
+                first = detail.splitlines()[0][:200]
+                p.line(p.red(f"    ✗ {gate.get('name')}: {first}"))
 
     def trace(self, event: dict[str, Any]) -> None:
         p = self.paint
         typ = event.get("type") or ""
         data = event.get("data") or {}
         if typ == "planner.call":
+            self._plan_started = time.monotonic()
             p.line(p.dim(f"… planning e{data.get('episode')} (model call)"))
+        elif typ == "planner.stderr":
+            p.line(p.dim(f"│ {data.get('line')}"))
         elif typ == "mutation.applied":
             p.line(f"  w {data.get('path')}  {str(data.get('sha256') or '')[:8]}")
         elif typ == "graph.node.start":
@@ -115,10 +161,12 @@ class Renderer:
             p.line(p.red(f"  ✗ trap {data.get('reason')}: {data.get('detail') or ''}"))
         elif typ == "preflight.rejected":
             pass  # kernel critic.rejected already renders the errors
+        elif self.verbose and typ == "tool.call":
+            p.line(p.dim(f"  · {data.get('tool')} {data.get('path') or ''}"))
 
 
 def run_goal(goal: str, paint: Painter, args: argparse.Namespace) -> int:
-    render = Renderer(paint)
+    render = Renderer(paint, verbose=bool(getattr(args, "verbose", False)))
     started = time.monotonic()
     try:
         with live_sink(render.trace):
@@ -144,6 +192,14 @@ def run_goal(goal: str, paint: Painter, args: argparse.Namespace) -> int:
     tail = f"{verdict}: {reason}  ({len(changed)} files, e{receipt.get('episodes')}, {elapsed}ms)"
     if code == 0:
         paint.line(paint.bold(paint.green(f"● {tail}")))
+        if receipt.get("claims_source") == "workspace":
+            paint.line(
+                paint.yellow(
+                    "  ⚠ discharged against MODEL-AUTHORED claims (substring checks it wrote"
+                    " itself). Nothing was built, served, or tested. Pass --claims <file>"
+                    " to judge against your own criteria."
+                )
+            )
     else:
         paint.line(paint.bold(paint.red(f"● {tail}")))
     return code
@@ -167,6 +223,12 @@ def build_tui_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wave-workers", type=int, default=4)
     parser.add_argument("--serial", action="store_true")
     parser.add_argument("--no-color", dest="color", action="store_false", default=True)
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="also show program source, tool calls, and node detail",
+    )
     return parser
 
 
@@ -184,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
     workspace = Path(args.cwd).resolve()
     paint.line(paint.dim(f"livingdict tui — workspace {workspace}"))
     if interactive:
-        paint.line(paint.dim("type a goal; /quit to exit"))
+        paint.line(paint.dim("type a goal; /verbose toggles detail; /quit to exit"))
 
     last = 0
     while True:
@@ -204,6 +266,10 @@ def main(argv: list[str] | None = None) -> int:
             continue
         if goal in {"/quit", "/exit", "/q"}:
             return last
+        if goal == "/verbose":
+            args.verbose = not bool(getattr(args, "verbose", False))
+            paint.line(paint.dim(f"verbose {'on' if args.verbose else 'off'}"))
+            continue
         last = run_goal(goal, paint, args)
         if not interactive and last != 0:
             return last

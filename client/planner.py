@@ -335,6 +335,92 @@ def bearer_token() -> tuple[str, str]:
     return token, "oauth"
 
 
+def _chat_request(payload: dict[str, Any], token: str) -> urllib.request.Request:
+    return urllib.request.Request(
+        f"{API_BASE.rstrip('/')}/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+
+
+def _open_chat(payload: dict[str, Any], token: str, source: str):
+    try:
+        return urllib.request.urlopen(_chat_request(payload, token), timeout=180)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:400]
+        if exc.code == 401 and source == "oauth":
+            found = _oauth_record()
+            if found:
+                path, rec_key, rec = found
+                token = _refresh_oauth(path, rec_key, rec)
+                return urllib.request.urlopen(_chat_request(payload, token), timeout=180)
+            raise PlannerError(f"xAI 401: {detail}") from exc
+        raise PlannerError(f"xAI HTTP {exc.code}: {detail}") from exc
+
+
+def parse_stream_chunk(chunk: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    """One SSE chunk -> (content delta, reasoning delta, usage-or-empty)."""
+    usage = chunk.get("usage") or {}
+    content = ""
+    reasoning = ""
+    for choice in chunk.get("choices") or []:
+        delta = choice.get("delta") or {}
+        content += delta.get("content") or ""
+        reasoning += delta.get("reasoning_content") or ""
+    return content, reasoning, usage
+
+
+def _consume_stream(resp) -> tuple[str, dict[str, Any]]:
+    """Read SSE; echo reasoning to stderr live, accumulate the envelope.
+
+    stdout stays pure JSON — everything the model 'thinks' goes to stderr,
+    which the harness forwards to the TUI as planner.stderr lines.
+    """
+    content: list[str] = []
+    usage: dict[str, Any] = {}
+    column = 0
+    said_thinking = False
+    for raw in resp:
+        line = raw.decode("utf-8", errors="replace").strip() if isinstance(raw, bytes) else str(raw).strip()
+        if not line.startswith("data:"):
+            continue
+        body = line[5:].strip()
+        if body == "[DONE]":
+            break
+        try:
+            chunk = json.loads(body)
+        except json.JSONDecodeError:
+            continue
+        delta_content, delta_reasoning, chunk_usage = parse_stream_chunk(chunk)
+        if chunk_usage:
+            usage = chunk_usage
+        if delta_reasoning:
+            if not said_thinking:
+                sys.stderr.write("thinking:\n")
+                said_thinking = True
+            sys.stderr.write(delta_reasoning)
+            if "\n" in delta_reasoning:
+                column = len(delta_reasoning) - delta_reasoning.rfind("\n") - 1
+            else:
+                column += len(delta_reasoning)
+            if column > 160 and delta_reasoning.endswith((" ", ".", ",")):
+                sys.stderr.write("\n")
+                column = 0
+            sys.stderr.flush()
+        if delta_content:
+            content.append(delta_content)
+    if said_thinking and column:
+        sys.stderr.write("\n")
+    sys.stderr.write(f"envelope: {sum(len(part) for part in content)} chars\n")
+    sys.stderr.flush()
+    return "".join(content), usage
+
+
 def complete_json(system: str, user: str) -> tuple[dict[str, Any], dict[str, int]]:
     token, source = bearer_token()
     payload = {
@@ -346,47 +432,24 @@ def complete_json(system: str, user: str) -> tuple[dict[str, Any], dict[str, int
         "response_format": {"type": "json_object"},
         "reasoning_effort": os.environ.get("LIVINGDICT_REASONING", "low"),
     }
-    req = urllib.request.Request(
-        f"{API_BASE.rstrip('/')}/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=180) as resp:
+    stream = os.environ.get("LIVINGDICT_STREAM", "1") != "0"
+    if stream:
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
+    resp = _open_chat(payload, token, source)
+    if stream:
+        with resp:
+            content, usage = _consume_stream(resp)
+    else:
+        with resp:
             raw = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:400]
-        if exc.code == 401 and source == "oauth":
-            found = _oauth_record()
-            if found:
-                path, rec_key, rec = found
-                token = _refresh_oauth(path, rec_key, rec)
-                req = urllib.request.Request(
-                    f"{API_BASE.rstrip('/')}/chat/completions",
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                    },
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=180) as resp:
-                    raw = json.loads(resp.read().decode("utf-8"))
-            else:
-                raise PlannerError(f"xAI 401: {detail}") from exc
-        else:
-            raise PlannerError(f"xAI HTTP {exc.code}: {detail}") from exc
-    choices = raw.get("choices") or []
-    if not choices:
-        raise PlannerError("xAI returned no choices")
-    content = choices[0].get("message", {}).get("content") or ""
-    usage = raw.get("usage") or {}
+        choices = raw.get("choices") or []
+        if not choices:
+            raise PlannerError("xAI returned no choices")
+        content = choices[0].get("message", {}).get("content") or ""
+        usage = raw.get("usage") or {}
+    if not content:
+        raise PlannerError("xAI returned no content")
     telemetry = {
         "input_tokens": int(usage.get("prompt_tokens") or 0),
         "output_tokens": int(usage.get("completion_tokens") or 0),
