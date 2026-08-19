@@ -28,6 +28,27 @@ API_BASE = os.environ.get("LIVINGDICT_API_BASE", "https://api.x.ai/v1")
 TOKEN_URL = "https://auth.x.ai/oauth2/token"
 AUTH_PATH = Path(os.environ.get("GROK_HOME", Path.home() / ".grok")) / "auth.json"
 
+CLAIMS_SYSTEM = """You draft ACCEPTANCE CLAIMS for a coding goal. The user
+will review them, push back, and sign off before any work starts; after
+sign-off they become the frozen judge of success — you cannot weaken them
+later. Emit exactly one JSON object, no markdown:
+{"claims": [ ... ], "notes": "<one short paragraph for the reviewer>"}
+
+Claim kinds, strongest first:
+- {"id", "kind": "check", "command": "<sh command run in the workspace>",
+   "timeout_seconds": 60} — passes iff exit 0. PREFER these: build it,
+   run its tests, start it and curl it. Only use tools that exist on the
+   machine or that one of your own claims installs first.
+- {"id", "kind": "source", "path", "any": ["needle", ...], "min_bytes": N}
+   — substring evidence in one file. Weak; use for structure only.
+- {"id", "kind": "file", "path", "min_bytes": N} — existence.
+- {"id", "kind": "absent", "path"} — must not exist.
+
+3 to 8 claims. Cover behavior, not just file presence. If FEEDBACK is
+given, incorporate it exactly; if PRIOR CLAIMS are given, revise them
+rather than starting over.
+"""
+
 SYSTEM = """You are the planner for a general coding harness (Codex/Claude
 Code class) whose plan language is Forth. Forth is the harness, not
 the product. The product is whatever the GOAL names — any software.
@@ -493,6 +514,22 @@ def plan(
     return envelope, telemetry
 
 
+def draft_claims(goal: str, workspace: Path, prior: Any = None, feedback: str = "") -> dict[str, Any]:
+    """Contract pass: propose acceptance claims for user sign-off."""
+    listing = observe_workspace(workspace, limit=8_000)
+    user = [f"GOAL: {goal}", "", "WORKSPACE:", listing]
+    if prior:
+        user += ["", "PRIOR CLAIMS:", json.dumps(prior, ensure_ascii=False)]
+    if feedback:
+        user += ["", "FEEDBACK:", feedback]
+    result, telemetry = complete_json(CLAIMS_SYSTEM, "\n".join(user))
+    claims = result.get("claims")
+    if not isinstance(claims, list) or not claims:
+        raise PlannerError("claims draft has no claims[]")
+    result["_telemetry"] = telemetry
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Living Dictionary Grok 4.6 planner")
     parser.add_argument("--goal", help="natural-language goal")
@@ -504,6 +541,16 @@ def main(argv: list[str] | None = None) -> int:
     dictionary: Path | None = None
     if args.stdin:
         payload = json.loads(sys.stdin.read() or "{}")
+        if payload.get("mode") == "claims":
+            ws = Path(str(payload.get("workspace") or "."))
+            result = draft_claims(
+                str(payload.get("goal") or ""),
+                ws,
+                prior=payload.get("prior_claims"),
+                feedback=str(payload.get("feedback") or ""),
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
         goal = str(payload.get("goal") or goal)
         extra = str(payload.get("extra") or "")
         ws = payload.get("workspace")

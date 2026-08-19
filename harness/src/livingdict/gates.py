@@ -8,6 +8,7 @@ When `sb` is on PATH and `specs/core.shen` exists, an `sb` gate runs
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
@@ -198,6 +199,14 @@ def _read_claim_file(workspace: Path, rel: str) -> tuple[Path | None, str]:
         return None, ""
 
 
+# check-kind claims execute a command as the judge. That authority must come
+# from a human (an approved contract or a hidden --claims file), never from a
+# claims.json the model wrote itself — deny by default, same rule as policy.
+_ALLOW_CHECK: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "livingdict_allow_check", default=False
+)
+
+
 def measure_claims(workspace: Path) -> dict[str, Any]:
     blob = load_claims(workspace)
     if blob is None:
@@ -237,6 +246,40 @@ def measure_claims(workspace: Path) -> dict[str, Any]:
         elif kind == "absent":
             ok = bool(rel) and not (workspace / rel).exists()
             results.append({"id": cid, "passed": ok, "kind": kind, "path": rel})
+        elif kind == "check":
+            command = str(item.get("command") or "").strip()
+            if not command:
+                results.append({"id": cid, "passed": False, "kind": kind, "reason": "check claim has no command"})
+                continue
+            if not _ALLOW_CHECK.get():
+                results.append(
+                    {
+                        "id": cid,
+                        "passed": False,
+                        "kind": kind,
+                        "command": command,
+                        "reason": "check claims execute only under an approved or hidden contract",
+                    }
+                )
+                continue
+            try:
+                budget = float(item.get("timeout_seconds") or 60.0)
+            except (TypeError, ValueError):
+                budget = 60.0
+            outcome = _run(["sh", "-lc", command], workspace, budget, {})
+            returncode = outcome.get("returncode")
+            entry: dict[str, Any] = {
+                "id": cid,
+                "passed": returncode == 0 and not outcome.get("timed_out"),
+                "kind": kind,
+                "command": command,
+                "returncode": returncode,
+                "timed_out": bool(outcome.get("timed_out")),
+            }
+            tail = str(outcome.get("stderr") or outcome.get("stdout") or "").strip()
+            if tail:
+                entry["output"] = tail[-400:]
+            results.append(entry)
         else:
             if not needles:
                 results.append({"id": cid, "passed": False, "reason": "source claim has no any/must"})
@@ -476,7 +519,20 @@ def context_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def run_gates(workspace: Path, timeout: float = 180.0, persist: bool = True) -> dict[str, Any]:
+def run_gates(
+    workspace: Path,
+    timeout: float = 180.0,
+    persist: bool = True,
+    allow_check: bool = False,
+) -> dict[str, Any]:
+    token = _ALLOW_CHECK.set(bool(allow_check))
+    try:
+        return _run_gates_inner(workspace, timeout, persist)
+    finally:
+        _ALLOW_CHECK.reset(token)
+
+
+def _run_gates_inner(workspace: Path, timeout: float, persist: bool) -> dict[str, Any]:
     workspace = Path(workspace)
     specs = infer_gates(workspace)
     if not specs:

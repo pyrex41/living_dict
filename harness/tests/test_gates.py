@@ -170,3 +170,45 @@ class StudioGatesLiveTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CheckClaimTests(unittest.TestCase):
+    def _workspace(self, claims: dict) -> tempfile.TemporaryDirectory:
+        tmp = tempfile.TemporaryDirectory()
+        root = Path(tmp.name)
+        (root / "claims.json").write_text(json.dumps(claims), encoding="utf-8")
+        (root / "app.py").write_text("print(42)\n" * 20, encoding="utf-8")
+        return tmp
+
+    def test_check_claims_denied_without_contract_authority(self) -> None:
+        from livingdict.gates import run_gates
+
+        tmp = self._workspace(
+            {"claims": [{"id": "runs", "kind": "check", "command": "true"}]}
+        )
+        report = run_gates(Path(tmp.name), persist=False)  # allow_check defaults False
+        claims_gate = next(g for g in report["gates"] if g["name"] == "claims")
+        self.assertFalse(claims_gate["passed"])
+        entry = claims_gate["claims"][0]
+        self.assertIn("approved or hidden contract", entry["reason"])
+        tmp.cleanup()
+
+    def test_check_claims_execute_under_contract(self) -> None:
+        from livingdict.gates import run_gates
+
+        tmp = self._workspace(
+            {
+                "claims": [
+                    {"id": "ok", "kind": "check", "command": "test -f app.py"},
+                    {"id": "bad", "kind": "check", "command": "exit 3"},
+                ]
+            }
+        )
+        report = run_gates(Path(tmp.name), persist=False, allow_check=True)
+        claims_gate = next(g for g in report["gates"] if g["name"] == "claims")
+        by_id = {c["id"]: c for c in claims_gate["claims"]}
+        self.assertTrue(by_id["ok"]["passed"])
+        self.assertFalse(by_id["bad"]["passed"])
+        self.assertEqual(by_id["bad"]["returncode"], 3)
+        self.assertFalse(claims_gate["passed"])
+        tmp.cleanup()

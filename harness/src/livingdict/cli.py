@@ -26,6 +26,7 @@ from .preflight import validate
 from .kernel import (
     ARTIFACTS_APPLIED,
     BUDGET_CONSUMED,
+    CONTRACT_APPROVED,
     CRITIC_ACCEPTED,
     CRITIC_REJECTED,
     DECISION_SUCCESS,
@@ -156,6 +157,14 @@ def commit(state: State, kind: str, payload: dict[str, Any] | None, events_path:
 
 
 def call_planner(cmd: list[str], observation: dict[str, Any], *, workspace: Path) -> PlanEnvelope:
+    payload = call_planner_json(cmd, observation, workspace=workspace)
+    try:
+        return parse_envelope(payload)
+    except EnvelopeError as exc:
+        raise CLIError(str(exc)) from exc
+
+
+def call_planner_json(cmd: list[str], observation: dict[str, Any], *, workspace: Path) -> dict[str, Any]:
     env = os.environ.copy()
     client = str(REPO / "client")
     current = env.get("PYTHONPATH", "")
@@ -206,23 +215,27 @@ def call_planner(cmd: list[str], observation: dict[str, Any], *, workspace: Path
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise CLIError(f"planner stdout is not JSON: {exc}") from exc
-    try:
-        return parse_envelope(payload)
-    except EnvelopeError as exc:
-        raise CLIError(str(exc)) from exc
+    if not isinstance(payload, dict):
+        raise CLIError("planner stdout is not a JSON object")
+    return payload
 
 
-def claims_source(workspace: Path, claims_path: Path | None) -> str:
-    """Who authored the judge: 'hidden' (host/user file), 'workspace'
-    (a claims.json the model wrote — weak evidence), or 'none'."""
+def claims_source(workspace: Path, claims_path: Path | None, label: str | None = None) -> str:
+    """Who authored the judge: 'approved' (user signed off on a contract),
+    'hidden' (host/user file), 'workspace' (a claims.json the model wrote —
+    weak evidence), or 'none'."""
     if claims_path is not None and Path(claims_path).is_file():
-        return "hidden"
+        return label or "hidden"
     if (Path(workspace) / "claims.json").is_file():
         return "workspace"
     return "none"
 
 
-def measure_workspace(workspace: Path, claims_path: Path | None) -> dict[str, Any]:
+def measure_workspace(
+    workspace: Path,
+    claims_path: Path | None,
+    allow_check: bool = False,
+) -> dict[str, Any]:
     dest = workspace / "claims.json"
     backup: str | None = None
     replaced = False
@@ -231,7 +244,7 @@ def measure_workspace(workspace: Path, claims_path: Path | None) -> dict[str, An
         dest.write_text(Path(claims_path).read_text(encoding="utf-8"), encoding="utf-8")
         replaced = True
     try:
-        return run_gates(workspace)
+        return run_gates(workspace, allow_check=allow_check)
     finally:
         if replaced:
             if backup is None:
@@ -285,13 +298,15 @@ def run_job(
     system_prompt: str = "",
     receipt_extra: dict[str, Any] | None = None,
     grant_verified: bool = False,
+    contract: dict[str, Any] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     workspace = Path(workspace).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
     run_dir = Path(run_dir).resolve() if run_dir is not None else workspace / ".livingdict-run"
     run_dir.mkdir(parents=True, exist_ok=True)
+    claims_label = "approved" if contract is not None else None
     receipt_fields = dict(receipt_extra or {})
-    receipt_fields.setdefault("claims_source", claims_source(workspace, claims))
+    receipt_fields.setdefault("claims_source", claims_source(workspace, claims, claims_label))
     if grant_mode_require() and not grant_verified:
         return _finish(
             Decision("grant_invalid", "grant.witness is required"),
@@ -325,6 +340,9 @@ def run_job(
         if event_sink is not None:
             event_sink(kind, dict(payload or {}))
         return new
+
+    if contract is not None:
+        state = _commit(state, CONTRACT_APPROVED, dict(contract))
 
     while True:
         if deadline is not None and datetime.now(timezone.utc) >= deadline:
@@ -473,9 +491,13 @@ def run_job(
                 DICTIONARY_PROMOTED,
                 {"episode": episode, "sha256": digest, "word": word},
             )
-        report = measure_workspace(workspace, claims)
+        receipt_fields["claims_source"] = claims_source(workspace, claims, claims_label)
+        report = measure_workspace(
+            workspace,
+            claims,
+            allow_check=receipt_fields["claims_source"] in ("hidden", "approved"),
+        )
         after, tree_after = capture_tree(workspace, store)
-        receipt_fields["claims_source"] = claims_source(workspace, claims)
         state = _commit(
             state,
             GATES_MEASURED,

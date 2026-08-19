@@ -16,7 +16,10 @@ import time
 from pathlib import Path
 from typing import Any, TextIO
 
-from .cli import CLIError, resolve_argv_files, run_job
+import hashlib
+import json
+
+from .cli import CLIError, call_planner_json, resolve_argv_files, run_job
 from .envelope import EnvelopeError
 from .kernel import KernelError
 from .trace import live_sink
@@ -110,6 +113,8 @@ class Renderer:
             judge = ""
             if payload.get("claims_source") == "workspace":
                 judge = p.yellow("  [model-authored claims]")
+            elif payload.get("claims_source") == "approved":
+                judge = p.dim("  [approved contract]")
             p.line(f"⚖ gates {verdict}  ({', '.join(str(n) for n in names) or 'none'}){judge}")
             if not report.get("passed"):
                 self._gate_failures(report)
@@ -165,7 +170,97 @@ class Renderer:
             p.line(p.dim(f"  · {data.get('tool')} {data.get('path') or ''}"))
 
 
-def run_goal(goal: str, paint: Painter, args: argparse.Namespace) -> int:
+def render_claims(claims: list[dict[str, Any]], notes: str, paint: Painter) -> None:
+    p = paint
+    if notes:
+        p.line(p.dim(f'  "{notes.strip()[:300]}"'))
+    for claim in claims:
+        kind = str(claim.get("kind") or "source")
+        cid = claim.get("id")
+        if kind == "check":
+            p.line(p.yellow(f"  ▢ {cid} [check] will EXECUTE: {claim.get('command')}"))
+        elif kind == "absent":
+            p.line(f"  ▢ {cid} [absent] {claim.get('path')}")
+        elif kind == "file":
+            p.line(f"  ▢ {cid} [file] {claim.get('path')}")
+        else:
+            needles = ", ".join(claim.get("any") or claim.get("must") or [])
+            p.line(f"  ▢ {cid} [source] {claim.get('path') or '<workspace>'}: {needles}")
+
+
+def negotiate_contract(
+    goal: str,
+    paint: Painter,
+    args: argparse.Namespace,
+    ask,
+) -> tuple[Path, dict[str, Any]] | None:
+    """Model drafts claims; the user amends and signs off. Returns the
+    approved claims path + contract metadata, or None on skip."""
+    p = paint
+    workspace = Path(args.cwd).resolve()
+    render = Renderer(p)
+    prior: Any = None
+    feedback = ""
+    for round_no in range(1, 6):
+        p.line(p.dim(f"… drafting claims (round {round_no}, model call)"))
+        observation = {
+            "mode": "claims",
+            "goal": goal,
+            "workspace": str(workspace),
+            "prior_claims": prior,
+            "feedback": feedback,
+        }
+        try:
+            with live_sink(render.trace):
+                result = call_planner_json(args.resolved_planner or _default_cmd(), observation, workspace=workspace)
+        except CLIError as exc:
+            p.line(p.red(f"claims draft failed: {exc}"))
+            return None
+        claims = result.get("claims") if isinstance(result.get("claims"), list) else []
+        if not claims:
+            p.line(p.red("planner proposed no claims"))
+            return None
+        p.line(p.bold("proposed contract:"))
+        render_claims(claims, str(result.get("notes") or ""), p)
+        answer = ask("contract> approve / skip / <feedback>: ")
+        if answer is None:
+            return None
+        answer = answer.strip()
+        if answer.lower() in {"a", "approve", "y", "yes"}:
+            run_dir = Path(args.run_dir) if args.run_dir else workspace / ".livingdict-run"
+            run_dir.mkdir(parents=True, exist_ok=True)
+            path = run_dir / "claims.approved.json"
+            body = json.dumps({"claims": claims}, indent=2, sort_keys=True) + "\n"
+            path.write_text(body, encoding="utf-8")
+            contract = {
+                "claims": claims,
+                "fingerprint": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+                "iterations": round_no,
+            }
+            p.line(p.green(f"✎ contract approved ({len(claims)} claims) → {path.name}"))
+            return path, contract
+        if answer.lower() in {"s", "skip"}:
+            p.line(p.yellow("contract skipped — discharge will rely on model-authored claims"))
+            return None
+        prior = claims
+        feedback = answer
+    p.line(p.yellow("contract not approved after 5 rounds — skipping"))
+    return None
+
+
+def _default_cmd() -> list[str]:
+    from .cli import default_planner_cmd
+
+    return default_planner_cmd()
+
+
+def run_goal(
+    goal: str,
+    paint: Painter,
+    args: argparse.Namespace,
+    claims_override: Path | None = None,
+    contract: dict[str, Any] | None = None,
+) -> int:
     render = Renderer(paint, verbose=bool(getattr(args, "verbose", False)))
     started = time.monotonic()
     try:
@@ -174,13 +269,14 @@ def run_goal(goal: str, paint: Painter, args: argparse.Namespace) -> int:
                 goal,
                 args.cwd,
                 max_turns=args.max_turns,
-                claims=args.claims,
+                claims=claims_override or args.claims,
                 run_dir=args.run_dir,
                 planner_cmd=args.resolved_planner,
                 wave_workers=args.wave_workers,
                 serial=args.serial,
                 event_sink=render.kernel,
                 print_receipt=False,
+                contract=contract,
             )
     except (CLIError, EnvelopeError, KernelError) as exc:
         paint.line(paint.red(f"error: {exc}"))
@@ -229,6 +325,17 @@ def build_tui_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also show program source, tool calls, and node detail",
     )
+    contract = parser.add_mutually_exclusive_group()
+    contract.add_argument(
+        "--contract",
+        action="store_true",
+        help="negotiate claims before running even when stdin is a pipe",
+    )
+    contract.add_argument(
+        "--no-contract",
+        action="store_true",
+        help="skip the claims sign-off pass",
+    )
     return parser
 
 
@@ -246,21 +353,28 @@ def main(argv: list[str] | None = None) -> int:
     workspace = Path(args.cwd).resolve()
     paint.line(paint.dim(f"livingdict tui — workspace {workspace}"))
     if interactive:
-        paint.line(paint.dim("type a goal; /verbose toggles detail; /quit to exit"))
+        paint.line(paint.dim("type a goal; the model drafts claims for your sign-off first; /verbose, /quit"))
+
+    def ask(prompt: str) -> str | None:
+        if interactive:
+            try:
+                return input(paint.bold(prompt) if paint.color else prompt)
+            except (EOFError, KeyboardInterrupt):
+                return None
+        raw = sys.stdin.readline()
+        if raw == "":
+            return None
+        return raw.rstrip("\n")
+
+    want_contract = not args.no_contract and (interactive or args.contract)
 
     last = 0
     while True:
-        if interactive:
-            try:
-                line = input(paint.bold("goal> ") if paint.color else "goal> ")
-            except (EOFError, KeyboardInterrupt):
+        line = ask("goal> ")
+        if line is None:
+            if interactive:
                 paint.line()
-                return last
-        else:
-            raw = sys.stdin.readline()
-            if raw == "":
-                return last
-            line = raw.rstrip("\n")
+            return last
         goal = line.strip()
         if not goal:
             continue
@@ -270,6 +384,12 @@ def main(argv: list[str] | None = None) -> int:
             args.verbose = not bool(getattr(args, "verbose", False))
             paint.line(paint.dim(f"verbose {'on' if args.verbose else 'off'}"))
             continue
-        last = run_goal(goal, paint, args)
+        claims_override: Path | None = None
+        contract: dict[str, Any] | None = None
+        if want_contract and args.claims is None:
+            agreed = negotiate_contract(goal, paint, args, ask)
+            if agreed is not None:
+                claims_override, contract = agreed
+        last = run_goal(goal, paint, args, claims_override=claims_override, contract=contract)
         if not interactive and last != 0:
             return last
