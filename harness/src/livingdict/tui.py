@@ -96,7 +96,9 @@ class Renderer:
         p = self.paint
         typ = event.get("type") or ""
         data = event.get("data") or {}
-        if typ == "mutation.applied":
+        if typ == "planner.call":
+            p.line(p.dim(f"… planning e{data.get('episode')} (model call)"))
+        elif typ == "mutation.applied":
             p.line(f"  w {data.get('path')}  {str(data.get('sha256') or '')[:8]}")
         elif typ == "graph.node.start":
             p.line(p.dim(f"  ▸ {data.get('node')} [{data.get('worker')}]"))

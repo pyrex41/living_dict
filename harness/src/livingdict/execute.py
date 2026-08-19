@@ -8,7 +8,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +60,31 @@ def prepare_program(envelope: PlanEnvelope, dictionary_dir: str | None = None) -
     prelude = load_prelude(dictionary_dir)
     source = envelope.effective_program()
     return compose_program(prelude, lower_artifact_writes(source, envelope.artifacts))
+
+
+def lower_node_programs(
+    nodes: list[GraphNode] | None,
+    artifacts: dict[str, str] | None,
+    workspace,
+) -> list[GraphNode] | None:
+    """Node programs as they will actually run: artifact writes lowered.
+
+    The critic must see the program that executes. prepare_program already
+    normalizes the top-level program; without this, `S" k" WRITE-FILE`
+    inside a node underflows at validation even though execution would
+    lower it — the fizzbuzz reject resurrected one level down. Lowering
+    uses the same per-node owned-artifact set as execution.
+    """
+    if not nodes:
+        return nodes
+    lowered: list[GraphNode] = []
+    for node in nodes:
+        owned = {
+            key: (artifacts or {})[key]
+            for key in _artifact_keys_for_node(node, artifacts or {}, workspace)
+        }
+        lowered.append(replace(node, program=lower_artifact_writes(node.program, owned)))
+    return lowered
 
 
 def _artifact_keys_for_node(node: GraphNode, artifacts: dict[str, str], workspace) -> list[str]:
@@ -640,7 +665,7 @@ def run_forth(
             host.allowed_globs,
             host.forbidden_globs,
             envelope.artifacts,
-            nodes=envelope.nodes,
+            nodes=lower_node_programs(envelope.nodes, envelope.artifacts, host.workspace),
             task_graph=task_graph,
         )
         if not result["valid"]:

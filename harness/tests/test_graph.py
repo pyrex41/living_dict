@@ -9,8 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from livingdict.envelope import load_envelope
-from livingdict.execute import run_forth
+from livingdict.envelope import load_envelope, parse_envelope
+from livingdict.execute import ExecutionError, run_forth
 from livingdict.host import CapabilityHost
 from livingdict.trace import read_events
 
@@ -74,6 +74,100 @@ class GraphTraceTests(unittest.TestCase):
         self.assertTrue(all(event["data"]["worker"] == "host" for event in starts + finishes))
         self.assertTrue(all(event["data"]["status"] == "ok" for event in finishes))
         self.assertFalse((root / ".sb").exists())
+        tmp.cleanup()
+
+    def test_bare_artifact_write_inside_node_is_lowered_not_rejected(self) -> None:
+        """Regression: 2026-08-19 live reject 'node write-product: token 1:
+        stack underflow at WRITE-FILE'. A node program saying S" k" WRITE-FILE
+        for its own artifact key must validate exactly as it will run."""
+        tmp = tempfile.TemporaryDirectory()
+        root = Path(tmp.name)
+        (root / "dictionary").mkdir()
+        (root / ".t").mkdir()
+        envelope = parse_envelope(
+            {
+                "language": "forth",
+                "program": "",
+                "artifacts": {
+                    "src/backend/todo.shen": "(define todo -> done)\n",
+                    "src/frontend/todo.shen": "(define view -> ok)\n",
+                    "README.md": "# todo\n",
+                },
+                "nodes": [
+                    {
+                        "id": "write-product",
+                        "writes": ["src/**", "README.md"],
+                        "depends_on": [],
+                        "program": 'S" src/backend/todo.shen" WRITE-FILE\n'
+                        'S" src/frontend/todo.shen" WRITE-FILE\n'
+                        'S" README.md" WRITE-FILE',
+                    },
+                    {"id": "verify", "writes": [], "depends_on": ["write-product"], "program": "RECEIPT"},
+                ],
+                "rationale": "regression",
+            }
+        )
+        host = CapabilityHost(
+            workspace=root,
+            allowed_effects=("read", "write", "exec"),
+            allowed_globs=("**",),
+            forbidden_globs=(),
+            trace_path=root / ".t" / "trace.jsonl",
+            receipt_path=root / ".t" / "receipt.json",
+        )
+        request = {
+            "workspace": str(root),
+            "dictionary_dir": str(root / "dictionary"),
+            "receipt_path": str(root / ".t" / "receipt.json"),
+            "trace_path": str(root / ".t" / "trace.jsonl"),
+        }
+        run_forth(host, envelope, preflight=True, request=request)
+        for rel in ("src/backend/todo.shen", "src/frontend/todo.shen", "README.md"):
+            self.assertTrue((root / rel).is_file(), rel)
+        rejected = [e for e in read_events(root / ".t" / "trace.jsonl") if e["type"] == "preflight.rejected"]
+        self.assertEqual(rejected, [])
+        tmp.cleanup()
+
+    def test_bare_write_of_unowned_artifact_still_rejects(self) -> None:
+        """Lowering only covers a node's own keys; a bare write of a sibling's
+        artifact must still be a typed Reject before any mutation."""
+        tmp = tempfile.TemporaryDirectory()
+        root = Path(tmp.name)
+        (root / "dictionary").mkdir()
+        (root / ".t").mkdir()
+        envelope = parse_envelope(
+            {
+                "language": "forth",
+                "program": "",
+                "artifacts": {"src/app.py": "x = 1\n"},
+                "nodes": [
+                    {
+                        "id": "thief",
+                        "writes": ["docs/**"],
+                        "depends_on": [],
+                        "program": 'S" src/app.py" WRITE-FILE',
+                    }
+                ],
+                "rationale": "regression",
+            }
+        )
+        host = CapabilityHost(
+            workspace=root,
+            allowed_effects=("read", "write", "exec"),
+            allowed_globs=("**",),
+            forbidden_globs=(),
+            trace_path=root / ".t" / "trace.jsonl",
+            receipt_path=root / ".t" / "receipt.json",
+        )
+        request = {
+            "workspace": str(root),
+            "dictionary_dir": str(root / "dictionary"),
+            "receipt_path": str(root / ".t" / "receipt.json"),
+            "trace_path": str(root / ".t" / "trace.jsonl"),
+        }
+        with self.assertRaises(ExecutionError):
+            run_forth(host, envelope, preflight=True, request=request)
+        self.assertFalse((root / "src" / "app.py").exists())
         tmp.cleanup()
 
     def test_absent_nodes_keep_artifact_key_series(self) -> None:

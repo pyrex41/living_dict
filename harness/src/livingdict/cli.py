@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .envelope import EnvelopeError, PlanEnvelope, load_task_graph, parse_envelope
-from .execute import ExecutionError, metrics_line, prepare_program, run_forth
+from .execute import ExecutionError, lower_node_programs, metrics_line, prepare_program, run_forth
 from .gates import run_gates
 from .host import CapabilityHost
 from .preflight import validate
@@ -44,6 +44,7 @@ from .kernel import (
 from .policy import changed_files, snapshot
 from .rho import grant_mode_require
 from .space import Space
+from .trace import emit as trace_emit
 from .store import artifact_digests, capture_tree, intern_snapshot, open_store
 
 
@@ -331,6 +332,7 @@ def run_job(
         graph_file = workspace / "task_graph.json"
         if graph_file.is_file():
             observation["task_graph"] = graph_file.read_text(encoding="utf-8")
+        trace_emit(None, "planner.call", {"episode": episode})
         envelope = call_planner(cmd, observation, workspace=workspace)
         fp = fingerprint(envelope)
         planned: dict[str, Any] = {
@@ -363,7 +365,7 @@ def run_job(
             host.allowed_globs,
             host.forbidden_globs,
             envelope.artifacts,
-            nodes=envelope.nodes,
+            nodes=lower_node_programs(envelope.nodes, envelope.artifacts, workspace),
             task_graph=load_task_graph(workspace / "task_graph.json"),
         )
         if not critic["valid"]:
