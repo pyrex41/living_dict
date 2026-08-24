@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -225,4 +226,59 @@ class CheckClaimTests(unittest.TestCase):
         # generic 60-second command timeout.
         self.assertIn("missing Shen launcher", entry.get("reason", ""))
         self.assertFalse(entry.get("timed_out"))
+        tmp.cleanup()
+
+    def test_dependent_http_check_is_blocked_after_build_failure(self) -> None:
+        from livingdict.gates import run_gates
+
+        tmp = self._workspace(
+            {
+                "claims": [
+                    {"id": "build", "kind": "check", "command": "exit 7"},
+                    {"id": "http", "kind": "check", "command": "curl -sf http://127.0.0.1:1"},
+                ]
+            }
+        )
+        report = run_gates(Path(tmp.name), persist=False, allow_check=True)
+        checks = {item["id"]: item for item in report["gates"][0]["claims"]}
+        self.assertEqual(checks["build"]["returncode"], 7)
+        self.assertIn("blocked by failed prerequisite", checks["http"]["reason"])
+        self.assertIn("build", checks["http"]["blocked_by"])
+        tmp.cleanup()
+
+    def test_successful_static_gate_is_cached(self) -> None:
+        from livingdict.gates import run_gates
+
+        tmp = tempfile.TemporaryDirectory()
+        root = Path(tmp.name)
+        (root / "app.py").write_text("def main():\n    return 1\n" + ("# padding\n" * 20), encoding="utf-8")
+        (root / "claims.json").write_text(
+            json.dumps({"claims": [{"id": "main", "kind": "source", "path": "app.py", "any": ["def main"]}]}),
+            encoding="utf-8",
+        )
+        first = run_gates(root, persist=True)
+        second = run_gates(root, persist=True)
+        cached = [gate for gate in second["gates"] if gate.get("cached")]
+        self.assertTrue(cached, second)
+        tmp.cleanup()
+
+    def test_http_fixture_starts_once_and_is_torn_down(self) -> None:
+        from livingdict.gates import run_gates
+
+        tmp = tempfile.TemporaryDirectory()
+        root = Path(tmp.name)
+        fixture = {"command": f"{sys.executable} -m http.server 18765 --bind 127.0.0.1", "ready_url": "http://127.0.0.1:18765/"}
+        claims = {
+            "claims": [
+                {"id": "one", "kind": "check", "command": "curl -sf http://127.0.0.1:18765/", "fixture": fixture},
+                {"id": "two", "kind": "check", "command": "curl -sf http://127.0.0.1:18765/", "fixture": fixture},
+            ]
+        }
+        (root / "claims.json").write_text(json.dumps(claims), encoding="utf-8")
+        report = run_gates(root, persist=False, allow_check=True)
+        checks = report["gates"][0]["claims"]
+        self.assertTrue(all(item["passed"] for item in checks), report)
+        # Teardown is guaranteed; a second run can reclaim the same port.
+        report2 = run_gates(root, persist=False, allow_check=True)
+        self.assertTrue(report2["passed"], report2)
         tmp.cleanup()
