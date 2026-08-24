@@ -293,6 +293,33 @@ def critic_extra(errors: list[str]) -> str:
     return "\n".join(f"critic: {item}" for item in errors)
 
 
+def gate_feedback(report: dict[str, Any]) -> str:
+    """Make failed behavioral checks actionable for the next planner turn.
+
+    The compact gate stderr is useful for receipts but commonly omits the
+    compiler/test output that explains a failure.  Preserve bounded details
+    in planner backpressure so the model can repair the command or product.
+    """
+    lines: list[str] = []
+    for gate in report.get("gates") or []:
+        if not isinstance(gate, dict) or gate.get("passed") or gate.get("skipped"):
+            continue
+        lines.append(f"gate {gate.get('name') or '?'} failed: {gate.get('reason') or ''}".strip())
+        for claim in gate.get("claims") or []:
+            if not isinstance(claim, dict) or claim.get("passed"):
+                continue
+            detail = f"claim {claim.get('id') or '?'} failed"
+            if claim.get("command"):
+                detail += f"; command: {claim['command']}"
+            if claim.get("reason"):
+                detail += f"; reason: {claim['reason']}"
+            output = str(claim.get("output") or claim.get("stderr") or "").strip()
+            if output:
+                detail += f"; output: {output[-2000:]}"
+            lines.append(detail)
+    return "\n".join(lines)
+
+
 def _host(
     workspace: Path,
     run_dir: Path,
@@ -615,7 +642,11 @@ def run_job(
         append_progress(run_dir, episode, bits)
         extra = critic_extra(list(state.last_errors))
         if not report.get("passed"):
-            extra = (extra + "\n" if extra else "") + f"gates: {report.get('stderr') or 'not discharged'}"
+            details = gate_feedback(report)
+            summary = f"gates: {report.get('stderr') or 'not discharged'}"
+            extra = (extra + "\n" if extra else "") + summary
+            if details:
+                extra += "\n" + details
 
 
 def _finish(

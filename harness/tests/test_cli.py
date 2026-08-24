@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from livingdict.cli import _claim_quality, _meaningful_changed_files
+from livingdict.cli import _claim_quality, _meaningful_changed_files, gate_feedback
 
 from livingdict.envelope import PlanEnvelope
 from livingdict.execute import ExecutionError, lower_artifact_writes, run_forth
@@ -53,6 +53,30 @@ class LowerArtifactTests(unittest.TestCase):
         self.assertTrue(quality["source_only"])
         self.assertFalse(quality["has_executable_check"])
         self.assertTrue(quality["warnings"])
+
+    def test_failed_check_feedback_includes_command_and_output(self) -> None:
+        feedback = gate_feedback(
+            {
+                "gates": [
+                    {
+                        "name": "claims",
+                        "passed": False,
+                        "reason": "failed compile",
+                        "claims": [
+                            {
+                                "id": "compile",
+                                "kind": "check",
+                                "passed": False,
+                                "command": "gcc app.c -lm",
+                                "output": "undefined reference to expf",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+        self.assertIn("gcc app.c -lm", feedback)
+        self.assertIn("undefined reference to expf", feedback)
 
     def test_lowers_one_arity_writes_without_use_artifact(self) -> None:
         artifacts = {
