@@ -118,6 +118,7 @@ class FingerprintTests(unittest.TestCase):
         report = {"passed": False, "stderr": "failed", "gates": [{"name": "claims", "claims": [{"id": "run", "kind": "check", "command": "./app", "output": "bad", "passed": False}]}]}
         state = reduce(empty_state(), Event(kind=GATES_MEASURED, payload={"report": report}))
         self.assertEqual(state.last_failure["failed_claims"][0]["id"], "run")
+        self.assertEqual(len(state.attempt_history), 1)
 
     def test_nodes_change_fingerprint_without_affecting_absent(self) -> None:
         base = _env()

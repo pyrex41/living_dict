@@ -505,6 +505,8 @@ def run_job(
             observation["contract"] = json.loads(frozen_contract.read_text(encoding="utf-8"))
         if state.last_failure is not None:
             observation["last_failure"] = state.last_failure
+        if state.attempt_history:
+            observation["attempt_history"] = state.attempt_history
         if oracle_note is not None:
             observation["oracle_feedback"] = oracle_note
         if system_prompt:
@@ -781,6 +783,7 @@ def _finish(
         "tree_before": tree_before,
         "workspace": str(workspace),
         "last_failure": state.last_failure,
+        "attempt_history": state.attempt_history,
     }
     for key, value in (graph or {}).items():
         receipt[key] = value

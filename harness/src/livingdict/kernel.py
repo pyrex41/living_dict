@@ -79,6 +79,7 @@ class State:
     pending_execute: bool = False
     last_artifact_keys: tuple[str, ...] = ()
     last_failure: dict[str, Any] | None = None
+    attempt_history: tuple[dict[str, Any], ...] = ()
 
 
 def empty_state() -> State:
@@ -127,6 +128,7 @@ def clone_state(state: State) -> State:
         pending_execute=state.pending_execute,
         last_artifact_keys=state.last_artifact_keys,
         last_failure=copy.deepcopy(state.last_failure),
+        attempt_history=copy.deepcopy(state.attempt_history),
     )
 
 
@@ -219,7 +221,10 @@ def reduce(state: State, event: Event) -> State:
                     if isinstance(claim, dict) and not claim.get("passed"):
                         failed.append({key: claim.get(key) for key in ("id", "kind", "command", "reason", "returncode", "output", "timed_out") if key in claim})
             failure = {"failed_claims": failed, "stderr": report.get("stderr", "")}
-        new = State(**{**new.__dict__, "last_gates": copy.deepcopy(report), "last_failure": failure})
+        history = new.attempt_history
+        summary = {"passed": bool(report and report.get("passed")), "failure": copy.deepcopy(failure)}
+        history = (history + (summary,))[-8:]
+        new = State(**{**new.__dict__, "last_gates": copy.deepcopy(report), "last_failure": failure, "attempt_history": history})
     elif event.kind == BUDGET_CONSUMED:
         try:
             steps = int(payload.get("steps") if payload.get("steps") is not None else 1)
