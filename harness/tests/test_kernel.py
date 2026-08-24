@@ -213,10 +213,10 @@ class ReconcileTests(unittest.TestCase):
         state = reduce(state, Event(kind=EPISODE_PLANNED, payload={"fingerprint": fp}))
         self.assertFalse(state.pending_execute)
         state = reduce(state, Event(kind=EPISODE_BLOCKED_DUPLICATE, payload={"fingerprint": fp}))
-        self.assertEqual(reconcile(state, 8).kind, DECISION_BLOCKED)
+        self.assertEqual(reconcile(state, 8).kind, DECISION_PLAN)
         state = reduce(state, Event(kind=EPISODE_PLANNED, payload={"fingerprint": fp}))
         state = reduce(state, Event(kind=EPISODE_BLOCKED_DUPLICATE, payload={"fingerprint": fp}))
-        self.assertEqual(reconcile(state, 8).kind, DECISION_PLAN)
+        self.assertEqual(reconcile(state, 8).kind, DECISION_BLOCKED)
 
     def test_unique_plan_resets_duplicate_streak(self) -> None:
         first = fingerprint(_env(program="RECEIPT"))
