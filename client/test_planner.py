@@ -43,6 +43,10 @@ class PlannerParseTests(unittest.TestCase):
         self.assertIn("depends_on", SYSTEM)
         self.assertIn("Kahn", SYSTEM)
 
+    def test_system_requires_behavioral_acceptance_claim(self) -> None:
+        self.assertIn('"kind":"check"', SYSTEM)
+        self.assertIn("Source/file/absent claims are supplementary", SYSTEM)
+
     def test_normalize_keeps_nodes_and_allows_empty_program(self) -> None:
         env = normalize_envelope(
             {

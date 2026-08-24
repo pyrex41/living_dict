@@ -529,7 +529,14 @@ def run_job(
         report = measure_workspace(
             workspace,
             claims,
-            allow_check=receipt_fields["claims_source"] in ("hidden", "approved"),
+            # Benchmark runs are an explicit, isolated auto-approval lane:
+            # the planner owns the contract, and its executable checks must
+            # actually run.  Ordinary model-authored contracts remain
+            # untrusted (checks require a hidden/approved contract).
+            allow_check=(
+                receipt_fields["claims_source"] in ("hidden", "approved")
+                or bool(receipt_fields.get("benchmark_mode"))
+            ),
         )
         after, tree_after = capture_tree(workspace, store)
         all_changed = changed_files(before, after)

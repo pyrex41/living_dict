@@ -79,8 +79,16 @@ Rules:
 - Do not emit a program that only reads files and writes a RECEIPT.
   Leftover product from an earlier job is not this goal being done.
 - FIRST episode (or whenever claims.json is missing): write claims.json
-  that states how THIS goal is done. Shape:
-    {"claims":[{"id":"…","kind":"source|file|absent","any":["needle"],"path":"src/…","min_bytes":200}]}
+  that states how THIS goal is done. The claims are the model's acceptance
+  criteria, not a changelog. Include at least one executable behavioral
+  check, for example:
+    {"claims":[{"id":"tests","kind":"check","command":"python -m pytest -q","timeout_seconds":120}]}
+  A check must exercise the requested behavior (not `true`, a grep of the
+  source, or merely checking that a file exists). If no test runner exists,
+  write a small deterministic smoke command as part of this episode and
+  claim that command. Source/file/absent claims are supplementary evidence
+  only; a set made entirely from those is incomplete and will be sent back
+  for repair in benchmark mode.
   Each real feature claim MUST name a source path that is not index.html.
   A title tag is not a product. Claims are derived from the GOAL.
 - Then write product files for this increment only.
