@@ -83,12 +83,14 @@ Rules:
   criteria, not a changelog. Include at least one executable behavioral
   check, for example:
     {"claims":[{"id":"tests","kind":"check","command":"python -m pytest -q","timeout_seconds":120}]}
-  A check must exercise the requested behavior (not `true`, a grep of the
-  source, or merely checking that a file exists). If no test runner exists,
-  write a small deterministic smoke command as part of this episode and
-  claim that command. Source/file/absent claims are supplementary evidence
-  only; a set made entirely from those is incomplete and will be sent back
-  for repair in benchmark mode.
+  A behavior-oriented goal (run, execute, output, serve, HTTP/API, render,
+  sample, or similar) MUST include a check that invokes the product and
+  asserts an observable result. A compile command, `test -x`, source grep, or
+  file-size check is structural evidence only and is insufficient. If no test
+  runner exists, write a deterministic smoke command as part of this episode
+  and assert its output or exit behavior. Source/file/absent claims are
+  supplementary evidence only; a set without a behavioral check is incomplete
+  and will be sent back for repair in benchmark mode.
   Each real feature claim MUST name a source path that is not index.html.
   A title tag is not a product. Claims are derived from the GOAL.
 - Then write product files for this increment only.

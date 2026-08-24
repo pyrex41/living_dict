@@ -45,7 +45,8 @@ class PlannerParseTests(unittest.TestCase):
 
     def test_system_requires_behavioral_acceptance_claim(self) -> None:
         self.assertIn('"kind":"check"', SYSTEM)
-        self.assertIn("Source/file/absent claims are supplementary", SYSTEM)
+        self.assertIn("Source/file/absent claims are", SYSTEM)
+        self.assertIn("MUST include a check that invokes the product", SYSTEM)
 
     def test_normalize_keeps_nodes_and_allows_empty_program(self) -> None:
         env = normalize_envelope(

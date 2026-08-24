@@ -94,7 +94,10 @@ to be the thing that creates the job stack. The host owns that.
    remain the meaningful behavior signal. `--benchmark` is an explicit
    isolated auto-approval lane: model-authored check claims are executed,
    while source-only contracts remain incomplete and are fed back to the
-   planner. Normal runs still require hidden/approved contracts for checks.
+   planner. For behavior-oriented goals, compile-only, file-size, and
+   executable-presence checks are structural and cannot discharge the
+   contract without a check that invokes the product and observes a result.
+   Normal runs still require hidden/approved contracts for checks.
 
 To score this loop against grok headless and pi headless on the same
 prompt, see [`COMPARE.md`](COMPARE.md).

@@ -54,6 +54,25 @@ class LowerArtifactTests(unittest.TestCase):
         self.assertFalse(quality["has_executable_check"])
         self.assertTrue(quality["warnings"])
 
+    def test_behavior_goal_rejects_compile_only_check(self) -> None:
+        quality = _claim_quality(
+            {"gates": [{"name": "claims", "claims": [
+                {"id": "compile", "kind": "check", "command": "gcc -O3 app.c -lm && test -x a.out"}
+            ]}]},
+            "write a program and run it to print the expected output",
+        )
+        self.assertTrue(quality["requires_behavior"])
+        self.assertFalse(quality["has_behavioral_check"])
+
+    def test_behavior_goal_accepts_runtime_assertion(self) -> None:
+        quality = _claim_quality(
+            {"gates": [{"name": "claims", "claims": [
+                {"id": "run", "kind": "check", "command": "./a.out input | grep -F expected"}
+            ]}]},
+            "run the program and print the expected output",
+        )
+        self.assertTrue(quality["has_behavioral_check"])
+
     def test_failed_check_feedback_includes_command_and_output(self) -> None:
         feedback = gate_feedback(
             {

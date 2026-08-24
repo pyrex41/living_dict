@@ -13,6 +13,7 @@ import shlex
 import subprocess
 import sys
 import threading
+import re
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -88,7 +89,35 @@ def _meaningful_changed_files(changed: list[str]) -> list[str]:
     ]
 
 
-def _claim_quality(report: dict[str, Any]) -> dict[str, Any]:
+_BEHAVIOR_WORDS = re.compile(
+    r"\b(run|execute|output|print|sample|serve|server|http|api|respond|render|"
+    r"request|response|compile and run|program)\b",
+    re.IGNORECASE,
+)
+_STRUCTURAL_CHECK = re.compile(
+    r"^(?:(?:gcc|g\+\+|clang|cc)\b|test\s+-[efxbs]|(?:wc|grep|sed|awk)\b)",
+    re.IGNORECASE,
+)
+_BEHAVIORAL_CHECK = re.compile(
+    r"(?:pytest|unittest|npm\s+(?:test|run)|cargo\s+test|go\s+test|mvn\s+test|"
+    r"curl\b|wget\b|assert|diff\b|expected|output|stdout|http://|https://|"
+    r"(?:^|\s)(?:\./|python(?:3)?\s+|node\s+|ruby\s+|java\s+))",
+    re.IGNORECASE,
+)
+
+
+def _goal_requires_behavior(goal: str) -> bool:
+    return bool(_BEHAVIOR_WORDS.search(goal or ""))
+
+
+def _is_behavioral_check(command: str) -> bool:
+    command = command.strip()
+    if not command or _STRUCTURAL_CHECK.match(command):
+        return False
+    return bool(_BEHAVIORAL_CHECK.search(command))
+
+
+def _claim_quality(report: dict[str, Any], goal: str = "") -> dict[str, Any]:
     """Audit model-authored claims without treating them as benchmark scores."""
     claim_gate = next(
         (gate for gate in report.get("gates") or [] if gate.get("name") == "claims"),
@@ -97,13 +126,21 @@ def _claim_quality(report: dict[str, Any]) -> dict[str, Any]:
     claims = claim_gate.get("claims") or []
     kinds = {str(item.get("kind") or "source").lower() for item in claims if isinstance(item, dict)}
     source_only = bool(claims) and kinds <= {"source", "file", "absent"}
+    checks = [item for item in claims if isinstance(item, dict) and str(item.get("kind") or "").lower() == "check"]
+    has_behavioral_check = any(_is_behavioral_check(str(item.get("command") or "")) for item in checks)
+    requires_behavior = _goal_requires_behavior(goal)
+    warnings: list[str] = []
+    if source_only:
+        warnings.append("claims are source/file presence only; add behavior or executable checks")
+    if requires_behavior and checks and not has_behavioral_check:
+        warnings.append("behavior-oriented goal has no runtime behavioral check")
     return {
         "source_only": source_only,
         "claim_count": len(claims),
         "has_executable_check": "check" in kinds,
-        "warnings": [
-            "claims are source/file presence only; add behavior or executable checks"
-        ] if source_only else [],
+        "requires_behavior": requires_behavior,
+        "has_behavioral_check": has_behavioral_check,
+        "warnings": warnings,
     }
 
 
@@ -574,16 +611,22 @@ def run_job(
             "changed_files": all_changed,
             "meaningful_files": meaningful,
         }
-        report["claim_quality"] = _claim_quality(report)
+        report["claim_quality"] = _claim_quality(report, goal)
         benchmark_weak_claims = bool(
             receipt_fields.get("benchmark_mode")
             and receipt_fields["claims_source"] == "workspace"
             and report["claim_quality"].get("source_only")
         )
+        benchmark_missing_behavior = bool(
+            receipt_fields.get("benchmark_mode")
+            and receipt_fields["claims_source"] == "workspace"
+            and report["claim_quality"].get("requires_behavior")
+            and not report["claim_quality"].get("has_behavioral_check")
+        )
         if (
             receipt_fields["claims_source"] == "workspace"
             and not meaningful
-        ) or benchmark_weak_claims:
+        ) or benchmark_weak_claims or benchmark_missing_behavior:
             report["passed"] = False
             report.setdefault("gates", []).append(
                 {
@@ -594,6 +637,8 @@ def run_job(
                     "reason": (
                         "benchmark mode requires an executable or behavioral claim"
                         if benchmark_weak_claims
+                        else "benchmark mode requires a runtime behavioral check for this goal"
+                        if benchmark_missing_behavior
                         else "model-authored claims made no meaningful product change"
                     ),
                 }
