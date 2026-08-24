@@ -407,6 +407,7 @@ def run_job(
     receipt_extra: dict[str, Any] | None = None,
     grant_verified: bool = False,
     contract: dict[str, Any] | None = None,
+    oracle_feedback: Callable[[Path, dict[str, Any]], dict[str, Any] | None] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     workspace = Path(workspace).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
@@ -435,6 +436,7 @@ def run_job(
     cmd = list(planner_cmd) if planner_cmd else default_planner_cmd()
     state = empty_state()
     extra = ""
+    oracle_note: dict[str, Any] | None = None
     frozen_contract = Path(claims) if claims is not None else run_dir / "contract.json"
     if isinstance(contract, (str, Path)):
         frozen_contract = Path(contract)
@@ -503,6 +505,8 @@ def run_job(
             observation["contract"] = json.loads(frozen_contract.read_text(encoding="utf-8"))
         if state.last_failure is not None:
             observation["last_failure"] = state.last_failure
+        if oracle_note is not None:
+            observation["oracle_feedback"] = oracle_note
         if system_prompt:
             observation["system"] = system_prompt
         graph_file = workspace / "task_graph.json"
@@ -647,6 +651,14 @@ def run_job(
                     "reason": "model attempted to change the approved contract",
                 })
                 report["stderr"] = (str(report.get("stderr") or "") + "\nmodel attempted to change the approved contract").strip()
+        if oracle_feedback is not None:
+            try:
+                candidate = oracle_feedback(workspace, report)
+                oracle_note = dict(candidate) if isinstance(candidate, dict) else None
+            except Exception as exc:  # oracle diagnostics are advisory only
+                oracle_note = {"name": "oracle", "passed": False, "error": str(exc)}
+            if oracle_note is not None:
+                report["oracle_feedback"] = oracle_note
         after, tree_after = capture_tree(workspace, store)
         all_changed = changed_files(before, after)
         meaningful = _meaningful_changed_files(all_changed)

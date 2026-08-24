@@ -99,6 +99,11 @@ to be the thing that creates the job stack. The host owns that.
    contract without a check that invokes the product and observes a result.
    Normal runs still require hidden/approved contracts for checks.
 
+   Adapters may provide an advisory `oracle_feedback(workspace, report)`
+   callback to `run_job`. Its structured result is shown to the next planner
+   episode and recorded with the gate report, but it cannot approve claims,
+   mutate the frozen contract, or change the core success predicate.
+
 To score this loop against grok headless and pi headless on the same
 prompt, see [`COMPARE.md`](COMPARE.md).
 

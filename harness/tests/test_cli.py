@@ -100,6 +100,7 @@ class LowerArtifactTests(unittest.TestCase):
     def test_contract_digest_ignores_json_formatting(self) -> None:
         self.assertEqual(_json_digest('{"claims": [{"id": "x"}]}'), _json_digest('{"claims":[{"id":"x"}]}'))
 
+
     def test_lowers_one_arity_writes_without_use_artifact(self) -> None:
         artifacts = {
             "README.md": "x",
