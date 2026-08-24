@@ -540,6 +540,14 @@ def draft_claims(goal: str, workspace: Path, prior: Any = None, feedback: str = 
     return result
 
 
+def repair_context(payload: dict[str, Any]) -> str:
+    """Render durable harness state into the next planner prompt."""
+    fields = {key: payload[key] for key in ("contract", "last_failure", "attempt_history", "oracle_feedback") if payload.get(key) is not None}
+    if not fields:
+        return ""
+    return "REPAIR STATE (contract is frozen; repair the product, never weaken it):\n" + json.dumps(fields, ensure_ascii=False, sort_keys=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Living Dictionary Grok 4.6 planner")
     parser.add_argument("--goal", help="natural-language goal")
@@ -563,6 +571,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         goal = str(payload.get("goal") or goal)
         extra = str(payload.get("extra") or "")
+        structured = repair_context(payload)
+        if structured:
+            extra = (extra + "\n\n" if extra else "") + structured
         ws = payload.get("workspace")
         if ws:
             args.workspace = Path(ws)

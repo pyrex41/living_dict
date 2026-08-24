@@ -12,6 +12,7 @@ from planner import (
     observe_graph,
     observe_workspace,
     parse_stream_chunk,
+    repair_context,
 )
 
 
@@ -47,6 +48,11 @@ class PlannerParseTests(unittest.TestCase):
         self.assertIn('"kind":"check"', SYSTEM)
         self.assertIn("Source/file/absent claims are", SYSTEM)
         self.assertIn("MUST include a check that invokes the product", SYSTEM)
+
+    def test_repair_context_preserves_failure_and_contract(self) -> None:
+        text = repair_context({"contract": {"claims": []}, "last_failure": {"failed_claims": [{"id": "run"}]}})
+        self.assertIn("contract is frozen", text)
+        self.assertIn("failed_claims", text)
 
     def test_normalize_keeps_nodes_and_allows_empty_program(self) -> None:
         env = normalize_envelope(
