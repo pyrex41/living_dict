@@ -47,6 +47,9 @@ class LivingDictionary(BaseInstalledAgent):
         return "python3 /tmp/living_dict/bin/livingdict --help >/dev/null && git -C /tmp/living_dict rev-parse --short HEAD"
 
     async def install(self, environment: BaseEnvironment) -> None:
+        await self.ensure_system_dependencies(
+            environment, ("git", "ca_certificates", "python3")
+        )
         repo = shlex.quote(self._repo_url)
         ref = shlex.quote(self._repo_ref)
         await self.exec_as_agent(
