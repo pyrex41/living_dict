@@ -377,7 +377,7 @@ def run_external_arm(
     return raw
 
 
-def measure_hidden_claims(workspace: Path, claims_path: Path) -> dict[str, Any]:
+def measure_hidden_claims(workspace: Path, claims_path: Path, *, allow_check: bool = False) -> dict[str, Any]:
     dest = workspace / "claims.json"
     backup: str | None = None
     existed = dest.is_file()
@@ -385,7 +385,7 @@ def measure_hidden_claims(workspace: Path, claims_path: Path) -> dict[str, Any]:
         backup = dest.read_text(encoding="utf-8")
     dest.write_text(claims_path.read_text(encoding="utf-8"), encoding="utf-8")
     try:
-        return run_gates_report(workspace)
+        return run_gates_report(workspace, allow_check=allow_check)
     finally:
         if existed and backup is not None:
             dest.write_text(backup, encoding="utf-8")
@@ -393,11 +393,14 @@ def measure_hidden_claims(workspace: Path, claims_path: Path) -> dict[str, Any]:
             dest.unlink()
 
 
-def run_gates_report(workspace: Path, timeout: float = 180.0) -> dict[str, Any]:
+def run_gates_report(workspace: Path, timeout: float = 180.0, *, allow_check: bool = False) -> dict[str, Any]:
     if not GATES_PY.is_file():
         return {"passed": False, "error": f"missing {GATES_PY}"}
+    argv = [sys.executable, str(GATES_PY), str(workspace), str(int(timeout))]
+    if allow_check:
+        argv.append("--allow-check")
     raw = run_cmd(
-        [sys.executable, str(GATES_PY), str(workspace), str(int(timeout))],
+        argv,
         cwd=workspace,
         timeout=timeout + 30,
     )
@@ -617,7 +620,12 @@ def main(argv: list[str] | None = None) -> int:
         raw["workspace"] = str(arm_dir)
         raw["changed_files"] = changed(before, after)
         if args.claims:
-            raw["judge"] = measure_hidden_claims(arm_dir, args.claims)
+            try:
+                claim_blob = json.loads(args.claims.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                claim_blob = {}
+            has_checks = any(item.get("kind") == "check" for item in (claim_blob.get("claims") or []) if isinstance(item, dict))
+            raw["judge"] = measure_hidden_claims(arm_dir, args.claims, allow_check=has_checks)
         elif args.gates:
             raw["judge"] = run_gates_report(arm_dir)
         slim = {

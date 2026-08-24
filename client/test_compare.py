@@ -258,6 +258,20 @@ class RunLoopTests(unittest.TestCase):
         self.assertTrue(report.get("passed"), report)
         self.assertFalse((root / "claims.json").exists())
 
+    def test_hidden_check_claims_are_authorized_for_compare_judge(self) -> None:
+        from compare import measure_hidden_claims
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name) / "arm"
+        root.mkdir()
+        claims = Path(tmp.name) / "claims.json"
+        claims.write_text(json.dumps({"claims": [{"id": "ok", "kind": "check", "command": "true"}]}), encoding="utf-8")
+        report = measure_hidden_claims(root, claims, allow_check=True)
+        entry = next(c for c in report["gates"][0]["claims"] if c["id"] == "ok")
+        self.assertTrue(entry["passed"], report)
+        self.assertFalse((root / "claims.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

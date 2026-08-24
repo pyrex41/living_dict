@@ -212,3 +212,17 @@ class CheckClaimTests(unittest.TestCase):
         self.assertEqual(by_id["bad"]["returncode"], 3)
         self.assertFalse(claims_gate["passed"])
         tmp.cleanup()
+
+    def test_bifrost_without_shen_launcher_fails_fast(self) -> None:
+        from livingdict.gates import run_gates
+
+        tmp = self._workspace(
+            {"claims": [{"id": "shake", "kind": "check", "command": "bifrost --shake"}]}
+        )
+        report = run_gates(Path(tmp.name), persist=False, allow_check=True)
+        entry = next(c for c in report["gates"][0]["claims"] if c["id"] == "shake")
+        # The test environment has no Shen launcher; this must not consume the
+        # generic 60-second command timeout.
+        self.assertIn("missing Shen launcher", entry.get("reason", ""))
+        self.assertFalse(entry.get("timed_out"))
+        tmp.cleanup()
