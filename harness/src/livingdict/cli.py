@@ -457,6 +457,7 @@ def run_job(
             "fingerprint": fp,
             "program": envelope.program,
             "rationale": envelope.rationale,
+            "dedupe_key": f"{fp}:{episode_tree_before}",
         }
         if envelope.nodes:
             planned["nodes"] = [

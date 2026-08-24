@@ -219,6 +219,14 @@ class ReconcileTests(unittest.TestCase):
         self.assertTrue(state.pending_execute)
         self.assertEqual(reconcile(state, 8).kind, DECISION_PLAN)
 
+    def test_same_plan_after_workspace_change_is_retryable(self) -> None:
+        fp = fingerprint(_env())
+        state = empty_state()
+        state = reduce(state, Event(kind=EPISODE_PLANNED, payload={"fingerprint": fp, "dedupe_key": "a"}))
+        state = reduce(state, Event(kind=EPISODE_PLANNED, payload={"fingerprint": fp, "dedupe_key": "b"}))
+        self.assertTrue(state.pending_execute)
+        self.assertEqual(state.consecutive_duplicates, 0)
+
     def test_cap_is_halt_never_success(self) -> None:
         state = reduce(empty_state(), Event(kind=BUDGET_CONSUMED, payload={"steps": 2}))
         decision = reconcile(state, 2)

@@ -149,18 +149,22 @@ def reduce(state: State, event: Event) -> State:
     payload = _payload(event)
     if event.kind == EPISODE_PLANNED:
         fingerprint_hex = str(payload.get("fingerprint") or "")
+        # A repeated plan is only a duplicate when it is proposed against the
+        # same product state.  A model may legitimately reuse a repair plan
+        # after an earlier episode changed the workspace.
+        dedupe_key = str(payload.get("dedupe_key") or fingerprint_hex)
         new = State(
             **{
                 **new.__dict__,
                 "last_fingerprint": fingerprint_hex,
             }
         )
-        if fingerprint_hex and fingerprint_hex in new.seen_plans:
+        if dedupe_key and dedupe_key in new.seen_plans:
             new = State(**{**new.__dict__, "pending_execute": False})
         else:
             seen = new.seen_plans
-            if fingerprint_hex:
-                seen = seen + (fingerprint_hex,)
+            if dedupe_key:
+                seen = seen + (dedupe_key,)
             new = State(
                 **{
                     **new.__dict__,
