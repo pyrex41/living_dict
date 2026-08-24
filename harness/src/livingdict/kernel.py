@@ -273,10 +273,12 @@ def claims_discharged(report: Any) -> bool:
     return True
 
 
-def reconcile(state: State, cap: int) -> Decision:
+def reconcile(state: State, cap: int, *, stop_on_duplicates: bool = True) -> Decision:
     """Total next action: success | blocked | halt_cap | plan."""
     if claims_discharged(state.last_gates):
         return Decision(DECISION_SUCCESS, "claims discharged")
+    if stop_on_duplicates and state.consecutive_duplicates >= 2:
+        return Decision(DECISION_BLOCKED, "feedback loop")
     limit = int(cap)
     if limit > 0 and state.used >= limit:
         return Decision(DECISION_HALT_CAP, "cap reached")

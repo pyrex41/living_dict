@@ -426,7 +426,11 @@ def run_job(
     cmd = list(planner_cmd) if planner_cmd else default_planner_cmd()
     state = empty_state()
     extra = ""
-    frozen_contract = Path(contract) if contract is not None else run_dir / "contract.json"
+    frozen_contract = Path(claims) if claims is not None else run_dir / "contract.json"
+    if isinstance(contract, (str, Path)):
+        frozen_contract = Path(contract)
+    elif isinstance(contract, dict):
+        frozen_contract.write_text(json.dumps(contract, sort_keys=True), encoding="utf-8")
     store = open_store(run_dir)
     space = Space(store=store)
     before, job_tree_before = capture_tree(workspace, store)
@@ -457,7 +461,11 @@ def run_job(
                 receipt_extra=receipt_fields,
                 tree_before=job_tree_before,
             )
-        decision = reconcile(state, max_turns)
+        decision = reconcile(
+            state,
+            max_turns,
+            stop_on_duplicates=not bool(receipt_fields.get("benchmark_mode")),
+        )
         if decision.kind != "plan":
             return _finish(
                 decision,
@@ -480,10 +488,12 @@ def run_job(
             "extra": extra,
             "goal": goal,
             "run_dir": str(run_dir),
-            "contract": json.loads(frozen_contract.read_text(encoding="utf-8")) if frozen_contract.is_file() else None,
-            "last_failure": state.last_failure,
             "workspace": str(workspace),
         }
+        if frozen_contract.is_file():
+            observation["contract"] = json.loads(frozen_contract.read_text(encoding="utf-8"))
+        if state.last_failure is not None:
+            observation["last_failure"] = state.last_failure
         if system_prompt:
             observation["system"] = system_prompt
         graph_file = workspace / "task_graph.json"

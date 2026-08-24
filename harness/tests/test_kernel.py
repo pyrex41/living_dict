@@ -213,7 +213,7 @@ class ReconcileTests(unittest.TestCase):
         state = reduce(state, Event(kind=EPISODE_PLANNED, payload={"fingerprint": fp}))
         self.assertFalse(state.pending_execute)
         state = reduce(state, Event(kind=EPISODE_BLOCKED_DUPLICATE, payload={"fingerprint": fp}))
-        self.assertEqual(reconcile(state, 8).kind, DECISION_PLAN)
+        self.assertEqual(reconcile(state, 8).kind, DECISION_BLOCKED)
         state = reduce(state, Event(kind=EPISODE_PLANNED, payload={"fingerprint": fp}))
         state = reduce(state, Event(kind=EPISODE_BLOCKED_DUPLICATE, payload={"fingerprint": fp}))
         self.assertEqual(reconcile(state, 8).kind, DECISION_PLAN)
@@ -255,7 +255,7 @@ class ReconcileTests(unittest.TestCase):
             state = reduce(state, Event(kind=EPISODE_PLANNED, payload={"fingerprint": fp}))
             state = reduce(state, Event(kind=EPISODE_BLOCKED_DUPLICATE, payload={"fingerprint": fp}))
         state = reduce(state, Event(kind=BUDGET_CONSUMED, payload={"steps": 4}))
-        self.assertEqual(reconcile(state, 4).kind, DECISION_HALT_CAP)
+        self.assertEqual(reconcile(state, 4).kind, DECISION_BLOCKED)
 
     def test_reject_does_not_discharge(self) -> None:
         state = replay(
