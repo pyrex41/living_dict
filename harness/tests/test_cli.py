@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from livingdict.cli import _claim_quality, _meaningful_changed_files
+
 from livingdict.envelope import PlanEnvelope
 from livingdict.execute import ExecutionError, lower_artifact_writes, run_forth
 from livingdict.host import CapabilityHost
@@ -29,6 +31,29 @@ HISTORICAL = (
 
 
 class LowerArtifactTests(unittest.TestCase):
+    def test_bookkeeping_is_not_meaningful_progress(self) -> None:
+        self.assertEqual(
+            _meaningful_changed_files(
+                ["claims.json", ".sb/discharge_report.json", ".livingdict-run/events.jsonl", "src/app.py"]
+            ),
+            ["src/app.py"],
+        )
+
+    def test_source_only_claims_are_audited_as_weak(self) -> None:
+        quality = _claim_quality(
+            {
+                "gates": [
+                    {
+                        "name": "claims",
+                        "claims": [{"id": "x", "kind": "source", "passed": True}],
+                    }
+                ]
+            }
+        )
+        self.assertTrue(quality["source_only"])
+        self.assertFalse(quality["has_executable_check"])
+        self.assertTrue(quality["warnings"])
+
     def test_lowers_one_arity_writes_without_use_artifact(self) -> None:
         artifacts = {
             "README.md": "x",

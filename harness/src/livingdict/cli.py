@@ -73,6 +73,38 @@ DEFAULT_FORBIDDEN = (
     "build/**",
 )
 DEFAULT_MAX_TURNS = 32
+BOOKKEEPING_PATHS = {
+    "claims.json",
+}
+
+
+def _meaningful_changed_files(changed: list[str]) -> list[str]:
+    """Exclude harness bookkeeping from the product-progress signal."""
+    return [
+        rel
+        for rel in changed
+        if rel not in BOOKKEEPING_PATHS
+        and not rel.startswith((".livingdict-run/", ".sb/"))
+    ]
+
+
+def _claim_quality(report: dict[str, Any]) -> dict[str, Any]:
+    """Audit model-authored claims without treating them as benchmark scores."""
+    claim_gate = next(
+        (gate for gate in report.get("gates") or [] if gate.get("name") == "claims"),
+        {},
+    )
+    claims = claim_gate.get("claims") or []
+    kinds = {str(item.get("kind") or "source").lower() for item in claims if isinstance(item, dict)}
+    source_only = bool(claims) and kinds <= {"source", "file", "absent"}
+    return {
+        "source_only": source_only,
+        "claim_count": len(claims),
+        "has_executable_check": "check" in kinds,
+        "warnings": [
+            "claims are source/file presence only; add behavior or executable checks"
+        ] if source_only else [],
+    }
 
 
 class CLIError(Exception):
@@ -500,6 +532,46 @@ def run_job(
             allow_check=receipt_fields["claims_source"] in ("hidden", "approved"),
         )
         after, tree_after = capture_tree(workspace, store)
+        all_changed = changed_files(before, after)
+        meaningful = _meaningful_changed_files(all_changed)
+        report["progress"] = {
+            "passed": bool(meaningful) or receipt_fields["claims_source"] in ("hidden", "approved"),
+            "changed_files": all_changed,
+            "meaningful_files": meaningful,
+        }
+        report["claim_quality"] = _claim_quality(report)
+        benchmark_weak_claims = bool(
+            receipt_fields.get("benchmark_mode")
+            and receipt_fields["claims_source"] == "workspace"
+            and report["claim_quality"].get("source_only")
+        )
+        if (
+            receipt_fields["claims_source"] == "workspace"
+            and not meaningful
+        ) or benchmark_weak_claims:
+            report["passed"] = False
+            report.setdefault("gates", []).append(
+                {
+                    "name": "progress",
+                    "passed": False,
+                    "skipped": False,
+                    "layer": "goal",
+                    "reason": (
+                        "benchmark mode requires an executable or behavioral claim"
+                        if benchmark_weak_claims
+                        else "model-authored claims made no meaningful product change"
+                    ),
+                }
+            )
+            report["stderr"] = (
+                str(report.get("stderr") or "")
+                + "\n"
+                + (
+                    "benchmark mode requires an executable or behavioral claim"
+                    if benchmark_weak_claims
+                    else "model-authored claims made no meaningful product change"
+                )
+            ).strip()
         state = _commit(
             state,
             GATES_MEASURED,
@@ -594,6 +666,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cwd", type=Path, default=Path("."), help="product workspace")
     parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
     parser.add_argument("--claims", type=Path, help="hidden claims.json used for discharge")
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="mark the receipt as benchmark-driven; native verification remains authoritative",
+    )
     parser.add_argument("--run-dir", type=Path, help="job state directory (default: CWD/.livingdict-run)")
     parser.add_argument(
         "--planner-cmd",
@@ -647,6 +724,7 @@ def main(argv: list[str] | None = None) -> int:
             planner_cmd=planner_cmd,
             wave_workers=args.wave_workers,
             serial=args.serial,
+            receipt_extra={"benchmark_mode": True} if args.benchmark else None,
         )
     except (CLIError, EnvelopeError, KernelError) as exc:
         print(str(exc), file=sys.stderr)

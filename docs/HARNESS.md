@@ -87,6 +87,12 @@ to be the thing that creates the job stack. The host owns that.
    `.livingdict-run/gates-cache.json` and invalidated by the workspace/spec
    fingerprint; check claims are never cached.
 
+9. **Model-authored claims are audited, not trusted blindly.** Gate reports
+   record `claim_quality` and `progress`. Changes limited to `claims.json`,
+   `.sb/`, or `.livingdict-run/` do not count as product progress. Source/file
+   claims are weak evidence; executable checks or benchmark-native verifiers
+   remain the meaningful behavior signal.
+
 To score this loop against grok headless and pi headless on the same
 prompt, see [`COMPARE.md`](COMPARE.md).
 

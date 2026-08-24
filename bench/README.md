@@ -10,7 +10,7 @@ Run a one-task smoke test locally (Docker is required):
 
 ```bash
 PYTHONPATH=. harbor run \
-  --dataset terminal-bench@2.1 \
+  --dataset terminal-bench/terminal-bench \
   --agent bench.harbor_livingdict:LivingDictionary \
   --model xai/grok-4.6 \
   --n-tasks 1 --n-concurrent 1 \
@@ -42,4 +42,6 @@ swebench eval verified \
 The generator records the Living Dictionary exit/stderr alongside the
 standard `instance_id`, `model_name_or_path`, and `model_patch` fields. A
 failed or timed-out agent produces an empty patch and remains a benchmark
-failure; it is never converted into a pass by a local claim.
+failure; it is never converted into a pass by a local claim. It excludes
+Living Dictionary bookkeeping (`claims.json`, `.sb/`, and `.livingdict-run/`)
+from the patch.
