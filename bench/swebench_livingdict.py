@@ -32,6 +32,47 @@ def task_prompt(row: dict[str, object]) -> str:
     )
 
 
+def patch_for_workspace(workspace: Path, base_commit: str) -> tuple[str, list[str]]:
+    """Return tracked plus newly-created product files as one git patch."""
+    tracked = subprocess.run(
+        ["git", "diff", "--binary", base_commit],
+        cwd=workspace,
+        text=True,
+        capture_output=True,
+        timeout=300,
+        check=False,
+    )
+    names = subprocess.run(
+        ["git", "status", "--short", "--untracked-files=all"],
+        cwd=workspace,
+        text=True,
+        capture_output=True,
+        timeout=300,
+        check=False,
+    )
+    changed = []
+    for line in names.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        rel = line[3:].strip()
+        if rel == "claims.json" or rel.startswith(".livingdict-run/"):
+            continue
+        changed.append(rel)
+
+    chunks = [tracked.stdout]
+    for rel in changed:
+        added = subprocess.run(
+            ["git", "diff", "--no-index", "--binary", "/dev/null", rel],
+            cwd=workspace,
+            text=True,
+            capture_output=True,
+            timeout=300,
+            check=False,
+        )
+        chunks.append(added.stdout)
+    return "".join(chunks), changed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default="SWE-bench/SWE-bench_Verified")
@@ -90,20 +131,16 @@ def main() -> int:
                     capture_output=True,
                     timeout=args.timeout,
                 )
-                diff = subprocess.run(
-                    ["git", "diff", "--binary", base_commit],
-                    cwd=workspace,
-                    text=True,
-                    capture_output=True,
-                    timeout=300,
-                )
+                patch, changed_files = patch_for_workspace(workspace, base_commit)
                 output.write(
                     json.dumps(
                         {
                             "instance_id": instance_id,
                             "model_name_or_path": "livingdict",
-                            "model_patch": diff.stdout,
+                            "model_patch": patch,
+                            "changed_files": changed_files,
                             "livingdict_exit": completed.returncode,
+                            "livingdict_stdout": completed.stdout[-8000:],
                             "livingdict_stderr": completed.stderr[-4000:],
                         }
                     )
