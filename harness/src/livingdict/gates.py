@@ -9,12 +9,16 @@ When `sb` is on PATH and `specs/core.shen` exists, an `sb` gate runs
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -211,6 +215,110 @@ def _check_preflight_reason(command: str) -> str | None:
     # Ratatoskr may be installed while its host launcher is not configured;
     # that is precisely the slow failure mode this guard prevents.
     return "missing Shen launcher: set RATATOSKR_HOST or BIFROST_SHEN_CL"
+
+
+def _workspace_fingerprint(workspace: Path) -> str:
+    digest = hashlib.sha256()
+    skip = {".git", ".livingdict-run", "node_modules", "dist", "build", ".sb", "__pycache__"}
+    for path in sorted(workspace.rglob("*")):
+        if not path.is_file() or any(part in skip for part in path.parts):
+            continue
+        try:
+            stat = path.stat()
+            digest.update(path.relative_to(workspace).as_posix().encode())
+            digest.update(str(stat.st_size).encode())
+            digest.update(str(stat.st_mtime_ns).encode())
+        except OSError:
+            continue
+    return digest.hexdigest()
+
+
+def _gate_cache_path(workspace: Path) -> Path:
+    return workspace / ".livingdict-run" / "gates-cache.json"
+
+
+def _cacheable(workspace: Path, spec: dict[str, str]) -> bool:
+    measure = (spec.get("measure") or spec.get("name") or "").lower()
+    if measure in {"sources", "bundle"}:
+        return True
+    if measure != "claims":
+        return False
+    blob = load_claims(workspace) or {}
+    return not any(isinstance(item, dict) and str(item.get("kind", "source")).lower() == "check" for item in blob.get("claims", []))
+
+
+def _cache_key(workspace: Path, spec: dict[str, str]) -> str:
+    data = json.dumps({"workspace": _workspace_fingerprint(workspace), "spec": spec}, sort_keys=True)
+    return hashlib.sha256(data.encode()).hexdigest()
+
+
+def _load_cached_gate(workspace: Path, spec: dict[str, str]) -> dict[str, Any] | None:
+    if not _cacheable(workspace, spec):
+        return None
+    try:
+        blob = json.loads(_gate_cache_path(workspace).read_text(encoding="utf-8"))
+        entry = blob.get(_cache_key(workspace, spec))
+        return dict(entry) if isinstance(entry, dict) and entry.get("passed") else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _save_cached_gate(workspace: Path, spec: dict[str, str], result: dict[str, Any]) -> None:
+    if not _cacheable(workspace, spec) or not result.get("passed"):
+        return
+    path = _gate_cache_path(workspace)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            blob = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            blob = {}
+        blob[_cache_key(workspace, spec)] = result
+        path.write_text(json.dumps(blob, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _start_fixture(workspace: Path, fixture: dict[str, Any]) -> tuple[Any | None, str | None]:
+    command = str(fixture.get("command") or "").strip()
+    if not command:
+        return None, "fixture has no command"
+    try:
+        proc = subprocess.Popen(["sh", "-lc", command], cwd=workspace, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as exc:
+        return None, f"fixture failed to start: {exc}"
+    url = str(fixture.get("ready_url") or fixture.get("url") or "").strip()
+    if not url:
+        return proc, None
+    try:
+        budget = max(0.5, float(fixture.get("ready_timeout_seconds") or 5.0))
+    except (TypeError, ValueError):
+        budget = 5.0
+    deadline = time.monotonic() + budget
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return proc, "fixture exited before readiness"
+        try:
+            with urllib.request.urlopen(url, timeout=0.25) as response:
+                if 200 <= response.status < 500:
+                    return proc, None
+        except (OSError, urllib.error.URLError):
+            time.sleep(0.1)
+    return proc, f"fixture readiness timeout: {url}"
+
+
+def _stop_fixtures(fixtures: dict[str, tuple[Any | None, str | None]]) -> None:
+    for proc, _error in fixtures.values():
+        if proc is None or proc.poll() is not None:
+            continue
+        try:
+            proc.terminate()
+            proc.wait(timeout=1.0)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                proc.kill()
+            except OSError:
+                pass
 # check-kind claims execute a command as the judge. That authority must come
 # from a human (an approved contract or a hidden --claims file), never from a
 # claims.json the model wrote itself — deny by default, same rule as policy.
@@ -232,6 +340,8 @@ def measure_claims(workspace: Path) -> dict[str, Any]:
         return _fail("claims", "claims.json has no claims[]", layer="goal")
     whole = _iter_source_text(workspace)
     results: list[dict[str, Any]] = []
+    failed_checks: set[str] = set()
+    fixtures: dict[str, tuple[Any | None, str | None]] = {}
     for item in raw:
         if not isinstance(item, dict):
             results.append({"id": "?", "passed": False, "reason": "claim is not an object"})
@@ -263,6 +373,28 @@ def measure_claims(workspace: Path) -> dict[str, Any]:
             if not command:
                 results.append({"id": cid, "passed": False, "kind": kind, "reason": "check claim has no command"})
                 continue
+            dependencies = item.get("depends_on") or []
+            if isinstance(dependencies, str):
+                dependencies = [dependencies]
+            blocked_by = [str(dep) for dep in dependencies if str(dep) in failed_checks]
+            # Common generated HTTP checks depend on a successful build even
+            # when the proposal omitted explicit depends_on metadata.
+            if not blocked_by and failed_checks and ("curl" in command.lower() or "todo-server" in command.lower()):
+                blocked_by = sorted(failed_checks)
+            if blocked_by:
+                entry = {
+                    "id": cid,
+                    "passed": False,
+                    "kind": kind,
+                    "command": command,
+                    "timed_out": False,
+                    "returncode": None,
+                    "blocked_by": blocked_by,
+                    "reason": "blocked by failed prerequisite",
+                }
+                results.append(entry)
+                failed_checks.add(cid)
+                continue
             if not _ALLOW_CHECK.get():
                 results.append(
                     {
@@ -273,6 +405,7 @@ def measure_claims(workspace: Path) -> dict[str, Any]:
                         "reason": "check claims execute only under an approved or hidden contract",
                     }
                 )
+                failed_checks.add(cid)
                 continue
             preflight_reason = _check_preflight_reason(command)
             if preflight_reason:
@@ -287,7 +420,24 @@ def measure_claims(workspace: Path) -> dict[str, Any]:
                         "reason": preflight_reason,
                     }
                 )
+                failed_checks.add(cid)
                 continue
+            fixture = item.get("fixture")
+            if fixture is not None:
+                if not isinstance(fixture, dict):
+                    entry = {"id": cid, "passed": False, "kind": kind, "command": command, "reason": "fixture must be an object"}
+                    results.append(entry)
+                    failed_checks.add(cid)
+                    continue
+                fixture_key = json.dumps(fixture, sort_keys=True)
+                if fixture_key not in fixtures:
+                    fixtures[fixture_key] = _start_fixture(workspace, fixture)
+                _proc, fixture_error = fixtures[fixture_key]
+                if fixture_error:
+                    entry = {"id": cid, "passed": False, "kind": kind, "command": command, "reason": fixture_error, "timed_out": False}
+                    results.append(entry)
+                    failed_checks.add(cid)
+                    continue
             try:
                 budget = float(item.get("timeout_seconds") or 60.0)
             except (TypeError, ValueError):
@@ -306,6 +456,8 @@ def measure_claims(workspace: Path) -> dict[str, Any]:
             if tail:
                 entry["output"] = tail[-400:]
             results.append(entry)
+            if not entry["passed"]:
+                failed_checks.add(cid)
         else:
             if not needles:
                 results.append({"id": cid, "passed": False, "reason": "source claim has no any/must"})
@@ -333,6 +485,7 @@ def measure_claims(workspace: Path) -> dict[str, Any]:
             hit = [n for n in needles if n in hay]
             results.append({"id": cid, "passed": bool(hit), "kind": "source", "hit": hit, "wanted": needles, "path": rel})
     failed = [r for r in results if not r.get("passed")]
+    _stop_fixtures(fixtures)
     if failed:
         ids = ", ".join(str(r.get("id")) for r in failed)
         return _fail("claims", "failed " + ids, layer="goal", claims=results)
@@ -579,7 +732,14 @@ def _run_gates_inner(workspace: Path, timeout: float, persist: bool) -> dict[str
     results: list[dict[str, Any]] = []
     for spec in specs:
         slice_timeout = max(5.0, leftover / max(1, len(specs) - len(results)))
-        result = run_one_gate(workspace, spec, slice_timeout)
+        result = _load_cached_gate(workspace, spec)
+        if result is None:
+            result = run_one_gate(workspace, spec, slice_timeout)
+            if persist:
+                _save_cached_gate(workspace, spec, result)
+        else:
+            result = dict(result)
+            result["cached"] = True
         results.append(result)
         leftover = max(5.0, leftover - float(result.get("duration_ms") or 0) / 1000.0)
         if result.get("timed_out"):

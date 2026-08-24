@@ -76,7 +76,16 @@ to be the thing that creates the job stack. The host owns that.
 7. **Job state includes a store, not a second log.** Blobs live under
    `run_dir/objects` (or `LIVINGDICT_OBJECTS`). `as_of(seq)` rebuilds
    the workspace tree from recorded hashes. Old runs without `objects/`
-   still replay.
+    still replay.
+
+8. **Checks may declare a shared fixture.** An approved `kind: "check"` claim
+   can include `fixture: {command, ready_url, ready_timeout_seconds}`. The
+   host starts that fixture once for all claims with the same fixture object,
+   polls readiness instead of relying on fixed sleeps, and always tears it
+   down. Claims without `fixture` retain their existing one-command behavior.
+   Successful deterministic source/bundle gates are cached under
+   `.livingdict-run/gates-cache.json` and invalidated by the workspace/spec
+   fingerprint; check claims are never cached.
 
 To score this loop against grok headless and pi headless on the same
 prompt, see [`COMPARE.md`](COMPARE.md).
