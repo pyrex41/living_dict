@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import contextvars
+import hashlib
 import json
 import os
 import shlex
@@ -425,6 +426,7 @@ def run_job(
     cmd = list(planner_cmd) if planner_cmd else default_planner_cmd()
     state = empty_state()
     extra = ""
+    frozen_contract = Path(contract) if contract is not None else run_dir / "contract.json"
     store = open_store(run_dir)
     space = Space(store=store)
     before, job_tree_before = capture_tree(workspace, store)
@@ -478,6 +480,8 @@ def run_job(
             "extra": extra,
             "goal": goal,
             "run_dir": str(run_dir),
+            "contract": json.loads(frozen_contract.read_text(encoding="utf-8")) if frozen_contract.is_file() else None,
+            "last_failure": state.last_failure,
             "workspace": str(workspace),
         }
         if system_prompt:
@@ -513,7 +517,7 @@ def run_job(
                 {"fingerprint": fp},
             )
             state = _commit(state, BUDGET_CONSUMED, {"steps": 1})
-            extra = f"critic: duplicate plan {fp}"
+            extra = (extra + "\n" if extra else "") + f"critic: duplicate plan {fp}; change the product or repair strategy"
             append_progress(run_dir, episode, [envelope.rationale or extra, extra])
             continue
 
@@ -591,9 +595,18 @@ def run_job(
                 {"episode": episode, "sha256": digest, "word": word},
             )
         receipt_fields["claims_source"] = claims_source(workspace, claims, claims_label)
+        if not frozen_contract.is_file() and (workspace / "claims.json").is_file():
+            contract_text = (workspace / "claims.json").read_text(encoding="utf-8")
+            frozen_contract.write_text(contract_text, encoding="utf-8")
+            contract_digest = hashlib.sha256(contract_text.encode("utf-8")).hexdigest()
+            state = _commit(
+                state,
+                CONTRACT_APPROVED,
+                {"digest": contract_digest, "claims": json.loads(contract_text), "source": "benchmark-auto" if receipt_fields.get("benchmark_mode") else "workspace"},
+            )
         report = measure_workspace(
             workspace,
-            claims,
+            frozen_contract if frozen_contract.is_file() else claims,
             # Benchmark runs are an explicit, isolated auto-approval lane:
             # the planner owns the contract, and its executable checks must
             # actually run.  Ordinary model-authored contracts remain
@@ -724,6 +737,7 @@ def _finish(
         "tree_after": tree_after,
         "tree_before": tree_before,
         "workspace": str(workspace),
+        "last_failure": state.last_failure,
     }
     for key, value in (graph or {}).items():
         receipt[key] = value

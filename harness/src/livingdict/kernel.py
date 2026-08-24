@@ -78,6 +78,7 @@ class State:
     last_critic: str = ""
     pending_execute: bool = False
     last_artifact_keys: tuple[str, ...] = ()
+    last_failure: dict[str, Any] | None = None
 
 
 def empty_state() -> State:
@@ -125,6 +126,7 @@ def clone_state(state: State) -> State:
         last_critic=state.last_critic,
         pending_execute=state.pending_execute,
         last_artifact_keys=state.last_artifact_keys,
+        last_failure=copy.deepcopy(state.last_failure),
     )
 
 
@@ -209,7 +211,15 @@ def reduce(state: State, event: Event) -> State:
         report = payload.get("report")
         if report is not None and not isinstance(report, dict):
             raise KernelError("gates.measured report must be an object")
-        new = State(**{**new.__dict__, "last_gates": copy.deepcopy(report)})
+        failure = None
+        if isinstance(report, dict) and not report.get("passed"):
+            failed = []
+            for gate in report.get("gates") or []:
+                for claim in gate.get("claims") or []:
+                    if isinstance(claim, dict) and not claim.get("passed"):
+                        failed.append({key: claim.get(key) for key in ("id", "kind", "command", "reason", "returncode", "output", "timed_out") if key in claim})
+            failure = {"failed_claims": failed, "stderr": report.get("stderr", "")}
+        new = State(**{**new.__dict__, "last_gates": copy.deepcopy(report), "last_failure": failure})
     elif event.kind == BUDGET_CONSUMED:
         try:
             steps = int(payload.get("steps") if payload.get("steps") is not None else 1)
@@ -267,8 +277,6 @@ def reconcile(state: State, cap: int) -> Decision:
     """Total next action: success | blocked | halt_cap | plan."""
     if claims_discharged(state.last_gates):
         return Decision(DECISION_SUCCESS, "claims discharged")
-    if state.consecutive_duplicates >= 2:
-        return Decision(DECISION_BLOCKED, "feedback loop")
     limit = int(cap)
     if limit > 0 and state.used >= limit:
         return Decision(DECISION_HALT_CAP, "cap reached")
@@ -376,17 +384,14 @@ def _normalized_tokens(program: str) -> str:
 
 
 def fingerprint(envelope: Any) -> str:
-    """SHA-256 over program tokens + sorted artifact keys + claim ids + nodes.
-
-    Rationale and any status field are excluded so wording changes cannot
-    evade the seen_plans guard (scud v2 fingerprint lesson). Absent nodes
-    keep the previous material so existing envelopes hash unchanged.
-    """
+    """SHA-256 over the complete executable plan, including artifact bodies."""
     program, artifacts = _envelope_parts(envelope)
     parts = [
         _normalized_tokens(program),
-        ",".join(sorted(artifacts)),
-        ",".join(_claim_ids(artifacts)),
+        json.dumps(
+            {key: hashlib.sha256(value.encode("utf-8")).hexdigest() for key, value in sorted(artifacts.items())},
+            sort_keys=True,
+        ),
     ]
     nodes_material = _nodes_material(envelope)
     if nodes_material:

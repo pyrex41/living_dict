@@ -108,6 +108,17 @@ class FingerprintTests(unittest.TestCase):
         self.assertNotEqual(base, fingerprint(other_keys))
         self.assertNotEqual(base, fingerprint(_env(claims_id="other")))
 
+    def test_artifact_contents_change_fingerprint(self) -> None:
+        base = fingerprint(_env())
+        changed = _env()
+        changed.artifacts["a"] = "different body"
+        self.assertNotEqual(base, fingerprint(changed))
+
+    def test_failed_gates_persist_structured_failure(self) -> None:
+        report = {"passed": False, "stderr": "failed", "gates": [{"name": "claims", "claims": [{"id": "run", "kind": "check", "command": "./app", "output": "bad", "passed": False}]}]}
+        state = reduce(empty_state(), Event(kind=GATES_MEASURED, payload={"report": report}))
+        self.assertEqual(state.last_failure["failed_claims"][0]["id"], "run")
+
     def test_nodes_change_fingerprint_without_affecting_absent(self) -> None:
         base = _env()
         self.assertEqual(fingerprint(base), fingerprint(base.to_dict()))
@@ -205,7 +216,7 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(reconcile(state, 8).kind, DECISION_PLAN)
         state = reduce(state, Event(kind=EPISODE_PLANNED, payload={"fingerprint": fp}))
         state = reduce(state, Event(kind=EPISODE_BLOCKED_DUPLICATE, payload={"fingerprint": fp}))
-        self.assertEqual(reconcile(state, 8).kind, DECISION_BLOCKED)
+        self.assertEqual(reconcile(state, 8).kind, DECISION_PLAN)
 
     def test_unique_plan_resets_duplicate_streak(self) -> None:
         first = fingerprint(_env(program="RECEIPT"))
@@ -244,7 +255,7 @@ class ReconcileTests(unittest.TestCase):
             state = reduce(state, Event(kind=EPISODE_PLANNED, payload={"fingerprint": fp}))
             state = reduce(state, Event(kind=EPISODE_BLOCKED_DUPLICATE, payload={"fingerprint": fp}))
         state = reduce(state, Event(kind=BUDGET_CONSUMED, payload={"steps": 4}))
-        self.assertEqual(reconcile(state, 4).kind, DECISION_BLOCKED)
+        self.assertEqual(reconcile(state, 4).kind, DECISION_HALT_CAP)
 
     def test_reject_does_not_discharge(self) -> None:
         state = replay(
