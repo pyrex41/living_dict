@@ -620,18 +620,10 @@ def run_job(
                 {"episode": episode, "sha256": digest, "word": word},
             )
         receipt_fields["claims_source"] = claims_source(workspace, claims, claims_label)
-        if not frozen_contract.is_file() and (workspace / "claims.json").is_file():
-            contract_text = (workspace / "claims.json").read_text(encoding="utf-8")
-            frozen_contract.write_text(contract_text, encoding="utf-8")
-            contract_digest = _json_digest(contract_text)
-            state = _commit(
-                state,
-                CONTRACT_APPROVED,
-                {"digest": contract_digest, "claims": json.loads(contract_text), "source": "benchmark-auto" if receipt_fields.get("benchmark_mode") else "workspace"},
-            )
+        contract_candidate = not frozen_contract.is_file() and (workspace / "claims.json").is_file()
         report = measure_workspace(
             workspace,
-            frozen_contract if frozen_contract.is_file() else claims,
+            frozen_contract if frozen_contract.is_file() else (claims if claims is not None else None),
             # Benchmark runs are an explicit, isolated auto-approval lane:
             # the planner owns the contract, and its executable checks must
             # actually run.  Ordinary model-authored contracts remain
@@ -681,6 +673,19 @@ def run_job(
             and report["claim_quality"].get("requires_behavior")
             and not report["claim_quality"].get("has_behavioral_check")
         )
+        contract_ready = bool(
+            contract_candidate
+            and not report["claim_quality"].get("source_only")
+            and (not report["claim_quality"].get("requires_behavior") or report["claim_quality"].get("has_behavioral_check"))
+        )
+        if contract_ready:
+            contract_text = (workspace / "claims.json").read_text(encoding="utf-8")
+            frozen_contract.write_text(contract_text, encoding="utf-8")
+            state = _commit(
+                state,
+                CONTRACT_APPROVED,
+                {"digest": _json_digest(contract_text), "claims": json.loads(contract_text), "source": "benchmark-auto" if receipt_fields.get("benchmark_mode") else "workspace"},
+            )
         if (
             receipt_fields["claims_source"] == "workspace"
             and not meaningful
