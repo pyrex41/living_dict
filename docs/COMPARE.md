@@ -10,6 +10,17 @@ Same prompt, three isolated workspaces:
 
 This is how you tell whether Living Dictionary is a real coding harness or just a chat UI around leftover product. Grok and Pi keep their own loops. Living Dictionary keeps Forth + critic + `RUN-GATES`. The prompt string is identical.
 
+Experimental representation arms (`react`, `json-plan`, `python-plan`) are
+opt-in external commands. Each runs in its isolated workspace and receives
+the goal through `LIVINGDICT_PROMPT`; stdout, stderr, and the workspace diff
+are retained alongside the standard arm metrics.
+
+```bash
+python3 client/compare.py -p 'Write hello.txt' \\
+  --arms livingdict,json-plan \\
+  --arm-cmd 'json-plan=python3 adapters/json_plan.py'
+```
+
 ## Run
 
 No OpenResty host is required. The livingdict arm is an argv peer of `grok -p`.
@@ -33,6 +44,7 @@ Flags worth knowing:
 | `--prompt` / `--prompt-file` | the shared goal |
 | `--seed DIR` | copy this tree into every arm (default: empty workspace) |
 | `--arms grok,pi,livingdict` | subset |
+| `--arm-cmd NAME=COMMAND` | register an experimental arm command (repeatable) |
 | `--parallel` | run arms at the same time (default is serial — kinder to API limits) |
 | `--max-turns N` | grok `--max-turns` and livingdict episodes (default 8; halt ≠ done) |
 | `--timeout SEC` | wall clock per arm (default 600) |

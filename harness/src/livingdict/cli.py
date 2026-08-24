@@ -31,6 +31,7 @@ from .kernel import (
     CRITIC_REJECTED,
     DECISION_SUCCESS,
     DICTIONARY_PROMOTED,
+    PROMOTION_EVIDENCE,
     EPISODE_BLOCKED_DUPLICATE,
     EPISODE_PLANNED,
     GATES_MEASURED,
@@ -49,6 +50,7 @@ from .rho import grant_mode_require
 from .space import Space
 from .trace import emit as trace_emit
 from .store import artifact_digests, capture_tree, intern_snapshot, open_store
+from .promotion import evidence_for
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -509,6 +511,15 @@ def run_job(
                 "tree_before": episode_tree_before,
             },
         )
+        for item in promoted:
+            evidence = evidence_for(
+                {**item, "episode": episode},
+                report=report,
+                critic_accepted=True,
+                trap=trap,
+            )
+            state = _commit(state, PROMOTION_EVIDENCE, evidence.to_dict())
+            trace_emit(host.trace_path, "dictionary.promotion_evidence", evidence.to_dict())
         state = _commit(state, BUDGET_CONSUMED, {"steps": 1})
         last_changed = changed_files(before, after)
         episode_tree_before = tree_after

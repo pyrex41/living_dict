@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -199,6 +200,17 @@ def _read_claim_file(workspace: Path, rel: str) -> tuple[Path | None, str]:
         return None, ""
 
 
+def _check_preflight_reason(command: str) -> str | None:
+    """Reject known toolchain misconfiguration before a long child timeout."""
+    lowered = command.lower()
+    if "bifrost" not in lowered or "shake" not in lowered:
+        return None
+    launcher = os.environ.get("RATATOSKR_HOST", "").strip() or os.environ.get("BIFROST_SHEN_CL", "").strip()
+    if launcher:
+        return None
+    # Ratatoskr may be installed while its host launcher is not configured;
+    # that is precisely the slow failure mode this guard prevents.
+    return "missing Shen launcher: set RATATOSKR_HOST or BIFROST_SHEN_CL"
 # check-kind claims execute a command as the judge. That authority must come
 # from a human (an approved contract or a hidden --claims file), never from a
 # claims.json the model wrote itself — deny by default, same rule as policy.
@@ -259,6 +271,20 @@ def measure_claims(workspace: Path) -> dict[str, Any]:
                         "kind": kind,
                         "command": command,
                         "reason": "check claims execute only under an approved or hidden contract",
+                    }
+                )
+                continue
+            preflight_reason = _check_preflight_reason(command)
+            if preflight_reason:
+                results.append(
+                    {
+                        "id": cid,
+                        "passed": False,
+                        "kind": kind,
+                        "command": command,
+                        "timed_out": False,
+                        "returncode": None,
+                        "reason": preflight_reason,
                     }
                 )
                 continue
@@ -590,10 +616,12 @@ def main(argv: list[str] | None = None) -> int:
 
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
-        print("usage: gates.py WORKSPACE [TIMEOUT]", file=sys.stderr)
+        print("usage: gates.py WORKSPACE [TIMEOUT] [--allow-check]", file=sys.stderr)
         return 2
-    timeout = float(args[1]) if len(args) > 1 else 180.0
-    json.dump(run_gates(Path(args[0]), timeout), sys.stdout)
+    allow_check = "--allow-check" in args[1:]
+    numeric = [item for item in args[1:] if item != "--allow-check"]
+    timeout = float(numeric[0]) if numeric else 180.0
+    json.dump(run_gates(Path(args[0]), timeout, allow_check=allow_check), sys.stdout)
     return 0
 
 
