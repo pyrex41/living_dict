@@ -90,6 +90,15 @@ def _meaningful_changed_files(changed: list[str]) -> list[str]:
     ]
 
 
+def _json_digest(text: str) -> str:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        value = text
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 _BEHAVIOR_WORDS = re.compile(
     r"\b(run|execute|output|print|sample|serve|server|http|api|respond|render|"
     r"request|response|compile and run|program)\b",
@@ -608,7 +617,7 @@ def run_job(
         if not frozen_contract.is_file() and (workspace / "claims.json").is_file():
             contract_text = (workspace / "claims.json").read_text(encoding="utf-8")
             frozen_contract.write_text(contract_text, encoding="utf-8")
-            contract_digest = hashlib.sha256(contract_text.encode("utf-8")).hexdigest()
+            contract_digest = _json_digest(contract_text)
             state = _commit(
                 state,
                 CONTRACT_APPROVED,
@@ -626,6 +635,18 @@ def run_job(
                 or bool(receipt_fields.get("benchmark_mode"))
             ),
         )
+        if receipt_fields["claims_source"] == "workspace" and frozen_contract.is_file():
+            current_contract = workspace / "claims.json"
+            if current_contract.is_file() and _json_digest(current_contract.read_text(encoding="utf-8")) != _json_digest(frozen_contract.read_text(encoding="utf-8")):
+                report["passed"] = False
+                report.setdefault("gates", []).append({
+                    "name": "contract",
+                    "passed": False,
+                    "skipped": False,
+                    "layer": "goal",
+                    "reason": "model attempted to change the approved contract",
+                })
+                report["stderr"] = (str(report.get("stderr") or "") + "\nmodel attempted to change the approved contract").strip()
         after, tree_after = capture_tree(workspace, store)
         all_changed = changed_files(before, after)
         meaningful = _meaningful_changed_files(all_changed)

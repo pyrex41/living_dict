@@ -268,7 +268,7 @@ def claims_discharged(report: Any) -> bool:
     if any(not gate.get("passed") for gate in claims):
         return False
     for gate in gates:
-        if gate.get("name") in {"look", "progress"} and not gate.get("skipped") and not gate.get("passed"):
+        if gate.get("name") in {"look", "progress", "contract"} and not gate.get("skipped") and not gate.get("passed"):
             return False
     return True
 

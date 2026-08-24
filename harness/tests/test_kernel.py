@@ -166,6 +166,13 @@ class ReconcileTests(unittest.TestCase):
         }
         self.assertFalse(claims_discharged(report))
 
+    def test_contract_mutation_is_not_success(self) -> None:
+        report = {"gates": [
+            {"name": "claims", "passed": True, "skipped": False},
+            {"name": "contract", "passed": False, "skipped": False},
+        ]}
+        self.assertFalse(claims_discharged(report))
+
     def test_empty_state_plans(self) -> None:
         decision = reconcile(empty_state(), 8)
         self.assertEqual(decision.kind, DECISION_PLAN)

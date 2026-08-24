@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from livingdict.cli import _claim_quality, _meaningful_changed_files, gate_feedback
+from livingdict.cli import _claim_quality, _json_digest, _meaningful_changed_files, gate_feedback
 
 from livingdict.envelope import PlanEnvelope
 from livingdict.execute import ExecutionError, lower_artifact_writes, run_forth
@@ -96,6 +96,9 @@ class LowerArtifactTests(unittest.TestCase):
         )
         self.assertIn("gcc app.c -lm", feedback)
         self.assertIn("undefined reference to expf", feedback)
+
+    def test_contract_digest_ignores_json_formatting(self) -> None:
+        self.assertEqual(_json_digest('{"claims": [{"id": "x"}]}'), _json_digest('{"claims":[{"id":"x"}]}'))
 
     def test_lowers_one_arity_writes_without_use_artifact(self) -> None:
         artifacts = {
