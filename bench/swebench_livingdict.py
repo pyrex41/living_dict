@@ -55,7 +55,11 @@ def patch_for_workspace(workspace: Path, base_commit: str) -> tuple[str, list[st
         if len(line) < 4:
             continue
         rel = line[3:].strip()
-        if rel == "claims.json" or rel.startswith(".livingdict-run/"):
+        if (
+            rel == "claims.json"
+            or rel.startswith(".livingdict-run/")
+            or rel.startswith(".sb/")
+        ):
             continue
         changed.append(rel)
 
