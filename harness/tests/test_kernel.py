@@ -12,6 +12,7 @@ from livingdict.kernel import (
     DECISION_HALT_CAP,
     DECISION_PLAN,
     DECISION_SUCCESS,
+    claims_discharged,
     DICTIONARY_PROMOTED,
     EPISODE_BLOCKED_DUPLICATE,
     EPISODE_PLANNED,
@@ -145,6 +146,15 @@ class FingerprintTests(unittest.TestCase):
 
 
 class ReconcileTests(unittest.TestCase):
+    def test_progress_failure_is_not_success(self) -> None:
+        report = {
+            "gates": [
+                {"name": "claims", "passed": True, "skipped": False},
+                {"name": "progress", "passed": False, "skipped": False},
+            ]
+        }
+        self.assertFalse(claims_discharged(report))
+
     def test_empty_state_plans(self) -> None:
         decision = reconcile(empty_state(), 8)
         self.assertEqual(decision.kind, DECISION_PLAN)
