@@ -122,8 +122,10 @@ def _goal_requires_behavior(goal: str) -> bool:
 
 def _is_behavioral_check(command: str) -> bool:
     command = command.strip()
-    if not command or _STRUCTURAL_CHECK.match(command):
+    if not command:
         return False
+    # A build-and-run chain commonly starts with gcc/clang; inspect the full
+    # command rather than classifying it solely by its first token.
     return bool(_BEHAVIORAL_CHECK.search(command))
 
 
