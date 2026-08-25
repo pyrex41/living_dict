@@ -73,6 +73,13 @@ class LowerArtifactTests(unittest.TestCase):
         )
         self.assertTrue(quality["has_behavioral_check"])
 
+    def test_timeout_absolute_executable_is_behavioral(self) -> None:
+        quality = _claim_quality(
+            {"gates": [{"name": "claims", "claims": [{"kind": "check", "command": "timeout 90 /app/a.out input | tee /tmp/out; test -s /tmp/out"}]}]},
+            "run the program and print output",
+        )
+        self.assertTrue(quality["has_behavioral_check"])
+
     def test_failed_check_feedback_includes_command_and_output(self) -> None:
         feedback = gate_feedback(
             {

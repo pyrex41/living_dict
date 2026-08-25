@@ -111,7 +111,7 @@ _STRUCTURAL_CHECK = re.compile(
 _BEHAVIORAL_CHECK = re.compile(
     r"(?:pytest|unittest|npm\s+(?:test|run)|cargo\s+test|go\s+test|mvn\s+test|"
     r"curl\b|wget\b|assert|diff\b|expected|output|stdout|http://|https://|"
-    r"(?:^|\s)(?:\./|python(?:3)?\s+|node\s+|ruby\s+|java\s+))",
+    r"timeout\b|tee\b|(?:^|\s)(?:\./|/app/|python(?:3)?\s+|node\s+|ruby\s+|java\s+))",
     re.IGNORECASE,
 )
 
