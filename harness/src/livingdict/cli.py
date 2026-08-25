@@ -369,6 +369,76 @@ def gate_feedback(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _failed_executable_claims(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return failed executable claims, for the optional advisory audit."""
+    failed: list[dict[str, Any]] = []
+    for gate in report.get("gates") or []:
+        if not isinstance(gate, dict):
+            continue
+        for claim in gate.get("claims") or []:
+            if (
+                isinstance(claim, dict)
+                and str(claim.get("kind") or "").lower() == "check"
+                and not claim.get("passed")
+            ):
+                failed.append(claim)
+    return failed
+
+
+def audit_failed_gate(
+    cmd: list[str],
+    *,
+    goal: str,
+    contract: dict[str, Any] | None,
+    report: dict[str, Any],
+    workspace: Path,
+) -> dict[str, Any]:
+    """Ask the planner to audit a failed gate; the result is advisory only.
+
+    This deliberately does not alter claims or decide success.  Keeping the
+    protocol here (rather than in ``gates``) makes the LLM call auditable and
+    keeps the gate evaluator deterministic.
+    """
+    payload = {
+        "mode": "gate_audit",
+        "goal": goal,
+        "contract": contract or {},
+        "report": report,
+        "failed_claims": _failed_executable_claims(report),
+        "workspace": str(workspace),
+    }
+    result = call_planner_json(cmd, payload, workspace=workspace)
+    if not isinstance(result, dict):
+        raise CLIError("gate audit response must be an object")
+    verdict = str(result.get("verdict") or "").lower()
+    if verdict not in {"adequate", "incomplete", "invalid"}:
+        raise CLIError("gate audit verdict must be adequate, incomplete, or invalid")
+    additions = result.get("add_claims") or []
+    if not isinstance(additions, list) or not all(isinstance(item, dict) for item in additions):
+        raise CLIError("gate audit add_claims must be an array of objects")
+    existing = {
+        str(item.get("id"))
+        for item in (contract or {}).get("claims", [])
+        if isinstance(item, dict) and item.get("id") is not None
+    }
+    clean: list[dict[str, Any]] = []
+    for item in additions:
+        ident = str(item.get("id") or "")
+        if not ident or ident in existing or str(item.get("kind") or "").lower() != "check":
+            raise CLIError("gate audit may only propose new check claims")
+        if not str(item.get("command") or "").strip():
+            raise CLIError("gate audit check claims require a command")
+        existing.add(ident)
+        clean.append(dict(item))
+    return {
+        "verdict": verdict,
+        "reason": str(result.get("reason") or "")[:2000],
+        "repair": str(result.get("repair") or "")[:2000],
+        "add_claims": clean,
+        "advisory": True,
+    }
+
+
 def _host(
     workspace: Path,
     run_dir: Path,
@@ -439,6 +509,7 @@ def run_job(
     state = empty_state()
     extra = ""
     oracle_note: dict[str, Any] | None = None
+    gate_audit_note: dict[str, Any] | None = None
     frozen_contract = Path(claims) if claims is not None else run_dir / "contract.json"
     if isinstance(contract, (str, Path)):
         frozen_contract = Path(contract)
@@ -511,6 +582,8 @@ def run_job(
             observation["attempt_history"] = state.attempt_history
         if oracle_note is not None:
             observation["oracle_feedback"] = oracle_note
+        if gate_audit_note is not None:
+            observation["gate_audit"] = gate_audit_note
         if system_prompt:
             observation["system"] = system_prompt
         graph_file = workspace / "task_graph.json"
@@ -688,6 +761,34 @@ def run_job(
                 CONTRACT_APPROVED,
                 {"digest": _json_digest(contract_text), "claims": json.loads(contract_text), "source": "benchmark-auto" if receipt_fields.get("benchmark_mode") else "workspace"},
             )
+        # A failed executable gate gets a second, advisory audit.  The audit
+        # can explain that the contract is incomplete or suggest a repair,
+        # but it can never approve success or mutate the frozen contract.
+        gate_audit_note = None
+        if receipt_fields.get("audit_gates") and _failed_executable_claims(report):
+            try:
+                contract_blob: dict[str, Any] = {}
+                if frozen_contract.is_file():
+                    raw_contract = json.loads(frozen_contract.read_text(encoding="utf-8"))
+                    if isinstance(raw_contract, dict):
+                        contract_blob = raw_contract
+                gate_audit_note = audit_failed_gate(
+                    cmd,
+                    goal=goal,
+                    contract=contract_blob,
+                    report=report,
+                    workspace=workspace,
+                )
+                report["gate_audit"] = gate_audit_note
+            except (CLIError, OSError, json.JSONDecodeError) as exc:
+                gate_audit_note = {
+                    "verdict": "invalid",
+                    "reason": f"gate audit unavailable: {exc}",
+                    "repair": "repair the failed executable gate using its command and output",
+                    "add_claims": [],
+                    "advisory": True,
+                }
+                report["gate_audit"] = gate_audit_note
         if (
             receipt_fields["claims_source"] == "workspace"
             and not meaningful
@@ -758,6 +859,10 @@ def run_job(
             extra = (extra + "\n" if extra else "") + summary
             if details:
                 extra += "\n" + details
+            if gate_audit_note:
+                extra += "\nGATE AUDIT (advisory; contract remains frozen): " + json.dumps(
+                    gate_audit_note, sort_keys=True, ensure_ascii=False
+                )
 
 
 def _finish(
@@ -822,6 +927,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="mark the receipt as benchmark-driven; native verification remains authoritative",
     )
+    parser.add_argument("--audit-gates", action="store_true", help="ask the planner to audit failed gates")
     parser.add_argument("--run-dir", type=Path, help="job state directory (default: CWD/.livingdict-run)")
     parser.add_argument(
         "--planner-cmd",
@@ -875,7 +981,7 @@ def main(argv: list[str] | None = None) -> int:
             planner_cmd=planner_cmd,
             wave_workers=args.wave_workers,
             serial=args.serial,
-            receipt_extra={"benchmark_mode": True} if args.benchmark else None,
+            receipt_extra={"benchmark_mode": True, "audit_gates": True} if args.benchmark or args.audit_gates else None,
         )
     except (CLIError, EnvelopeError, KernelError) as exc:
         print(str(exc), file=sys.stderr)

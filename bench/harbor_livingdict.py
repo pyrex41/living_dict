@@ -80,7 +80,7 @@ class LivingDictionary(BaseInstalledAgent):
                 "mkdir -p /logs/agent; "
                 "python3 /tmp/living_dict/bin/livingdict "
                 f"-p {goal} --cwd \"$workspace\" "
-                f"--max-turns {self._max_turns} --benchmark "
+                f"--max-turns {self._max_turns} --benchmark --audit-gates "
                 "> /logs/agent/livingdict.stdout.json "
                 "2> /logs/agent/livingdict.stderr.log"
             ),

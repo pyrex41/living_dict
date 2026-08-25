@@ -49,6 +49,21 @@ given, incorporate it exactly; if PRIOR CLAIMS are given, revise them
 rather than starting over.
 """
 
+GATE_AUDIT_SYSTEM = """You audit a failed acceptance gate for a coding task.
+You are not the judge and cannot declare success. Compare the GOAL, frozen
+CONTRACT, failed gate output, and workspace evidence. Emit exactly one JSON
+object:
+{"verdict":"adequate|incomplete|invalid", "reason":"...", "repair":"...",
+ "add_claims":[...]}
+
+Use verdict=adequate when the existing claims genuinely test the failed
+behavior and the product must be repaired. Use incomplete when the failure
+reveals an untested requirement; propose only additive claims with new ids.
+Use invalid for vacuous, skipped, source-only, or unsafe checks. Never delete, weaken,
+or rewrite an existing claim. Additive claims must be executable or
+behavioral and must not use unconditional true/skip paths.
+"""
+
 SYSTEM = """You are the planner for a general coding harness (Codex/Claude
 Code class) whose plan language is Forth. Forth is the harness, not
 the product. The product is whatever the GOAL names — any software.
@@ -548,6 +563,23 @@ def repair_context(payload: dict[str, Any]) -> str:
     return "REPAIR STATE (contract is frozen; repair the product, never weaken it):\n" + json.dumps(fields, ensure_ascii=False, sort_keys=True)
 
 
+def audit_gate(payload: dict[str, Any]) -> dict[str, Any]:
+    goal = str(payload.get("goal") or "")
+    workspace = Path(str(payload.get("workspace") or "."))
+    product = observe_workspace(workspace)
+    user = "\n".join([
+        f"GOAL:\n{goal}",
+        "FROZEN CONTRACT:\n" + json.dumps(payload.get("contract"), sort_keys=True),
+        "FAILED GATE:\n" + json.dumps(payload.get("report"), sort_keys=True),
+        "FAILED CLAIMS:\n" + json.dumps(payload.get("failed_claims") or [], sort_keys=True),
+        "WORKSPACE STATE:\n" + product,
+    ])
+    result, _telemetry = complete_json(GATE_AUDIT_SYSTEM, user)
+    if not isinstance(result, dict):
+        raise PlannerError("gate audit response is not an object")
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Living Dictionary Grok 4.6 planner")
     parser.add_argument("--goal", help="natural-language goal")
@@ -568,6 +600,9 @@ def main(argv: list[str] | None = None) -> int:
                 feedback=str(payload.get("feedback") or ""),
             )
             print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if payload.get("mode") == "gate_audit":
+            print(json.dumps(audit_gate(payload), indent=2, sort_keys=True))
             return 0
         goal = str(payload.get("goal") or goal)
         extra = str(payload.get("extra") or "")

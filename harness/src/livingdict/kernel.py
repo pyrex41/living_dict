@@ -221,6 +221,9 @@ def reduce(state: State, event: Event) -> State:
                     if isinstance(claim, dict) and not claim.get("passed"):
                         failed.append({key: claim.get(key) for key in ("id", "kind", "command", "reason", "returncode", "output", "timed_out") if key in claim})
             failure = {"failed_claims": failed, "stderr": report.get("stderr", "")}
+            if report.get("gate_audit") is not None:
+                # Advisory diagnosis is durable planner context, never a gate result.
+                failure["gate_audit"] = copy.deepcopy(report["gate_audit"])
         history = new.attempt_history
         summary = {"passed": bool(report and report.get("passed")), "failure": copy.deepcopy(failure)}
         history = (history + (summary,))[-8:]

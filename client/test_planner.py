@@ -13,6 +13,7 @@ from planner import (
     observe_workspace,
     parse_stream_chunk,
     repair_context,
+    GATE_AUDIT_SYSTEM,
 )
 
 
@@ -53,6 +54,10 @@ class PlannerParseTests(unittest.TestCase):
         text = repair_context({"contract": {"claims": []}, "last_failure": {"failed_claims": [{"id": "run"}]}})
         self.assertIn("contract is frozen", text)
         self.assertIn("failed_claims", text)
+
+    def test_gate_audit_forbids_weakening(self) -> None:
+        self.assertIn('"add_claims"', GATE_AUDIT_SYSTEM)
+        self.assertIn("Never delete", GATE_AUDIT_SYSTEM)
 
     def test_normalize_keeps_nodes_and_allows_empty_program(self) -> None:
         env = normalize_envelope(
