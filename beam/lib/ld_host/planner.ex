@@ -72,10 +72,14 @@ defmodule LdHost.Planner do
 
       body = %{model: Keyword.get(opts, :model, @model), messages: messages, temperature: 0.2}
 
+      # Hard episodes can legitimately reason for minutes; a tight
+      # receive_timeout guillotines exactly the calls that matter most
+      # (observed: repair-episode planning on parser-02 exceeding 180s
+      # repeatedly while trivial episodes returned in seconds).
       case Req.post(@endpoint,
              json: body,
              auth: {:bearer, token},
-             receive_timeout: 180_000,
+             receive_timeout: 600_000,
              retry: false
            ) do
         {:ok, %{status: 200, body: %{"choices" => [choice | _]} = response}} ->
