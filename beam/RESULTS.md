@@ -35,6 +35,23 @@ verifier).
   out-of-workspace read (episode feedback leak probe in an early pilot)
   was stopped by the capability fence pre-I/O.
 
+## parser_repair family (parser-01..03), 2026-08-26
+
+Raw run: `beam/runs/demo-parser`.
+
+| arm | solved | input tokens | output tokens | model calls |
+|---|---|---|---|---|
+| grok baseline | 3/3 | 108,982 | 4,617 | 18 |
+| cold | **3/3** | 4,366 | 1,731 | 3 |
+| warm | 2/3* | 4,436 | 1,441 | 3 |
+
+*warm parser-02 is an infrastructure casualty, not a dictionary
+failure: its episode-2 repair planning legitimately reasoned past the
+client's then-180s receive_timeout, three attempts in a row, in two
+separate runs (trivial episodes returned in seconds). The summary's
+"negative transfer detected" flag is noise from that. Timeout raised
+to 10 minutes (559c4ed); a clean warm parser-02 rerun is pending.
+
 ## config_migration family (config-01..05 partial), 2026-08-26
 
 Partial (run stopped early). cold 4/4, warm 3/3, grok 5/5; same shape:
