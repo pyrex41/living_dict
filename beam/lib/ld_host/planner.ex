@@ -108,31 +108,96 @@ defmodule LdHost.Planner do
     end
   end
 
+  # SpaceXAI OAuth session (port of the reference client's flow): the
+  # record's `key` is the current access token; when `expires_at` has
+  # passed, exchange `refresh_token` at auth.x.ai and persist the
+  # rotated record back (atomic tmp+rename, 0600).
+  @token_url "https://auth.x.ai/oauth2/token"
+
   defp oauth_token do
     home = System.get_env("GROK_HOME") || Path.join(System.user_home!(), ".grok")
     path = Path.join(home, "auth.json")
 
     with {:ok, data} <- File.read(path),
-         {:ok, decoded} <- JSON.decode(data),
-         token when is_binary(token) and token != "" <- find_access_token(decoded) do
-      {:ok, token}
+         {:ok, %{} = blob} <- JSON.decode(data),
+         {rec_key, rec} when is_map(rec) <- find_oauth_record(blob) do
+      if expired?(rec["expires_at"]) do
+        refresh_oauth(path, blob, rec_key, rec)
+      else
+        {:ok, rec["key"]}
+      end
     else
       _ ->
         {:error, "no planner credentials: export XAI_API_KEY or run: grok login --oauth"}
     end
   end
 
-  defp find_access_token(%{} = decoded) do
-    decoded
-    |> Map.values()
-    |> Enum.find_value(fn
-      %{"access_token" => token} when is_binary(token) -> token
-      _ -> nil
-    end)
-    |> case do
-      nil -> Map.get(decoded, "access_token")
-      token -> token
+  defp find_oauth_record(blob) do
+    Enum.find(blob, fn
+      {_key, %{"key" => k, "refresh_token" => r}} when is_binary(k) and is_binary(r) -> true
+      _ -> false
+    end) || :none
+  end
+
+  defp expired?(expires_at) when is_binary(expires_at) do
+    case DateTime.from_iso8601(String.replace(expires_at, "Z", "+00:00")) do
+      {:ok, expires, _} -> DateTime.compare(expires, DateTime.utc_now()) != :gt
+      _ -> false
     end
+  end
+
+  defp expired?(_), do: false
+
+  defp refresh_oauth(path, blob, rec_key, rec) do
+    client_id = rec["oidc_client_id"]
+    refresh = rec["refresh_token"]
+
+    if client_id == nil or refresh == nil do
+      {:error, "oauth session is missing refresh_token; run: grok login --oauth"}
+    else
+      form = [grant_type: "refresh_token", refresh_token: refresh, client_id: client_id]
+
+      case Req.post(@token_url, form: form, receive_timeout: 30_000, retry: false) do
+        {:ok, %{status: 200, body: %{"access_token" => access} = payload}} when is_binary(access) ->
+          rec =
+            rec
+            |> Map.put("key", access)
+            |> maybe_put_str("refresh_token", payload["refresh_token"])
+            |> put_expiry(payload["expires_in"])
+
+          persist_auth(path, Map.put(blob, rec_key, rec))
+          {:ok, access}
+
+        {:ok, %{status: status}} ->
+          {:error, "oauth refresh failed (#{status}); run: grok login --oauth"}
+
+        {:error, reason} ->
+          {:error, "oauth refresh failed: #{inspect(reason)}"}
+      end
+    end
+  end
+
+  defp maybe_put_str(map, _key, nil), do: map
+  defp maybe_put_str(map, key, value) when is_binary(value), do: Map.put(map, key, value)
+  defp maybe_put_str(map, _key, _), do: map
+
+  defp put_expiry(rec, seconds) when is_number(seconds) do
+    expires =
+      DateTime.utc_now()
+      |> DateTime.add(trunc(seconds), :second)
+      |> DateTime.to_iso8601()
+      |> String.replace("+00:00", "Z")
+
+    Map.put(rec, "expires_at", expires)
+  end
+
+  defp put_expiry(rec, _), do: rec
+
+  defp persist_auth(path, blob) do
+    tmp = path <> ".tmp"
+    File.write!(tmp, JSON.encode!(blob) <> "\n")
+    File.chmod!(tmp, 0o600)
+    File.rename!(tmp, path)
   end
 
   @doc "Pull the first JSON object out of model text (port of the reference)."
