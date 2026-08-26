@@ -82,14 +82,43 @@ defmodule LdHost.Critic do
   def js_artifact, do: Path.join([repo_root(), "browser", "dist", "critic", "app.js"])
   def beam_artifact, do: Path.join([repo_root(), "openresty", "dist", "critic-erl", "app-erlang", "ebin"])
 
+  # Artifact resolution order: explicit opt -> env var -> the app's priv
+  # dir (a mix release ships the artifacts there) -> the dev checkout's
+  # dist paths. priv_dir is consulted at RUNTIME: at compile time the
+  # release's priv dir does not exist yet.
+  def resolve_beam_artifact(opts \\ []) do
+    Keyword.get(opts, :beam_artifact) ||
+      System.get_env("LD_CRITIC_BEAM") ||
+      priv_artifact(["critic-erl", "ebin"]) ||
+      beam_artifact()
+  end
+
+  def resolve_js_artifact(opts \\ []) do
+    Keyword.get(opts, :js_artifact) ||
+      System.get_env("LD_CRITIC_JS") ||
+      priv_artifact(["critic", "app.js"]) ||
+      js_artifact()
+  end
+
+  defp priv_artifact(segments) do
+    case :code.priv_dir(:ld_host) do
+      {:error, _} ->
+        nil
+
+      priv ->
+        path = Path.join([to_string(priv) | segments])
+        if File.exists?(path), do: path
+    end
+  end
+
   # ---- server -----------------------------------------------------------
 
   @impl true
   def init(opts) do
     state =
-      with {:error, beam_reason} <- boot_beam(Keyword.get(opts, :beam_artifact, beam_artifact())),
+      with {:error, beam_reason} <- boot_beam(resolve_beam_artifact(opts)),
            {:error, luerl_reason} <- boot_luerl(Keyword.get(opts, :lua_artifact, lua_artifact())),
-           {:error, node_reason} <- boot_node(Keyword.get(opts, :js_artifact, js_artifact())) do
+           {:error, node_reason} <- boot_node(resolve_js_artifact(opts)) do
         %{engine: :none, error: "beam: #{beam_reason}; luerl: #{luerl_reason}; node: #{node_reason}"}
       else
         {:ok, :beam} -> %{engine: :beam}

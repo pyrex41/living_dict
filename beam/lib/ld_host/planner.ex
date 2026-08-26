@@ -13,7 +13,14 @@ defmodule LdHost.Planner do
   """
 
   @endpoint "https://api.x.ai/v1/chat/completions"
-  @model System.get_env("LIVINGDICT_MODEL") || "grok-4.6"
+  @default_model "grok-4.6"
+
+  @doc """
+  Model resolved at RUNTIME (not compile time): `LIVINGDICT_MODEL` env,
+  else #{inspect(@default_model)}. Compile-time baking would freeze the
+  build machine's env into a release.
+  """
+  def model, do: System.get_env("LIVINGDICT_MODEL") || @default_model
 
   @system """
   You are the planner for a general coding harness whose plan language is
@@ -70,7 +77,7 @@ defmodule LdHost.Planner do
         %{role: "user", content: "GOAL:\n#{goal}\n\n#{observation}"}
       ]
 
-      body = %{model: Keyword.get(opts, :model, @model), messages: messages, temperature: 0.2}
+      body = %{model: Keyword.get(opts, :model, model()), messages: messages, temperature: 0.2}
 
       # Hard episodes can legitimately reason for minutes; a tight
       # receive_timeout guillotines exactly the calls that matter most

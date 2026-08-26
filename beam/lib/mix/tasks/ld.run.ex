@@ -29,13 +29,13 @@ defmodule Mix.Tasks.Ld.Run do
       )
 
     goal = opts[:goal] || Mix.raise("--goal is required")
-    cwd = Path.expand(opts[:cwd] || File.cwd!())
 
     run_opts =
-      [workspace: cwd]
-      |> maybe(:contract, load_contract(opts[:contract]))
-      |> maybe(:dictionary_dir, opts[:dictionary])
-      |> maybe(:max_episodes, opts[:max_episodes])
+      LdHost.CLI.run_opts(opts[:cwd] || File.cwd!(),
+        contract: LdHost.CLI.load_contract(opts[:contract]),
+        dictionary_dir: opts[:dictionary],
+        max_episodes: opts[:max_episodes]
+      )
 
     result = LdHost.Run.run(goal, run_opts)
 
@@ -48,16 +48,4 @@ defmodule Mix.Tasks.Ld.Run do
 
     unless result.success, do: exit({:shutdown, 1})
   end
-
-  defp load_contract(nil), do: nil
-
-  defp load_contract(path) do
-    case path |> File.read!() |> JSON.decode!() do
-      %{"claims" => claims} -> %{claims: claims, source: "approved"}
-      claims when is_list(claims) -> %{claims: claims, source: "approved"}
-    end
-  end
-
-  defp maybe(opts, _key, nil), do: opts
-  defp maybe(opts, key, value), do: Keyword.put(opts, key, value)
 end
