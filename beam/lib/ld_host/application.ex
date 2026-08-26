@@ -11,6 +11,7 @@ defmodule LdHost.Application do
     children = [
       {Registry, keys: :duplicate, name: LdHost.Progress.Registry},
       {LdHost.Critic, []},
+      {Task.Supervisor, name: LdHost.ObligationTaskSup},
       {DynamicSupervisor, strategy: :one_for_one, name: LdHost.RunSupervisor}
     ]
 

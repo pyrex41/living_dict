@@ -24,7 +24,9 @@ defmodule LdHost.MixProject do
       # (openresty/dist/critic/app.lua) with zero non-BEAM dependencies.
       {:luerl, "~> 1.2"},
       # HTTP client for the xAI planner.
-      {:req, "~> 0.5"}
+      {:req, "~> 0.5"},
+      # Actor framework: obligation agents wrap Jido.Agent lifecycles.
+      {:jido, "~> 2.3"}
     ]
   end
 end
