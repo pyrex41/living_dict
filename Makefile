@@ -11,7 +11,7 @@ ifneq ($(wildcard $(SHENSCRIPT)),)
 YGGDRASIL_HOST ?= node $(SHENSCRIPT)
 endif
 
-.PHONY: eval-test eval-oracle harness-test openresty-test eval-resty-config-01 openresty-serve think-config-01 client-test livingdict client-web test browser-test browser-shake browser-serve compare compare-dry scudcheck pack-critic critic-suite
+.PHONY: eval-test eval-oracle harness-test openresty-test eval-resty-config-01 openresty-serve think-config-01 client-test livingdict client-web test browser-test browser-shake browser-serve compare compare-dry scudcheck pack-critic critic-suite beam-deps beam-test beam-run
 
 eval-test:
 	cd eval && python3 -m unittest discover -s tests -v
@@ -56,7 +56,7 @@ compare:
 client-web:
 	cd client/web && npm install && npm run build
 
-test: eval-test harness-test openresty-test critic-suite scudcheck
+test: eval-test harness-test openresty-test critic-suite beam-test scudcheck
 
 scudcheck:
 	@if ! command -v go >/dev/null 2>&1; then echo "skip scudcheck: go not found"; exit 0; fi
@@ -106,3 +106,15 @@ critic-suite: pack-critic
 
 browser-serve:
 	python3 -m http.server --directory browser
+
+# ---- BEAM host (beam/, Elixir) ----
+beam-deps:
+	cd beam && mix deps.get
+
+beam-test:
+	@if ! command -v mix >/dev/null 2>&1; then echo "skip beam: elixir not found"; exit 0; fi
+	cd beam && mix test
+
+beam-run:
+	@test -n "$(GOAL)" || (echo 'usage: make beam-run GOAL="..." [CWD=path] [CONTRACT=claims.json]'; exit 2)
+	cd beam && mix ld.run --goal "$(GOAL)" $(if $(CWD),--cwd "$(CWD)") $(if $(CONTRACT),--contract "$(CONTRACT)")

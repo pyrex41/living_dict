@@ -33,3 +33,7 @@ tools/scudcheck/scudcheck.exe
 .shen-kernel-cache.bin
 openresty/.shen-kernel-cache.bin
 .shen-kernel-cache.*.bin
+beam/_build/
+beam/deps/
+beam/runs/
+erl_crash.dump

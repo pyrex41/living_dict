@@ -1,0 +1,173 @@
+defmodule LdHost.RunTest do
+  use ExUnit.Case
+
+  alias LdHost.Run
+
+  defp workspace do
+    tmp = System.tmp_dir!() |> Path.join("ldrun-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+    tmp
+  end
+
+  defp contract do
+    %{
+      claims: [
+        %{"id" => "greeting", "kind" => "check", "command" => "grep -q hello greet.txt", "timeout_seconds" => 5}
+      ],
+      source: "hidden"
+    }
+  end
+
+  @good_envelope %{
+    "language" => "forth",
+    "program" =>
+      ~s{: INSTALL ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ; } <>
+        ~s{S" greet.txt" S" greet.txt" INSTALL RUN-GATES DROP RECEIPT DROP},
+    "artifacts" => %{"greet.txt" => "hello from the beam\n"},
+    "rationale" => "install greeting"
+  }
+
+  test "end-to-end success: critic accept, execute, gates green, word promoted" do
+    ws = workspace()
+
+    planner = fn _goal, _obs, _feedback -> {:ok, @good_envelope, %{input_tokens: 10, output_tokens: 5}} end
+
+    result = Run.run("write a greeting file", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 2)
+
+    assert result.success
+    assert result.judge == "approved contract"
+    assert result.model_calls == 1
+    assert File.read!(Path.join(ws, "greet.txt")) =~ "hello"
+
+    # typed promotion happened: word persisted with its contract in-band
+    words_dir = Path.join([result.run_dir, "dictionary", "words"])
+    assert File.exists?(Path.join(words_dir, "INSTALL.fs"))
+    assert File.read!(Path.join(words_dir, "INSTALL.fs")) =~ "( key path -- | read, write )"
+
+    # ledger: kernel events landed in order with the promoted word
+    events =
+      result.run_dir
+      |> Path.join("events.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+
+    kinds = Enum.map(events, & &1["kind"])
+    assert "contract.approved" in kinds
+    assert "critic.accepted" in kinds
+    assert "gates.measured" in kinds
+    assert "dictionary.promoted" in kinds
+    assert Enum.map(events, & &1["sequence"]) == Enum.to_list(1..length(events))
+  end
+
+  test "critic rejection feeds back and duplicate resubmission is blocked" do
+    ws = workspace()
+    bad = %{"language" => "forth", "program" => "MYSTERY RECEIPT", "artifacts" => %{}, "rationale" => "bad"}
+
+    {:ok, feedback_log} = Agent.start_link(fn -> [] end)
+
+    planner = fn _goal, _obs, feedback ->
+      Agent.update(feedback_log, &[feedback | &1])
+      {:ok, bad, %{input_tokens: 1, output_tokens: 1}}
+    end
+
+    result = Run.run("goal", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 3)
+
+    refute result.success
+
+    feedbacks = Agent.get(feedback_log, &Enum.reverse/1)
+    assert Enum.at(feedbacks, 1) =~ "unknown word MYSTERY"
+    assert Enum.at(feedbacks, 2) =~ "identical plan resubmitted"
+
+    events =
+      result.run_dir
+      |> Path.join("events.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+
+    kinds = Enum.map(events, & &1["kind"])
+    assert "critic.rejected" in kinds
+    assert "episode.blocked_duplicate" in kinds
+  end
+
+  test "contractless word is quarantined, not persisted" do
+    ws = workspace()
+
+    envelope = %{
+      "language" => "forth",
+      "program" =>
+        ~s{: BARE DUP ; S" greet.txt" USE-ARTIFACT S" greet.txt" WRITE-FILE DROP RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"greet.txt" => "hello\n"},
+      "rationale" => "no contract"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
+    result = Run.run("goal", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 1)
+
+    assert result.success
+    refute File.exists?(Path.join([result.run_dir, "dictionary", "words", "BARE.fs"]))
+
+    trace = File.read!(Path.join(result.run_dir, "trace.jsonl"))
+    assert trace =~ "dictionary.quarantined"
+    assert trace =~ "missing contract"
+  end
+
+  test "warm dictionary: promoted word is callable next run without redefinition" do
+    ws1 = workspace()
+    shared_dict = System.tmp_dir!() |> Path.join("lddictshare-#{System.unique_integer([:positive])}")
+
+    planner1 = fn _g, _o, _f -> {:ok, @good_envelope, %{}} end
+
+    r1 = Run.run("first", workspace: ws1, contract: contract(), planner_fn: planner1, dictionary_dir: shared_dict, max_episodes: 1)
+    assert r1.success
+
+    # Second run: the plan CALLS the promoted word without defining it.
+    ws2 = workspace()
+
+    reuse = %{
+      "language" => "forth",
+      "program" => ~s{S" greet.txt" S" greet.txt" INSTALL RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"greet.txt" => "hello again\n"},
+      "rationale" => "reuse INSTALL"
+    }
+
+    planner2 = fn _g, obs, _f ->
+      assert obs =~ "INSTALL"
+      {:ok, reuse, %{}}
+    end
+
+    r2 = Run.run("second", workspace: ws2, contract: contract(), planner_fn: planner2, dictionary_dir: shared_dict, max_episodes: 1)
+
+    assert r2.success
+    assert File.read!(Path.join(ws2, "greet.txt")) =~ "hello again"
+  end
+
+  test "starved call of a promoted word rejects pre-I/O (the closed type hole)" do
+    ws = workspace()
+    shared_dict = System.tmp_dir!() |> Path.join("lddicthole-#{System.unique_integer([:positive])}")
+
+    planner1 = fn _g, _o, _f -> {:ok, @good_envelope, %{}} end
+    r1 = Run.run("seed", workspace: ws, contract: contract(), planner_fn: planner1, dictionary_dir: shared_dict, max_episodes: 1)
+    assert r1.success
+
+    ws2 = workspace()
+
+    starved = %{
+      "language" => "forth",
+      "program" => ~s{INSTALL RECEIPT DROP},
+      "artifacts" => %{},
+      "rationale" => "starved call"
+    }
+
+    planner2 = fn _g, _o, _f -> {:ok, starved, %{}} end
+    r2 = Run.run("starve", workspace: ws2, contract: contract(), planner_fn: planner2, dictionary_dir: shared_dict, max_episodes: 1)
+
+    refute r2.success
+    events = File.read!(Path.join(r2.run_dir, "events.jsonl"))
+    assert events =~ "critic.rejected"
+    assert events =~ "stack underflow at INSTALL"
+    # No I/O happened: workspace untouched
+    assert LdHost.Policy.snapshot(ws2) == %{}
+  end
+end
