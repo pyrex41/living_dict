@@ -165,7 +165,9 @@ defmodule LdHost.Demo do
         "id" => ob_id,
         "goal" => task.goal,
         "workspace" => ws,
-        "contract" => task.contract
+        "contract" => task.contract,
+        "allowed_globs" => task.allowed_globs ++ ["claims.json", ".sb/*"],
+        "forbidden_globs" => task.forbidden_globs
       }
 
       obligation =

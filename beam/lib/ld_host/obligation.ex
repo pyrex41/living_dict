@@ -27,6 +27,8 @@ defmodule LdHost.Obligation do
         |> maybe(:contract, contract_of(ob))
         |> maybe(:dictionary_dir, ob["dictionary"])
         |> maybe(:max_episodes, get_in(ob, ["limits", "max_episodes"]))
+        |> maybe(:allowed_globs, ob["allowed_globs"])
+        |> maybe(:forbidden_globs, forbidden_of(ob))
         |> Keyword.merge(extra)
 
       summary = LdHost.Run.run(goal, opts)
@@ -35,6 +37,12 @@ defmodule LdHost.Obligation do
 
     defp contract_of(%{"contract" => %{"claims" => claims}}), do: %{claims: claims, source: "obligation"}
     defp contract_of(_), do: nil
+
+    # Task forbiddens compose with the host's bookkeeping defaults.
+    defp forbidden_of(%{"forbidden_globs" => globs}) when is_list(globs),
+      do: globs ++ [".livingdict-run/*", ".git/*", "node_modules/*", "dist/*"]
+
+    defp forbidden_of(_), do: nil
 
     defp maybe(opts, _key, nil), do: opts
     defp maybe(opts, key, value), do: Keyword.put(opts, key, value)
