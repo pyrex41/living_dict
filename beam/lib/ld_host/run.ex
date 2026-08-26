@@ -82,7 +82,7 @@ defmodule LdHost.Run do
   defp run_episode(state, episode) do
     observation = observe(state)
 
-    case state.planner_fn.(state.goal, observation, state.feedback) do
+    case plan_with_retry(state, observation, 3) do
       {:error, reason} ->
         Ledger.trace(state.ledger, "planner.error", %{reason: inspect(reason)})
         {:halt, state}
@@ -342,6 +342,23 @@ defmodule LdHost.Run do
           output_tokens: state.tokens.output_tokens + (telemetry[:output_tokens] || 0)
         }
     }
+  end
+
+  # Transient transport failures (timeouts, resets) must not kill a run:
+  # retry with backoff before declaring the planner unreachable.
+  defp plan_with_retry(state, observation, attempts) do
+    case state.planner_fn.(state.goal, observation, state.feedback) do
+      {:ok, _, _} = ok ->
+        ok
+
+      {:error, reason} when attempts > 1 ->
+        Ledger.trace(state.ledger, "planner.retry", %{reason: inspect(reason), left: attempts - 1})
+        Process.sleep((4 - attempts) * 5_000 + 5_000)
+        plan_with_retry(state, observation, attempts - 1)
+
+      {:error, _} = error ->
+        error
+    end
   end
 
   defp default_planner(goal, observation, feedback) do

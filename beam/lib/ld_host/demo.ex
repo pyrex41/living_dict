@@ -251,19 +251,35 @@ defmodule LdHost.Demo do
     end
   end
 
-  # The grok CLI emits pretty-printed multi-line JSON: decode from the
-  # last line-starting "{" that yields a valid object.
-  defp last_json(output) do
+  # The grok CLI emits pretty-printed multi-line JSON, sometimes followed
+  # by trailer lines ("Error: max turns reached"): decode from the last
+  # line-starting "{" that yields a valid object, trimming past the last
+  # "}" when a straight decode fails.
+  def last_json(output) do
     ~r/(?:\A|\n)\{/
     |> Regex.scan(output, return: :index)
     |> Enum.map(fn [{start, len}] -> start + len - 1 end)
     |> Enum.reverse()
     |> Enum.find_value(fn i ->
-      case JSON.decode(String.trim(binary_part(output, i, byte_size(output) - i))) do
-        {:ok, %{} = blob} -> blob
-        _ -> nil
-      end
+      slice = binary_part(output, i, byte_size(output) - i)
+      decode_object(slice) || decode_object(cut_after_last_brace(slice))
     end)
+  end
+
+  defp decode_object(nil), do: nil
+
+  defp decode_object(s) do
+    case JSON.decode(String.trim(s)) do
+      {:ok, %{} = blob} -> blob
+      _ -> nil
+    end
+  end
+
+  defp cut_after_last_brace(s) do
+    case :binary.matches(s, "}") do
+      [] -> nil
+      matches -> {pos, _} = List.last(matches); binary_part(s, 0, pos + 1)
+    end
   end
 
   defp policy_violation_count(ws, task) do
