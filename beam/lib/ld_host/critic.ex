@@ -5,14 +5,15 @@ defmodule LdHost.Critic do
 
   Engine order at boot:
 
-  1. `:luerl` — the Lua artifact (`openresty/dist/critic/app.lua`) in
-     pure-Erlang Lua. Currently blocked: the artifact's embedded TCO
-     chunks use `goto`, which luerl's compiler cannot parse. The attempt
-     is kept because it is cheap and becomes the zero-process path the
-     moment either luerl grows goto support or the artifact drops it.
-  2. `:node` — the JS artifact (`browser/dist/critic/app.js`) inside a
-     persistent node process (`priv/critic_server.mjs`, JSONL protocol).
-  3. A future shen-erl yggdrasil target slots in above both.
+  1. `:beam` — the shen-erl artifact (`openresty/dist/critic-erl/`,
+     yggdrasil `--target erlang`): the typed Shen critic compiled to
+     actual BEAM modules (`kl_kernel`, `kl_validate`) loaded into THIS
+     VM. Shen strings are `{:string, charlist}`, cons cells are native
+     lists, `validate/5` is a plain exported function. Zero processes,
+     zero marshalling layers beyond tagged strings.
+  2. `:luerl` — the Lua artifact in pure-Erlang Lua (blocked on luerl
+     goto support; kept as a cheap probe).
+  3. `:node` — the JS artifact in a persistent node process.
 
   Elixir callers see `{:accept, depth, effects}` /
   `{:reject, errors, depth, effects}` regardless of engine.
@@ -79,27 +80,45 @@ defmodule LdHost.Critic do
 
   def lua_artifact, do: Path.join([repo_root(), "openresty", "dist", "critic", "app.lua"])
   def js_artifact, do: Path.join([repo_root(), "browser", "dist", "critic", "app.js"])
+  def beam_artifact, do: Path.join([repo_root(), "openresty", "dist", "critic-erl", "app-erlang", "ebin"])
 
   # ---- server -----------------------------------------------------------
 
   @impl true
   def init(opts) do
     state =
-      case boot_luerl(Keyword.get(opts, :lua_artifact, lua_artifact())) do
-        {:ok, lua} ->
-          %{engine: :luerl, lua: lua}
-
-        {:error, luerl_reason} ->
-          case boot_node(Keyword.get(opts, :js_artifact, js_artifact())) do
-            {:ok, port} ->
-              %{engine: :node, port: port, next_id: 1, luerl_error: luerl_reason}
-
-            {:error, node_reason} ->
-              %{engine: :none, error: "luerl: #{luerl_reason}; node: #{node_reason}"}
-          end
+      with {:error, beam_reason} <- boot_beam(Keyword.get(opts, :beam_artifact, beam_artifact())),
+           {:error, luerl_reason} <- boot_luerl(Keyword.get(opts, :lua_artifact, lua_artifact())),
+           {:error, node_reason} <- boot_node(Keyword.get(opts, :js_artifact, js_artifact())) do
+        %{engine: :none, error: "beam: #{beam_reason}; luerl: #{luerl_reason}; node: #{node_reason}"}
+      else
+        {:ok, :beam} -> %{engine: :beam}
+        {:ok, lua} -> %{engine: :luerl, lua: lua}
+        {:ok, :node, port} -> %{engine: :node, port: port, next_id: 1}
       end
 
     {:ok, state}
+  end
+
+  # shen-erl boot, mirroring the launcher's --shaken path: named ETS
+  # stores (owned by this GenServer; a restart re-creates them), stdio
+  # globals, MFA registration + kernel init, then user toplevels.
+  defp boot_beam(ebin) do
+    if File.dir?(ebin) and File.exists?(Path.join(ebin, "kl_validate.beam")) do
+      true = :code.add_patha(String.to_charlist(ebin))
+      :ok = :shen_erl_global_stores.init()
+      :shen_erl_kl_primitives.set(:"*stoutput*", :standard_io)
+      :shen_erl_kl_primitives.set(:"*stinput*", :standard_io)
+      :ok = :shen_erl_kl_compiler.boot_shaken([:kl_kernel, :kl_validate])
+      :ok = :shen_erl_kl_compiler.run_shaken([:kl_kernel, :kl_validate])
+      {:ok, :beam}
+    else
+      {:error, "no shen-erl artifact at #{ebin} — run yggdrasil build --target erlang"}
+    end
+  rescue
+    e -> {:error, Exception.message(e)}
+  catch
+    kind, val -> {:error, "#{kind}: #{inspect(val, limit: 3)}"}
   end
 
   defp boot_luerl(artifact) do
@@ -144,7 +163,7 @@ defmodule LdHost.Critic do
         receive do
           {^port, {:data, {:eol, line}}} ->
             case JSON.decode(line) do
-              {:ok, %{"ready" => true}} -> {:ok, port}
+              {:ok, %{"ready" => true}} -> {:ok, :node, port}
               _ -> {:error, "critic server bad handshake: #{line}"}
             end
 
@@ -161,6 +180,24 @@ defmodule LdHost.Critic do
 
   def handle_call({:validate, _p, _e, _g, _f, _a}, _from, %{engine: :none} = state) do
     {:reply, {:error, state.error}, state}
+  end
+
+  def handle_call({:validate, program, effects, globs, forbidden, artifacts}, _from, %{engine: :beam} = state) do
+    result =
+      :kl_validate.validate(
+        shen_str(program),
+        shen_strs(effects),
+        shen_strs(globs),
+        shen_strs(forbidden),
+        shen_strs(artifacts)
+      )
+
+    {:reply, decode_beam(result), state}
+  rescue
+    e -> {:reply, {:reject, ["critic error: #{Exception.message(e)}"], 0, []}, state}
+  catch
+    {:simple_error, message} -> {:reply, {:reject, [to_string(message)], 0, []}, state}
+    kind, val -> {:reply, {:reject, ["critic error: #{kind} #{inspect(val, limit: 3)}"], 0, []}, state}
   end
 
   def handle_call({:validate, program, effects, globs, forbidden, artifacts}, _from, %{engine: :luerl} = state) do
@@ -216,6 +253,22 @@ defmodule LdHost.Critic do
 
   defp decode_node(%{"tag" => "error"} = out),
     do: {:reject, ["critic error: #{out["message"]}"], 0, []}
+
+  # ---- shen-erl marshalling: {:string, charlist} strings, native lists.
+
+  defp shen_str(s), do: {:string, String.to_charlist(s)}
+  defp shen_strs(list), do: Enum.map(list, &shen_str/1)
+
+  defp decode_beam([:accept, depth, effects]), do: {:accept, depth, plain_beam(effects)}
+
+  defp decode_beam([:reject, errors, depth, effects]),
+    do: {:reject, plain_beam(errors), depth, plain_beam(effects)}
+
+  defp decode_beam(other), do: {:error, "unexpected critic result: #{inspect(other, limit: 5)}"}
+
+  defp plain_beam({:string, chars}), do: to_string(chars)
+  defp plain_beam(list) when is_list(list), do: Enum.map(list, &plain_beam/1)
+  defp plain_beam(other), do: other
 
   # luerl returns Lua tables as [{index, value}] proplists.
   defp decode_lua(table) when is_list(table) do
