@@ -1,15 +1,42 @@
 \\ Living Dictionary critic fixture (bifrost script-mode).
-\\ Self-contained: no load / eval / tc. Marker: ALL PASS
-\\ Packed from validate.shen + suite-tests.shen.
+\\ Self-contained: no load / eval / runtime tc. Marker: ALL PASS
+\\ Packed by make pack-critic from validate.shen + suite-tests.shen.
 
 \\ forth-shen critic. Named validate: Accept | Reject.
-\\ Portable, eval-free. No lua.call, js.call, (tc +), eval, or load.
+\\ Portable, eval-free. No lua.call, js.call, runtime (tc +), eval, or load.
 \\ Tokenise is portable Shen (tokenise.shen) or the host passes tokens.
-\\ Colon bodies are not checked (Contract 0,0). Leftover depth is not a reject.
+\\ Colon bodies are CHECKED: the first paren group after the name is the
+\\ word's contract — ( ins -- outs | effects ) — and the body is abstractly
+\\ interpreted against the current word table; a declared contract must
+\\ match the computed one exactly, an absent contract is inferred, and the
+\\ word is bound with its real (in out effects) triple so call sites are
+\\ checked pre-I/O. Recursion is rejected (definition-before-use, single
+\\ pass). Leftover depth is still not a reject.
 \\
 \\ This file is the shake entry: ratatoskr build shen/critic/validate.shen …
 \\ It is self-contained (contracts + tokenise + validate) so a single PROG
 \\ does not need runtime load (load would flip needs-eval).
+\\
+\\ TODO Stage-1 graph rules (Python livingdict.preflight already enforces;
+\\ implement here before claiming Shen parity — do not ship a weaker Accept):
+\\ 1. duplicate node ids → Reject "duplicate node id: <id>"
+\\ 2. unknown depends_on → Reject "unknown depends_on: <node> -> <dep>"
+\\ 3. dependency cycles → Reject "dependency cycle: a -> b -> a" (report the cycle)
+\\ 4. a node program WRITE-FILE path outside that node's writes, narrowed to
+\\    intersection(request.allowed_globs, node.writes|allowed_globs) with the
+\\    same PathPolicy / forbidden globs → Reject as today, prefixed "node <id>:"
+\\ 5. two nodes with overlapping write sets unless one depends transitively
+\\    on the other → Reject "overlapping independent writes: <a> <b>"
+\\ 6. when nodes are present, every artifact key must be covered by some
+\\    node's writes → Reject "uncovered artifact: <key>"
+\\ 7. existing stack / effect / glob / missing-artifact checks run per node
+\\    program (and still on the composed program)
+\\ 8. when task_graph.json is present AND envelope has nodes: if an envelope
+\\    node's writes intersect a task-graph node's writes, then for each of
+\\    that task-graph node's depends_on the envelope must schedule the
+\\    covering writes strictly before it → Reject "graph order: envelope
+\\    node <id> must follow task-graph dependency <dep>" naming both nodes
+\\ Absent nodes: today's program-only validate. No new Forth words.
 
 (define allowed-effect-name?
   "read" -> true
@@ -156,9 +183,14 @@
   "" -> ""
   S -> (if (= (hdstr S) (nlch)) S (skip-line (tlstr S))))
 
-(define skip-paren
-  "" -> ""
-  S -> (if (= (hdstr S) ")") (tlstr S) (skip-paren (tlstr S))))
+\\ Paren groups are captured as comment tokens (the critic needs to SEE
+\\ contract groups; runtime Forth VMs keep discarding them). Unterminated
+\\ groups run to end-of-source, mirroring the old skip-paren.
+(define take-paren-h
+  "" Acc -> [Acc ""]
+  S Acc -> (if (= (hdstr S) ")")
+               [Acc (tlstr S)]
+               (take-paren-h (tlstr S) (cn Acc (hdstr S)))))
 
 (define s-quote?
   S -> (and (not (= S ""))
@@ -194,7 +226,9 @@
               (tokenise-h (skip-line S) true Acc)
               (if (and (= C "(")
                        (or (= (tlstr S) "") (ws? (hdstr (tlstr S)))))
-                  (tokenise-h (skip-paren (tlstr S)) true Acc)
+                  (let P (take-paren-h (tlstr S) "")
+                    (tokenise-h (hd (tl P)) true
+                      [["comment" (hd P) (length Acc)] | Acc]))
                   (if (s-quote? S)
                       (let P (take-string-h (after-s-quote S) "")
                         (if (= (hd P) bad)
@@ -276,6 +310,58 @@
         (not-subset Es Allowed)
         [E | (not-subset Es Allowed)]))
 
+\\ ---------------- word contracts: ( ins -- outs | effects ) -------------
+\\ Grammar: items before -- are the inputs, items after are the outputs
+\\ (names documentary; arity = count), and an optional | introduces a
+\\ non-empty comma/space-separated effect list drawn from read/write/exec.
+\\ Exactly one --, at most one |, nested parens impossible (the tokeniser
+\\ ends the group at the first close paren).
+
+(define split-contract-h
+  "" Acc Parts -> (if (= Acc "") (reverse Parts) (reverse [Acc | Parts]))
+  S Acc Parts ->
+    (let C (hdstr S)
+      (if (or (ws? C) (= C ","))
+          (split-contract-h (tlstr S) "" (if (= Acc "") Parts [Acc | Parts]))
+          (split-contract-h (tlstr S) (cn Acc C) Parts))))
+
+\\ [ok In Out SortedEffects] | [bad Reason]
+(define parse-contract
+  Inner -> (parse-contract-ins (split-contract-h Inner "" []) 0))
+
+(define parse-contract-ins
+  [] _ -> [bad "missing --"]
+  ["--" | Rest] In -> (parse-contract-outs Rest In 0)
+  ["|" | _] _ -> [bad "| before --"]
+  [_ | Rest] In -> (parse-contract-ins Rest (+ In 1)))
+
+(define parse-contract-outs
+  [] In Out -> [ok In Out []]
+  ["--" | _] _ _ -> [bad "more than one --"]
+  ["|" | Rest] In Out -> (parse-contract-effs Rest In Out [])
+  [_ | Rest] In Out -> (parse-contract-outs Rest In (+ Out 1)))
+
+(define parse-contract-effs
+  [] _ _ [] -> [bad "| requires at least one effect"]
+  [] In Out Effs -> [ok In Out (sort-strings Effs)]
+  ["--" | _] _ _ _ -> [bad "more than one --"]
+  ["|" | _] _ _ _ -> [bad "more than one |"]
+  [W | Rest] In Out Effs ->
+    (if (allowed-effect-name? W)
+        (parse-contract-effs Rest In Out (uniq-append Effs [W]))
+        [bad (cn "unknown effect: " W)]))
+
+\\ Canonical rendering, used verbatim in mismatch rejects so repair is
+\\ mechanical: counts, " -- ", sorted effects after " | ".
+(define format-contract
+  In Out [] -> (cn "( " (cn (str In) (cn " -- " (cn (str Out) " )"))))
+  In Out Effs -> (cn "( " (cn (str In)
+                    (cn " -- " (cn (str Out)
+                      (cn " | " (cn (join-comma Effs) " )")))))))
+
+(define min2
+  A B -> (if (< A B) A B))
+
 (define strlen
   "" -> 0
   S -> (+ 1 (strlen (tlstr S))))
@@ -348,7 +434,7 @@
   Name [_ | Rest] -> (lookup-word Name Rest))
 
 (define bind-word
-  Name Words -> [[Name 0 0 []] | Words])
+  Name In Out Eff Words -> [[Name In Out Eff] | Words])
 
 (define contract-triple
   Name ->
@@ -373,36 +459,120 @@
               [(tok-value P)]
               []))))
 
-(define scan-colon-body
-  Tokens J Name Errors ->
-    (if (>= J (tok-len Tokens))
-        [(tok-len Tokens) "" (append Errors ["unterminated colon definition"])]
-        (let T (tok-nth Tokens J)
-          (if (and (= (tok-kind T) "word")
-                   (= (upcase (tok-value T)) ";"))
-              [(+ J 1) Name Errors]
-              (if (and (= (tok-kind T) "word")
-                       (= (upcase (tok-value T)) ":"))
-                  [(+ J 1) ""
-                   (append Errors
-                     [(err-at (tok-index T)
-                              "nested colon definitions are not supported")])]
-                  (scan-colon-body Tokens (+ J 1) Name Errors))))))
-
-(define skip-colon
-  Tokens I Errors ->
+\\ check-colon: parse the optional contract group after the name, then
+\\ abstractly interpret the body against the current word table (running
+\\ depth from 0; the minimum reached defines the inputs, the final depth
+\\ the outputs; effects accumulate from called words). Returns
+\\ [NI Name In Out Effs Errors] — Name "" when the definition is unusable
+\\ (no binding), exactly as the old skip path behaved on malformed defs.
+(define check-colon
+  Tokens I Words Allowed Forbidden Artifacts Errors ->
     (if (>= (+ I 1) (tok-len Tokens))
-        [(+ I 1) ""
+        [(+ I 1) "" 0 0 []
          (append Errors
            [(err-at (tok-index (tok-nth Tokens I)) "expected name after :")])]
         (let NameTok (tok-nth Tokens (+ I 1))
           (if (not (= (tok-kind NameTok) "word"))
-              [(+ I 1) ""
+              [(+ I 1) "" 0 0 []
                (append Errors
                  [(err-at (tok-index (tok-nth Tokens I))
                           "expected name after :")])]
-              (scan-colon-body Tokens (+ I 2)
-                               (upcase (tok-value NameTok)) Errors)))))
+              (check-colon-decl Tokens (+ I 2)
+                                (upcase (tok-value NameTok))
+                                (tok-index NameTok)
+                                Words Allowed Forbidden Artifacts Errors)))))
+
+\\ The first token after the name decides the declaration: a comment token
+\\ is parsed as the contract (invalid -> reject, then treated as absent);
+\\ anything else means no declaration (inference).
+(define check-colon-decl
+  Tokens J Name Idx Words Allowed Forbidden Artifacts Errors ->
+    (if (and (< J (tok-len Tokens))
+             (= (tok-kind (tok-nth Tokens J)) "comment"))
+        (let P (parse-contract (tok-value (tok-nth Tokens J)))
+          (if (= (hd P) ok)
+              (walk-body Tokens (+ J 1) Name Idx
+                         [declared (hd (tl P)) (hd (tl (tl P)))
+                                   (hd (tl (tl (tl P))))]
+                         0 0 [] Words Allowed Forbidden Artifacts Errors)
+              (walk-body Tokens (+ J 1) Name Idx none
+                         0 0 [] Words Allowed Forbidden Artifacts
+                         (append Errors
+                           [(err-at (tok-index (tok-nth Tokens J))
+                              (cn "invalid contract for "
+                                  (cn Name (cn ": " (hd (tl P))))))]))))
+        (walk-body Tokens J Name Idx none
+                   0 0 [] Words Allowed Forbidden Artifacts Errors)))
+
+(define walk-body
+  Tokens J Name Idx Decl Depth Low Effs Words Allowed Forbidden Artifacts Errors ->
+    (if (>= J (tok-len Tokens))
+        [(tok-len Tokens) "" 0 0 []
+         (append Errors ["unterminated colon definition"])]
+        (let T (tok-nth Tokens J)
+          (if (= (tok-kind T) "comment")
+              (walk-body Tokens (+ J 1) Name Idx Decl Depth Low Effs
+                         Words Allowed Forbidden Artifacts Errors)
+              (if (or (= (tok-kind T) "string") (= (tok-kind T) "number"))
+                  (walk-body Tokens (+ J 1) Name Idx Decl (+ Depth 1) Low Effs
+                             Words Allowed Forbidden Artifacts Errors)
+                  (walk-body-word Tokens J (upcase (tok-value T)) T
+                                  Name Idx Decl Depth Low Effs
+                                  Words Allowed Forbidden Artifacts Errors))))))
+
+(define walk-body-word
+  Tokens J ";" T Name Idx Decl Depth Low Effs Words Allowed Forbidden Artifacts Errors ->
+    (finish-colon (+ J 1) Name Idx Decl (- 0 Low) (- Depth Low)
+                  (sort-strings Effs) Errors)
+  Tokens J ":" T Name Idx Decl Depth Low Effs Words Allowed Forbidden Artifacts Errors ->
+    [(+ J 1) "" 0 0 []
+     (append Errors
+       [(err-at (tok-index T) "nested colon definitions are not supported")])]
+  Tokens J Name T Name Idx Decl Depth Low Effs Words Allowed Forbidden Artifacts Errors ->
+    (walk-body Tokens (+ J 1) Name Idx Decl Depth Low Effs
+               Words Allowed Forbidden Artifacts
+               (append Errors
+                 [(err-at (tok-index T)
+                    (cn "recursive colon definition "
+                        (cn Name " is not supported")))]))
+  Tokens J W T Name Idx Decl Depth Low Effs Words Allowed Forbidden Artifacts Errors ->
+    (let C (word-contract W Words)
+      (if (empty? C)
+          (walk-body Tokens (+ J 1) Name Idx Decl Depth Low Effs
+                     Words Allowed Forbidden Artifacts
+                     (append Errors
+                       [(err-at (tok-index T)
+                                (cn "unknown word " (tok-value T)))]))
+          (let In (hd C)
+            (let Out (hd (tl C))
+              (let Eff (hd (tl (tl C)))
+                (let Dropped (- Depth In)
+                  (let NewLow (min2 Low Dropped)
+                    (let NewErr (special-checks W Tokens J Allowed
+                                                Forbidden Artifacts Errors)
+                      (walk-body Tokens (+ J 1) Name Idx Decl
+                                 (+ Dropped Out) NewLow
+                                 (uniq-append Effs Eff)
+                                 Words Allowed Forbidden Artifacts NewErr))))))))))
+
+\\ At the terminating ; : computed contract = (in out effects). A declared
+\\ contract must match exactly; the mismatch reject echoes both renderings
+\\ verbatim. The word binds with its declared contract when one was given
+\\ (mismatch already recorded), else the inferred one — never (0 0 []).
+(define finish-colon
+  NI Name Idx none In Out Effs Errors -> [NI Name In Out Effs Errors]
+  NI Name Idx [declared DIn DOut DEffs] In Out Effs Errors ->
+    (if (and (= DIn In) (and (= DOut Out) (= DEffs Effs)))
+        [NI Name DIn DOut DEffs Errors]
+        [NI Name DIn DOut DEffs
+         (append Errors
+           [(err-at Idx
+              (cn "contract mismatch for "
+                  (cn Name
+                      (cn ": declared "
+                          (cn (format-contract DIn DOut DEffs)
+                              (cn " computed "
+                                  (format-contract In Out Effs)))))))])]))
 
 (define write-check
   Tokens I Allowed Forbidden Errors ->
@@ -467,20 +637,31 @@
     (if (>= I (tok-len Tokens))
         [Errors Depth Effects]
         (let T (tok-nth Tokens I)
-          (if (or (= (tok-kind T) "string") (= (tok-kind T) "number"))
-              (walk Tokens (+ I 1) (+ Depth 1) Words Effects Allowed Forbidden
+          (if (= (tok-kind T) "comment")
+              (walk Tokens (+ I 1) Depth Words Effects Allowed Forbidden
                     Artifacts Errors)
-              (let Name (upcase (tok-value T))
-                (if (= Name ":")
-                    (let SC (skip-colon Tokens I Errors)
-                      (let NI (hd SC)
-                        (let Def (hd (tl SC))
-                          (let ER (hd (tl (tl SC)))
-                            (walk Tokens NI Depth
-                                  (if (= Def "") Words (bind-word Def Words))
-                                  Effects Allowed Forbidden Artifacts ER)))))
-                    (apply-word T Name Tokens I Depth Words Effects Allowed
-                                Forbidden Artifacts Errors)))))))
+              (if (or (= (tok-kind T) "string") (= (tok-kind T) "number"))
+                  (walk Tokens (+ I 1) (+ Depth 1) Words Effects Allowed
+                        Forbidden Artifacts Errors)
+                  (let Name (upcase (tok-value T))
+                    (if (= Name ":")
+                        (let SC (check-colon Tokens I Words Allowed Forbidden
+                                             Artifacts Errors)
+                          (let NI (hd SC)
+                            (let Def (hd (tl SC))
+                              (let BIn (hd (tl (tl SC)))
+                                (let BOut (hd (tl (tl (tl SC))))
+                                  (let BEff (hd (tl (tl (tl (tl SC)))))
+                                    (let ER (hd (tl (tl (tl (tl (tl SC))))))
+                                      (walk Tokens NI Depth
+                                            (if (= Def "")
+                                                Words
+                                                (bind-word Def BIn BOut BEff
+                                                           Words))
+                                            Effects Allowed Forbidden
+                                            Artifacts ER))))))))
+                        (apply-word T Name Tokens I Depth Words Effects Allowed
+                                    Forbidden Artifacts Errors))))))))
 
 (define finish
   Errors Depth Effects Allowed ->
@@ -583,14 +764,109 @@
                          (and (= (tok-kind (hd (tl Toks))) "number")
                               (= (tok-value (hd (tl Toks))) 5)))))))
 
+(define check-contract-parse
+  -> (report "contract-parse"
+             (both (= (parse-contract "key path -- receipt | read, write")
+                      [ok 2 1 ["read" "write"]])
+                   (both (= (parse-contract " -- ") [ok 0 0 []])
+                         (both (= (hd (parse-contract "no dashes")) bad)
+                               (both (= (hd (parse-contract "a -- b -- c")) bad)
+                                     (both (= (hd (parse-contract "a -- b |")) bad)
+                                           (= (hd (parse-contract "a -- | fly")) bad))))))))
+
+(define check-colon-declared
+  -> (let Prog (cn ": INSTALL ( key -- | read, write ) DUP USE-ARTIFACT SWAP WRITE-FILE DROP ; "
+                   (cn (s-lit "app/config.py") " INSTALL"))
+       (let R (validate Prog ["read" "write" "exec"]
+                        ["app/config.py"] [] ["app/config.py"])
+         (report "colon-declared-accept" (= (hd R) accept)))))
+
+(define check-colon-mismatch
+  -> (let R (validate ": INSTALL ( a b -- | write ) DUP USE-ARTIFACT SWAP WRITE-FILE DROP ;"
+                      ["read" "write" "exec"] ["**"] [] ["app/config.py"])
+       (let J (join-space (hd (tl R)))
+         (report "colon-contract-mismatch"
+                 (and (= (hd R) reject)
+                      (and (contains-sub? J "contract mismatch for INSTALL")
+                           (and (contains-sub? J "declared ( 2 -- 0 | write )")
+                                (contains-sub? J "computed ( 1 -- 0 | read, write )"))))))))
+
+(define check-colon-call-underflow
+  -> (let R (validate ": INSTALL ( key -- | read, write ) DUP USE-ARTIFACT SWAP WRITE-FILE DROP ; INSTALL"
+                      ["read" "write" "exec"] ["**"] [] ["app/config.py"])
+       (report "colon-call-underflow"
+               (and (= (hd R) reject)
+                    (contains-sub? (join-space (hd (tl R)))
+                                   "stack underflow at INSTALL")))))
+
+(define check-colon-recursion
+  -> (let R (validate ": LOOPY ( -- ) LOOPY ;"
+                      ["read" "write" "exec"] ["**"] [] [])
+       (report "colon-recursion-reject"
+               (and (= (hd R) reject)
+                    (contains-sub? (join-space (hd (tl R)))
+                                   "recursive colon definition LOOPY")))))
+
+(define check-colon-invalid
+  -> (let R (validate ": FOO ( no dashes here ) DROP ;"
+                      ["read" "write" "exec"] ["**"] [] [])
+       (report "colon-invalid-contract"
+               (and (= (hd R) reject)
+                    (contains-sub? (join-space (hd (tl R)))
+                                   "invalid contract for FOO")))))
+
+(define check-colon-inference
+  -> (let A (validate ": TWICE DUP ; 5 TWICE DROP DROP"
+                      ["read" "write" "exec"] ["**"] [] [])
+       (let B (validate ": TWICE DUP ; TWICE"
+                        ["read" "write" "exec"] ["**"] [] [])
+         (report "colon-inference"
+                 (and (= (hd A) accept)
+                      (and (= (hd B) reject)
+                           (contains-sub? (join-space (hd (tl B)))
+                                          "stack underflow at TWICE")))))))
+
+(define check-colon-body-path
+  -> (let Prog (cn ": SNEAK ( -- | write ) "
+                   (cn (s-lit "hello")
+                       (cn " " (cn (s-lit "tests/test_public.py") " WRITE-FILE DROP ;"))))
+       (let R (validate Prog ["read" "write" "exec"] ["app/**"] ["tests/**"] [])
+         (report "colon-body-forbidden-path"
+                 (and (= (hd R) reject)
+                      (contains-sub? (join-space (hd (tl R)))
+                                     "forbidden path: tests/test_public.py"))))))
+
+(define check-comment-token
+  -> (let Toks (tokenise-program "( a note ) RUN-GATES")
+       (let R (validate "( just a note ) RUN-GATES DROP"
+                        ["read" "write" "exec"] ["**"] [] [])
+         (report "comment-token-inert"
+                 (and (= (tok-kind (hd Toks)) "comment")
+                      (and (= (tok-value (hd Toks)) " a note ")
+                           (= (hd R) accept)))))))
+
+(define all-pass
+  [] -> true
+  [true | Rest] -> (all-pass Rest)
+  [_ | _] -> false)
+
 (define run-critic-suite
-  -> (let A (check-accept-straight)
-       (let B (check-reject-bundle)
-         (let C (check-missing-artifact)
-           (let D (check-write-ok)
-             (let E (check-tokenise)
-               (if (and A (and B (and C (and D E))))
-                   (do (output "ALL PASS~%") true)
-                   (do (output "SOME FAIL~%") false))))))))
+  -> (let Results [(check-accept-straight)
+                   (check-reject-bundle)
+                   (check-missing-artifact)
+                   (check-write-ok)
+                   (check-tokenise)
+                   (check-contract-parse)
+                   (check-colon-declared)
+                   (check-colon-mismatch)
+                   (check-colon-call-underflow)
+                   (check-colon-recursion)
+                   (check-colon-invalid)
+                   (check-colon-inference)
+                   (check-colon-body-path)
+                   (check-comment-token)]
+       (if (all-pass Results)
+           (do (output "ALL PASS~%") true)
+           (do (output "SOME FAIL~%") false))))
 
 (run-critic-suite)

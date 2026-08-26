@@ -76,14 +76,109 @@
                          (and (= (tok-kind (hd (tl Toks))) "number")
                               (= (tok-value (hd (tl Toks))) 5)))))))
 
+(define check-contract-parse
+  -> (report "contract-parse"
+             (both (= (parse-contract "key path -- receipt | read, write")
+                      [ok 2 1 ["read" "write"]])
+                   (both (= (parse-contract " -- ") [ok 0 0 []])
+                         (both (= (hd (parse-contract "no dashes")) bad)
+                               (both (= (hd (parse-contract "a -- b -- c")) bad)
+                                     (both (= (hd (parse-contract "a -- b |")) bad)
+                                           (= (hd (parse-contract "a -- | fly")) bad))))))))
+
+(define check-colon-declared
+  -> (let Prog (cn ": INSTALL ( key -- | read, write ) DUP USE-ARTIFACT SWAP WRITE-FILE DROP ; "
+                   (cn (s-lit "app/config.py") " INSTALL"))
+       (let R (validate Prog ["read" "write" "exec"]
+                        ["app/config.py"] [] ["app/config.py"])
+         (report "colon-declared-accept" (= (hd R) accept)))))
+
+(define check-colon-mismatch
+  -> (let R (validate ": INSTALL ( a b -- | write ) DUP USE-ARTIFACT SWAP WRITE-FILE DROP ;"
+                      ["read" "write" "exec"] ["**"] [] ["app/config.py"])
+       (let J (join-space (hd (tl R)))
+         (report "colon-contract-mismatch"
+                 (and (= (hd R) reject)
+                      (and (contains-sub? J "contract mismatch for INSTALL")
+                           (and (contains-sub? J "declared ( 2 -- 0 | write )")
+                                (contains-sub? J "computed ( 1 -- 0 | read, write )"))))))))
+
+(define check-colon-call-underflow
+  -> (let R (validate ": INSTALL ( key -- | read, write ) DUP USE-ARTIFACT SWAP WRITE-FILE DROP ; INSTALL"
+                      ["read" "write" "exec"] ["**"] [] ["app/config.py"])
+       (report "colon-call-underflow"
+               (and (= (hd R) reject)
+                    (contains-sub? (join-space (hd (tl R)))
+                                   "stack underflow at INSTALL")))))
+
+(define check-colon-recursion
+  -> (let R (validate ": LOOPY ( -- ) LOOPY ;"
+                      ["read" "write" "exec"] ["**"] [] [])
+       (report "colon-recursion-reject"
+               (and (= (hd R) reject)
+                    (contains-sub? (join-space (hd (tl R)))
+                                   "recursive colon definition LOOPY")))))
+
+(define check-colon-invalid
+  -> (let R (validate ": FOO ( no dashes here ) DROP ;"
+                      ["read" "write" "exec"] ["**"] [] [])
+       (report "colon-invalid-contract"
+               (and (= (hd R) reject)
+                    (contains-sub? (join-space (hd (tl R)))
+                                   "invalid contract for FOO")))))
+
+(define check-colon-inference
+  -> (let A (validate ": TWICE DUP ; 5 TWICE DROP DROP"
+                      ["read" "write" "exec"] ["**"] [] [])
+       (let B (validate ": TWICE DUP ; TWICE"
+                        ["read" "write" "exec"] ["**"] [] [])
+         (report "colon-inference"
+                 (and (= (hd A) accept)
+                      (and (= (hd B) reject)
+                           (contains-sub? (join-space (hd (tl B)))
+                                          "stack underflow at TWICE")))))))
+
+(define check-colon-body-path
+  -> (let Prog (cn ": SNEAK ( -- | write ) "
+                   (cn (s-lit "hello")
+                       (cn " " (cn (s-lit "tests/test_public.py") " WRITE-FILE DROP ;"))))
+       (let R (validate Prog ["read" "write" "exec"] ["app/**"] ["tests/**"] [])
+         (report "colon-body-forbidden-path"
+                 (and (= (hd R) reject)
+                      (contains-sub? (join-space (hd (tl R)))
+                                     "forbidden path: tests/test_public.py"))))))
+
+(define check-comment-token
+  -> (let Toks (tokenise-program "( a note ) RUN-GATES")
+       (let R (validate "( just a note ) RUN-GATES DROP"
+                        ["read" "write" "exec"] ["**"] [] [])
+         (report "comment-token-inert"
+                 (and (= (tok-kind (hd Toks)) "comment")
+                      (and (= (tok-value (hd Toks)) " a note ")
+                           (= (hd R) accept)))))))
+
+(define all-pass
+  [] -> true
+  [true | Rest] -> (all-pass Rest)
+  [_ | _] -> false)
+
 (define run-critic-suite
-  -> (let A (check-accept-straight)
-       (let B (check-reject-bundle)
-         (let C (check-missing-artifact)
-           (let D (check-write-ok)
-             (let E (check-tokenise)
-               (if (and A (and B (and C (and D E))))
-                   (do (output "ALL PASS~%") true)
-                   (do (output "SOME FAIL~%") false))))))))
+  -> (let Results [(check-accept-straight)
+                   (check-reject-bundle)
+                   (check-missing-artifact)
+                   (check-write-ok)
+                   (check-tokenise)
+                   (check-contract-parse)
+                   (check-colon-declared)
+                   (check-colon-mismatch)
+                   (check-colon-call-underflow)
+                   (check-colon-recursion)
+                   (check-colon-invalid)
+                   (check-colon-inference)
+                   (check-colon-body-path)
+                   (check-comment-token)]
+       (if (all-pass Results)
+           (do (output "ALL PASS~%") true)
+           (do (output "SOME FAIL~%") false))))
 
 (run-critic-suite)
