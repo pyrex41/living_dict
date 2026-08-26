@@ -4,7 +4,7 @@ defmodule LdHost.RunTest do
   alias LdHost.Run
 
   defp workspace do
-    tmp = System.tmp_dir!() |> Path.join("ldrun-#{System.unique_integer([:positive])}")
+    tmp = System.tmp_dir!() |> Path.join("ldrun-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
     File.mkdir_p!(tmp)
     tmp
   end
@@ -115,7 +115,7 @@ defmodule LdHost.RunTest do
 
   test "warm dictionary: promoted word is callable next run without redefinition" do
     ws1 = workspace()
-    shared_dict = System.tmp_dir!() |> Path.join("lddictshare-#{System.unique_integer([:positive])}")
+    shared_dict = System.tmp_dir!() |> Path.join("lddictshare-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
 
     planner1 = fn _g, _o, _f -> {:ok, @good_envelope, %{}} end
 
@@ -145,7 +145,7 @@ defmodule LdHost.RunTest do
 
   test "starved call of a promoted word rejects pre-I/O (the closed type hole)" do
     ws = workspace()
-    shared_dict = System.tmp_dir!() |> Path.join("lddicthole-#{System.unique_integer([:positive])}")
+    shared_dict = System.tmp_dir!() |> Path.join("lddicthole-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
 
     planner1 = fn _g, _o, _f -> {:ok, @good_envelope, %{}} end
     r1 = Run.run("seed", workspace: ws, contract: contract(), planner_fn: planner1, dictionary_dir: shared_dict, max_episodes: 1)

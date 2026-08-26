@@ -19,7 +19,7 @@ defmodule LdHost.PolicyTest do
   end
 
   test "relative confines to workspace" do
-    tmp = System.tmp_dir!() |> Path.join("ldpol-#{System.unique_integer([:positive])}")
+    tmp = System.tmp_dir!() |> Path.join("ldpol-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
     File.mkdir_p!(tmp)
     policy = Policy.new(tmp, ["**"], [])
 
@@ -30,7 +30,7 @@ defmodule LdHost.PolicyTest do
   end
 
   test "snapshot skips bookkeeping dirs and diffs changes" do
-    tmp = System.tmp_dir!() |> Path.join("ldsnap-#{System.unique_integer([:positive])}")
+    tmp = System.tmp_dir!() |> Path.join("ldsnap-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(tmp, ".git"))
     File.mkdir_p!(Path.join(tmp, "src"))
     File.write!(Path.join(tmp, ".git/config"), "hidden")
