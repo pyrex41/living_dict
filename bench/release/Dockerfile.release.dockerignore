@@ -1,0 +1,8 @@
+# BuildKit per-Dockerfile ignore: only beam/ and bench/artifacts/critic/
+# are COPY'd; keep the repo-root context lean and host build junk out.
+*
+!beam
+!bench/artifacts/critic
+beam/_build
+beam/deps
+beam/.livingdict-run

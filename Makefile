@@ -122,3 +122,39 @@ beam-run:
 # Native BEAM critic: typed Shen -> shen-erl BEAM modules (loads into beam/).
 critic-erl:
 	$(YGGDRASIL) build shen/critic/validate.shen openresty/dist/critic-erl --target erlang --typecheck $(if $(YGGDRASIL_HOST),--host "$(YGGDRASIL_HOST)")
+
+# ---- Terminal-Bench / Harbor packaging (bench/) ----
+BENCH_CRITIC := bench/artifacts/critic
+
+# Re-copy the frozen critic artifacts from the dist dirs and verify the
+# manifest still certifies a shaken, typechecked critic.
+bench-artifacts:
+	mkdir -p $(BENCH_CRITIC)
+	cp openresty/dist/critic-erl/kernel.kl openresty/dist/critic-erl/validate.kl \
+	  openresty/dist/critic-erl/yggdrasil.manifest.txt $(BENCH_CRITIC)/
+	cp browser/dist/critic/app.js $(BENCH_CRITIC)/
+	@grep -qx 'needs-eval=false' $(BENCH_CRITIC)/yggdrasil.manifest.txt \
+	  || { echo "bench-artifacts: manifest missing needs-eval=false"; exit 1; }
+	@grep -qx 'typechecked=true' $(BENCH_CRITIC)/yggdrasil.manifest.txt \
+	  || { echo "bench-artifacts: manifest missing typechecked=true"; exit 1; }
+	@echo "bench-artifacts: OK"
+
+# Self-contained linux mix release tarball -> bench/release/out/ (host arch).
+beam-release:
+	docker build -f bench/release/Dockerfile.release --target out -o bench/release/out .
+
+# amd64 tarball for x86 Harbor hosts (integration step; slow under QEMU
+# emulation on Apple Silicon).
+beam-release-amd64:
+	docker build --platform linux/amd64 -f bench/release/Dockerfile.release --target out -o bench/release/out .
+
+# Harbor install-only compatibility check of the BEAM shim on one task.
+# Needs the release asset published at the shim's release_url_template.
+bench-beam-smoke:
+	PYTHONPATH=$(REPO) harbor run -d terminal-bench@2.1 -i gpt2-codegolf \
+	  -a bench.harbor_ld_beam:LivingDictBeam --install-only
+
+# Two-task live probe of the BEAM shim (XAI_API_KEY must be exported).
+bench-beam-two:
+	PYTHONPATH=$(REPO) harbor run -d terminal-bench@2.1 -l 2 \
+	  -a bench.harbor_ld_beam:LivingDictBeam -m xai/grok-4.6 -n 2
