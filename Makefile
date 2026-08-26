@@ -118,3 +118,7 @@ beam-test:
 beam-run:
 	@test -n "$(GOAL)" || (echo 'usage: make beam-run GOAL="..." [CWD=path] [CONTRACT=claims.json]'; exit 2)
 	cd beam && mix ld.run --goal "$(GOAL)" $(if $(CWD),--cwd "$(CWD)") $(if $(CONTRACT),--contract "$(CONTRACT)")
+
+# Native BEAM critic: typed Shen -> shen-erl BEAM modules (loads into beam/).
+critic-erl:
+	$(YGGDRASIL) build shen/critic/validate.shen openresty/dist/critic-erl --target erlang --typecheck $(if $(YGGDRASIL_HOST),--host "$(YGGDRASIL_HOST)")
