@@ -24,7 +24,13 @@ defmodule LdHost.Bench.GrokArm do
         args: ["-p", goal, "--cwd", ws, "--output-format", "json", "--always-approve", "--max-turns", "6"]
       ])
 
-    {output, exit_status} = drain(port, [])
+    os_pid =
+      case Port.info(port, :os_pid) do
+        {:os_pid, pid} -> pid
+        _ -> nil
+      end
+
+    {output, exit_status} = drain(port, os_pid, [])
     File.mkdir_p!(Path.dirname(output_path))
     File.write!(output_path, "exit=#{inspect(exit_status)}\n" <> output)
 
@@ -46,12 +52,14 @@ defmodule LdHost.Bench.GrokArm do
     end
   end
 
-  defp drain(port, acc) do
+  defp drain(port, os_pid, acc) do
     receive do
-      {^port, {:data, chunk}} -> drain(port, [acc, chunk])
+      {^port, {:data, chunk}} -> drain(port, os_pid, [acc, chunk])
       {^port, {:exit_status, code}} -> {IO.iodata_to_binary(acc), code}
     after
       900_000 ->
+        # Timed out: kill the grok process so it cannot linger.
+        if os_pid, do: System.cmd("kill", ["-9", Integer.to_string(os_pid)], stderr_to_stdout: true)
         {IO.iodata_to_binary(acc), nil}
     end
   end

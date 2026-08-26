@@ -107,7 +107,10 @@ defmodule LdHost.Bench.Polyglot do
       # workspace; they are build fallout, not policy violations.
       allowed: ["Cargo.toml", "Cargo.lock", "src/*", "target/*"],
       forbidden: ["tests/*"],
-      check: "CARGO_NET_OFFLINE=true cargo test",
+      # --include-ignored: Exercism rust exercises mark all but the first
+      # test #[ignore]; upstream Aider un-ignores them. Without this flag a
+      # PASS rests on a single active test and inflates solve rates.
+      check: "CARGO_NET_OFFLINE=true cargo test -- --include-ignored",
       timeout_seconds: 180
     }
   end

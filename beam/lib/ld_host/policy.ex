@@ -11,7 +11,7 @@ defmodule LdHost.Policy do
 
   defstruct [:workspace, allowed: [], forbidden: []]
 
-  @skip_dirs ~w(.git __pycache__ .mypy_cache .pytest_cache .ruff_cache node_modules dist build .vite .livingdict-run .sb)
+  @skip_dirs ~w(.git __pycache__ .mypy_cache .pytest_cache .ruff_cache node_modules dist build target .vite .livingdict-run .sb)
 
   def new(workspace, allowed, forbidden) do
     %__MODULE__{workspace: Path.expand(workspace), allowed: allowed, forbidden: forbidden}
