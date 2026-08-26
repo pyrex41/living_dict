@@ -73,10 +73,11 @@ browser-test:
 browser-shake:
 	@if [ ! -x "$(YGGDRASIL)" ]; then echo "yggdrasil not found. go install github.com/pyrex41/yggdrasil@latest (or build ../ratatoskr)"; exit 1; fi
 	mkdir -p browser/dist/critic openresty/dist/critic
-	$(YGGDRASIL) build shen/critic/validate.shen browser/dist/critic --target js --web $(if $(YGGDRASIL_HOST),--host "$(YGGDRASIL_HOST)")
-	$(YGGDRASIL) build shen/critic/validate.shen openresty/dist/critic --target lua $(if $(YGGDRASIL_HOST),--host "$(YGGDRASIL_HOST)")
+	$(YGGDRASIL) build shen/critic/validate.shen browser/dist/critic --target js --web --typecheck $(if $(YGGDRASIL_HOST),--host "$(YGGDRASIL_HOST)")
+	$(YGGDRASIL) build shen/critic/validate.shen openresty/dist/critic --target lua --typecheck $(if $(YGGDRASIL_HOST),--host "$(YGGDRASIL_HOST)")
 	cp browser/dist/critic/app.js browser/dist/critic.js
 	@grep -q 'needs-eval=false' browser/dist/critic/yggdrasil.manifest.txt
+	@grep -q 'typechecked=true' browser/dist/critic/yggdrasil.manifest.txt
 	@echo "shaken js -> browser/dist/critic/app.js"
 	@echo "shaken lua -> openresty/dist/critic/app.lua"
 
