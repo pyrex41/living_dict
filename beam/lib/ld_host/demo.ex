@@ -25,12 +25,21 @@ defmodule LdHost.Demo do
 
   def run(task_ids, opts \\ []) do
     repo = LdHost.Critic.repo_root()
-    out = Keyword.get(opts, :out, Path.join([repo, "beam", "runs", "demo-" <> stamp()]))
+    out = Keyword.get(opts, :out, Path.join([repo, "beam", "runs", "demo-" <> stamp()])) |> Path.expand()
     arms = Keyword.get(opts, :arms, @default_arms)
     serial? = Keyword.get(opts, :serial, false)
     max_episodes = Keyword.get(opts, :max_episodes, 6)
 
     File.mkdir_p!(out)
+
+    # Refresh the shared OAuth token once, before any arm launches:
+    # concurrent refreshes rewrite ~/.grok/auth.json under the grok CLI's
+    # feet (observed as instant exit-1 in the first pilot).
+    case LdHost.Planner.credentials() do
+      {:ok, _} -> :ok
+      {:error, reason} -> raise "planner credentials unavailable: #{reason}"
+    end
+
     {:ok, ledger} = Ledger.start_link(Path.join(out, "orchestrator"))
     {:ok, space} = Space.start_link(record: Ledger.emitter(ledger))
 
@@ -64,8 +73,10 @@ defmodule LdHost.Demo do
     toml = File.read!(Path.join(dir, "task.toml"))
     verify = Path.join([dir, "protected", "verify.py"])
 
+    # stderr silenced: a crashing verifier's traceback would leak the
+    # protected path into gate feedback; the JSON on stdout is enough.
     check =
-      ~s{out=$(python3 "#{verify}" "$PWD") && echo "$out" | grep -q '"checks"' && } <>
+      ~s{out=$(python3 "#{verify}" "$PWD" 2>/dev/null) && echo "$out" | grep -q '"checks"' && } <>
         ~s{! echo "$out" | grep -q '"passed": false'}
 
     %{
@@ -118,7 +129,7 @@ defmodule LdHost.Demo do
     Enum.map(tasks, fn task ->
       ws = seed_workspace(ctx.out, "grok", task)
       started = System.monotonic_time(:millisecond)
-      {usage, calls, exit_status} = run_grok(task.goal, ws)
+      {usage, calls, exit_status} = run_grok(task.goal, ws, Path.join([ctx.out, "grok", task.id, "grok-output.txt"]))
 
       score = Cmd.sh(hd(task.contract["claims"])["command"], ws, 120_000)
 
@@ -195,7 +206,7 @@ defmodule LdHost.Demo do
     end
   end
 
-  defp run_grok(goal, ws) do
+  defp run_grok(goal, ws, output_path) do
     grok = System.find_executable("grok") || Path.expand("~/.grok/bin/grok")
 
     port =
@@ -208,13 +219,20 @@ defmodule LdHost.Demo do
       ])
 
     {output, exit_status} = drain(port, [])
+    File.write!(output_path, "exit=#{inspect(exit_status)}\n" <> output)
 
     case last_json(output) do
       %{"usage" => usage} = blob ->
+        calls =
+          case blob["modelUsage"] do
+            %{} = mu -> mu |> Map.values() |> Enum.map(&(&1["modelCalls"] || 0)) |> Enum.sum()
+            _ -> blob["num_turns"] || blob["numTurns"] || 0
+          end
+
         {%{
            input_tokens: usage["input_tokens"] || usage["prompt_tokens"] || 0,
            output_tokens: usage["output_tokens"] || usage["completion_tokens"] || 0
-         }, blob["num_turns"] || blob["numTurns"] || 0, exit_status}
+         }, calls, exit_status}
 
       _ ->
         {%{input_tokens: 0, output_tokens: 0}, 0, exit_status}
@@ -231,12 +249,15 @@ defmodule LdHost.Demo do
     end
   end
 
+  # The grok CLI emits pretty-printed multi-line JSON: decode from the
+  # last line-starting "{" that yields a valid object.
   defp last_json(output) do
-    output
-    |> String.split("\n", trim: true)
+    ~r/(?:\A|\n)\{/
+    |> Regex.scan(output, return: :index)
+    |> Enum.map(fn [{start, len}] -> start + len - 1 end)
     |> Enum.reverse()
-    |> Enum.find_value(fn line ->
-      case JSON.decode(String.trim(line)) do
+    |> Enum.find_value(fn i ->
+      case JSON.decode(String.trim(binary_part(output, i, byte_size(output) - i))) do
         {:ok, %{} = blob} -> blob
         _ -> nil
       end

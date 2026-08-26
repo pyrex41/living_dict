@@ -254,13 +254,33 @@ defmodule LdHost.Run do
   defp compose("", program), do: program
   defp compose(prelude, program), do: prelude <> "\n" <> program
 
+  @observe_file_cap 8_000
+  @observe_total_cap 60_000
+
   defp observe(state) do
-    files =
+    names =
       state.workspace
       |> LdHost.Policy.snapshot()
       |> Map.keys()
       |> Enum.sort()
       |> Enum.take(200)
+
+    {files, _budget} =
+      Enum.map_reduce(names, @observe_total_cap, fn rel, budget ->
+        content =
+          case File.read(Path.join(state.workspace, rel)) do
+            {:ok, text} when byte_size(text) <= @observe_file_cap ->
+              if String.valid?(text) and budget - byte_size(text) > 0, do: text, else: nil
+
+            _ ->
+              nil
+          end
+
+        case content do
+          nil -> {"#{rel} (contents omitted)", budget}
+          text -> {"#{rel}:\n```\n#{text}```", budget - byte_size(text)}
+        end
+      end)
 
     dictionary =
       case state.prelude_words do
@@ -292,7 +312,10 @@ defmodule LdHost.Run do
           claims
           |> Enum.reject(& &1.passed)
           |> Enum.map(fn claim ->
-            "- #{claim.id} (#{claim[:kind]}): #{claim[:reason] || claim[:command] || claim[:path]}" <>
+            # Never echo check COMMANDS back to the model: a hidden
+            # verifier's location must not leak. The id and the check's
+            # output tail are the backpressure.
+            "- #{claim.id} (#{claim[:kind]}): #{claim[:reason] || claim[:path] || "check failed"}" <>
               if(claim[:output], do: "\n  output: #{claim[:output]}", else: "")
           end)
           |> Enum.join("\n")

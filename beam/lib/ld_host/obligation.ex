@@ -61,7 +61,11 @@ defmodule LdHost.Obligation do
 
     try do
       agent = Agent.new()
-      {agent, directives} = Agent.cmd(agent, {RunGoal, %{obligation: claim.tuple, run_opts: run_opts}})
+
+      # jido_action's default exec timeout is 30s; an obligation runs a
+      # whole multi-episode loop with model calls, so it gets 30 minutes.
+      {agent, directives} =
+        Agent.cmd(agent, {RunGoal, %{obligation: claim.tuple, run_opts: run_opts}}, timeout: 1_800_000)
 
       case agent.state do
         %{status: status, summary: %{} = summary} when status in [:completed, :failed] ->
