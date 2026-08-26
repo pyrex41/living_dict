@@ -1,0 +1,69 @@
+# Self-contained linux mix release of the beam/ host, critic included.
+#
+# Build context = repo root. Run `make bench-artifacts` first so
+# bench/artifacts/critic/ holds the frozen critic sources (kernel.kl,
+# validate.kl, manifest, app.js).
+#
+#   arm64 (this host):
+#     docker build -f bench/release/Dockerfile.release --target out \
+#       -o bench/release/out .
+#   amd64 (integration; slow under emulation on Apple Silicon):
+#     docker build --platform linux/amd64 -f bench/release/Dockerfile.release \
+#       --target out -o bench/release/out .
+#
+# Exact existing tag, resolved 2026-08-26 (docker pull verified):
+# elixir 1.18.4 / erlang 27.3.4.16 / debian bookworm slim.
+ARG BASE_IMAGE=hexpm/elixir:1.18.4-erlang-27.3.4.16-debian-bookworm-20260824-slim
+
+# ---- stage a+b: deps, shen-erl compiler, critic BEAM modules ---------------
+FROM ${BASE_IMAGE} AS build
+
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      build-essential git ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# shen-erl compiler, pinned. erlc-compile builds the C launcher and the
+# compiler's own BEAM modules; the Shen kernel archives are NOT needed to
+# compile pre-shaken .kl artifacts.
+ARG SHEN_ERL_REPO=https://github.com/pyrex41/shen-erl.git
+ARG SHEN_ERL_COMMIT=7757b92
+RUN git clone ${SHEN_ERL_REPO} /opt/shen-erl && \
+    git -C /opt/shen-erl checkout ${SHEN_ERL_COMMIT} && \
+    make -C /opt/shen-erl erlc-compile
+
+# Compile the frozen critic KLambda to BEAM modules, then place the
+# shen-erl runtime beams alongside — the exact layout
+# LdHost.Critic.boot_beam expects (kl_*.beam + shen_erl_*.beam in one ebin).
+COPY bench/artifacts/critic /critic-src
+RUN mkdir -p /critic/ebin && \
+    cd /opt/shen-erl && \
+    SHEN_ERL_ROOTDIR=/opt/shen-erl bin/shen-erl \
+      --kl /critic-src/kernel.kl /critic-src/validate.kl \
+      --output-dir /critic/ebin && \
+    cp /opt/shen-erl/ebin/shen_erl_*.beam /critic/ebin/ && \
+    test -f /critic/ebin/kl_validate.beam
+
+# ---- stage c: the mix release ----------------------------------------------
+COPY beam /build/beam
+RUN mkdir -p /build/beam/priv/critic-erl /build/beam/priv/critic && \
+    cp -r /critic/ebin /build/beam/priv/critic-erl/ebin && \
+    cp /critic-src/app.js /build/beam/priv/critic/app.js
+
+ENV MIX_ENV=prod
+RUN cd /build/beam && \
+    mix local.hex --force && mix local.rebar --force && \
+    mix deps.get --only prod && \
+    mix release ld_host --overwrite
+
+# Tarball: untars to bin/ld_host at the top level.
+RUN set -eu; \
+    VERSION=$(sed -n 's/.*version: "\([^"]*\)".*/\1/p' /build/beam/mix.exs | head -1); \
+    ARCH=$(uname -m); \
+    mkdir -p /out; \
+    tar -C /build/beam/_build/prod/rel/ld_host -czf \
+      /out/ld_host-${VERSION}-linux-${ARCH}.tar.gz .
+
+# ---- stage d: tarball-only output ------------------------------------------
+FROM scratch AS out
+COPY --from=build /out/ /
