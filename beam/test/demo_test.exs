@@ -45,7 +45,7 @@ defmodule LdHost.DemoTest do
     # oracle solution instead.
     repo = LdHost.Critic.repo_root()
     task_dir = Path.join([repo, "eval", "tasks", "config-01"])
-    ws = System.tmp_dir!() |> Path.join("lddemo-#{System.unique_integer([:positive])}")
+    ws = System.tmp_dir!() |> Path.join("lddemo-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
     File.cp_r!(Path.join(task_dir, "repo"), ws)
 
     oracle = Path.join([task_dir, "protected", "oracle", "files"])

@@ -4,7 +4,7 @@ defmodule LdHost.DispatcherTest do
   alias LdHost.{Dispatcher, Ledger, Progress, Space}
 
   defp tmp(prefix) do
-    dir = System.tmp_dir!() |> Path.join("#{prefix}-#{System.unique_integer([:positive])}")
+    dir = System.tmp_dir!() |> Path.join("#{prefix}-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
     dir
   end

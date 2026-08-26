@@ -4,7 +4,7 @@ defmodule LdHost.DictionaryTest do
   alias LdHost.{Contracts, Dictionary}
 
   defp dict_dir do
-    tmp = System.tmp_dir!() |> Path.join("lddict-#{System.unique_integer([:positive])}")
+    tmp = System.tmp_dir!() |> Path.join("lddict-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(tmp, "words"))
     tmp
   end

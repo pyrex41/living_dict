@@ -4,7 +4,7 @@ defmodule LdHost.GatesTest do
   alias LdHost.{Gates, Host}
 
   defp workspace do
-    tmp = System.tmp_dir!() |> Path.join("ldgates-#{System.unique_integer([:positive])}")
+    tmp = System.tmp_dir!() |> Path.join("ldgates-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
     File.mkdir_p!(tmp)
     tmp
   end
