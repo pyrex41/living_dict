@@ -51,6 +51,9 @@ RUN mkdir -p /build/beam/priv/critic-erl /build/beam/priv/critic && \
     cp /critic-src/app.js /build/beam/priv/critic/app.js
 
 ENV MIX_ENV=prod
+# Single scheduler: the BEAM compiler hits ETS races under qemu/Rosetta
+# emulation (amd64 builds on arm64 hosts). Costs build speed only.
+ENV ERL_FLAGS="+S 1"
 RUN cd /build/beam && \
     mix local.hex --force && mix local.rebar --force && \
     mix deps.get --only prod && \
