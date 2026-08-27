@@ -14,9 +14,12 @@
 # Exact existing tag, resolved 2026-08-26 (docker pull verified):
 # elixir 1.18.4 / erlang 27.3.4.16 / debian bookworm slim.
 ARG BASE_IMAGE=hexpm/elixir:1.18.4-erlang-27.3.4.16-debian-bookworm-20260824-slim
+# amd64 pinned by manifest digest (see assemble-cross note below).
+ARG BASE_IMAGE_AMD64=hexpm/elixir:1.18.4-erlang-27.3.4.16-debian-bookworm-20260824-slim@sha256:7fd3907140996b62dc49954c5e68f2fb21e0cea518df2151c6e5452634885133
 
 # ---- stage a+b: deps, shen-erl compiler, critic BEAM modules ---------------
-FROM ${BASE_IMAGE} AS build
+# Always compiles natively: emulated compiles corrupt the BEAM JIT.
+FROM --platform=$BUILDPLATFORM ${BASE_IMAGE} AS build
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -51,9 +54,6 @@ RUN mkdir -p /build/beam/priv/critic-erl /build/beam/priv/critic && \
     cp /critic-src/app.js /build/beam/priv/critic/app.js
 
 ENV MIX_ENV=prod
-# Single scheduler: the BEAM compiler hits ETS races under qemu/Rosetta
-# emulation (amd64 builds on arm64 hosts). Costs build speed only.
-ENV ERL_FLAGS="+S 1"
 RUN cd /build/beam && \
     mix local.hex --force && mix local.rebar --force && \
     mix deps.get --only prod && \
@@ -62,11 +62,37 @@ RUN cd /build/beam && \
 # Tarball: untars to bin/ld_host at the top level.
 RUN set -eu; \
     VERSION=$(sed -n 's/.*version: "\([^"]*\)".*/\1/p' /build/beam/mix.exs | head -1); \
-    ARCH=$(uname -m); \
     mkdir -p /out; \
     tar -C /build/beam/_build/prod/rel/ld_host -czf \
-      /out/ld_host-${VERSION}-linux-${ARCH}.tar.gz .
+      /out/ld_host-${VERSION}-linux-$(uname -m).tar.gz .
 
-# ---- stage d: tarball-only output ------------------------------------------
+# ---- cross assembly: amd64 tarball from natively compiled bytecode ---------
+# Compilation happened above (native). This stage only runs mix release:
+# assembly copies ERTS + OTP libs (incl. native crypto.so) from its OWN
+# amd64 OTP — versions match because it is the same BASE_IMAGE tag. The
+# brief emulated BEAM run gets +S 1 to dodge JIT-under-emulation races.
+# Pinned to the amd64 MANIFEST DIGEST (top-of-file ARG): a bare
+# --platform on FROM lets BuildKit silently reuse a locally cached arm64
+# image (observed: the "amd64" tarball shipped aarch64 ELFs).
+FROM ${BASE_IMAGE_AMD64} AS assemble-cross
+COPY --from=build /build/beam /build/beam
+ENV MIX_ENV=prod ERL_FLAGS="+S 1"
+# The copied _build contains the native stage's ASSEMBLED release (arm64
+# ERTS inside); --overwrite alone does not refresh ERTS. Remove it so
+# assembly copies this stage's amd64 ERTS + OTP libs from scratch.
+RUN cd /build/beam && \
+    rm -rf _build/prod/rel && \
+    mix local.hex --force && mix local.rebar --force && \
+    mix release ld_host --overwrite
+RUN set -eu; \
+    VERSION=$(sed -n 's/.*version: "\([^"]*\)".*/\1/p' /build/beam/mix.exs | head -1); \
+    mkdir -p /out; \
+    tar -C /build/beam/_build/prod/rel/ld_host -czf \
+      /out/ld_host-${VERSION}-linux-$(uname -m).tar.gz .
+
+# ---- output stages ---------------------------------------------------------
 FROM scratch AS out
 COPY --from=build /out/ /
+
+FROM scratch AS out-amd64
+COPY --from=assemble-cross /out/ /

@@ -146,7 +146,7 @@ beam-release:
 # amd64 tarball for x86 Harbor hosts (integration step; slow under QEMU
 # emulation on Apple Silicon).
 beam-release-amd64:
-	docker build --platform linux/amd64 -f bench/release/Dockerfile.release --target out -o bench/release/out .
+	docker build -f bench/release/Dockerfile.release --target out-amd64 -o bench/release/out .
 
 # Harbor install-only compatibility check of the BEAM shim on one task.
 # Needs the release asset published at the shim's release_url_template.
