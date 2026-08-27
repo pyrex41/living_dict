@@ -158,6 +158,12 @@ and [`design/STORE.md`](design/STORE.md).
 
 ## What stays out
 
+> **2026-08-27:** several items below shipped — in the BEAM body, not
+> this Python one. Layer C (tuple space + obligation agents), promotion
+> evidence gates, the ReAct baseline arm, and Harbor/Terminal-Bench all
+> live in [`beam/`](../beam/README.md); this document remains accurate
+> for the frozen Python reference tree.
+
 ReAct / JSON-plan / Python-plan arms, promotion evidence gates, Forth `PAR` /
 `FORK` words, a query language or GC over the store, model-facing `TAKE` /
 `OUT`, Layer C (cross-process space, obligation tuples), Harbor, SWE-bench.
