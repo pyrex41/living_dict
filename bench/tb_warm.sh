@@ -146,12 +146,22 @@ for TASK in "${TASKS[@]}"; do
   # OAuth access tokens outlive neither this chain nor a long job: refresh
   # per task via the planner's own flow (persists the rotated record to
   # ~/.grok/auth.json). Falls back to the env key on failure.
-  FRESH_KEY="$(cd "$REPO/beam" && mix run -e '
+  # env -u: credentials() short-circuits on ANY non-empty XAI_API_KEY, so
+  # the helper must not inherit ours or "refresh" returns it verbatim.
+  FRESH_KEY="$(cd "$REPO/beam" && env -u XAI_API_KEY mix run -e '
     case LdHost.Planner.credentials() do
       {:ok, key} -> IO.puts(key)
       {:error, reason} -> IO.puts(:stderr, reason); System.halt(1)
     end' 2>/dev/null | tail -1)"
-  [ -n "$FRESH_KEY" ] || FRESH_KEY="$XAI_API_KEY"
+  # Sanity: OAuth JWTs are hundreds of chars; anything short is garbage.
+  if [ "${#FRESH_KEY}" -lt 100 ]; then
+    echo "tb_warm: [$NN] token refresh failed (len=${#FRESH_KEY}); falling back to env key" >&2
+    FRESH_KEY="$XAI_API_KEY"
+  fi
+  if [ "${#FRESH_KEY}" -lt 100 ]; then
+    echo "tb_warm: ABORT: no usable API key" >&2
+    exit 1
+  fi
   # Real run: pass the key by value (never echoed; set -x stays off).
   RCMD=()
   for a in "${CMD[@]}"; do
