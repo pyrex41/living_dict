@@ -158,9 +158,13 @@ defmodule LdHost.Run do
         receipt_path: Path.join(state.run_dir, "receipt.json")
       )
 
-    vm = %Forth.VM{host: host, artifacts: envelope.artifacts}
+    vm =
+      %Forth.VM{host: host, artifacts: envelope.artifacts}
+      |> Forth.bind_vocab(Dictionary.load_vocab(state.dictionary_dir))
 
-    case interpret(vm, composed) do
+    Ledger.trace(state.ledger, "execution.program", %{program: envelope.program})
+
+    case interpret(vm, envelope.program) do
       {:trap, code, message} ->
         Ledger.trace(state.ledger, "execution.trap", %{code: code, message: message})
         {:continue, feedback(state, "execution trap [#{code}]: #{message}")}
@@ -204,7 +208,8 @@ defmodule LdHost.Run do
     {promotable, quarantined} =
       Enum.split_with(candidates, fn name ->
         eligible? and Map.has_key?(contracts, name) and
-          Contracts.canonical(contracts[name]) != nil
+          Contracts.canonical(contracts[name]) != nil and
+          not Dictionary.tautology?(vm.colon[name])
       end)
 
     entries =
@@ -230,9 +235,15 @@ defmodule LdHost.Run do
 
     Enum.each(quarantined, fn name ->
       reasons =
-        [] ++
-          if(not Map.has_key?(contracts, name), do: ["missing contract"], else: []) ++
-          if(report.ok != true, do: ["claims not discharged"], else: [])
+        cond do
+          Dictionary.tautology?(vm.colon[name]) ->
+            ["host-word alias"]
+
+          true ->
+            [] ++
+              if(not Map.has_key?(contracts, name), do: ["missing contract"], else: []) ++
+              if(report.ok != true, do: ["claims not discharged"], else: [])
+        end
 
       {:ok, _} =
         Ledger.commit(state.ledger, "dictionary.promotion_evidence", %{
