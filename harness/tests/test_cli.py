@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from livingdict.cli import _claim_quality, _json_digest, _meaningful_changed_files, gate_feedback
+
 from livingdict.envelope import PlanEnvelope
 from livingdict.execute import ExecutionError, lower_artifact_writes, run_forth
 from livingdict.host import CapabilityHost
@@ -29,6 +31,83 @@ HISTORICAL = (
 
 
 class LowerArtifactTests(unittest.TestCase):
+    def test_bookkeeping_is_not_meaningful_progress(self) -> None:
+        self.assertEqual(
+            _meaningful_changed_files(
+                ["claims.json", ".sb/discharge_report.json", ".livingdict-run/events.jsonl", "src/app.py"]
+            ),
+            ["src/app.py"],
+        )
+
+    def test_source_only_claims_are_audited_as_weak(self) -> None:
+        quality = _claim_quality(
+            {
+                "gates": [
+                    {
+                        "name": "claims",
+                        "claims": [{"id": "x", "kind": "source", "passed": True}],
+                    }
+                ]
+            }
+        )
+        self.assertTrue(quality["source_only"])
+        self.assertFalse(quality["has_executable_check"])
+        self.assertTrue(quality["warnings"])
+
+    def test_behavior_goal_rejects_compile_only_check(self) -> None:
+        quality = _claim_quality(
+            {"gates": [{"name": "claims", "claims": [
+                {"id": "compile", "kind": "check", "command": "gcc -O3 app.c -lm && test -x a.out"}
+            ]}]},
+            "write a program and run it to print the expected output",
+        )
+        self.assertTrue(quality["requires_behavior"])
+        self.assertFalse(quality["has_behavioral_check"])
+
+    def test_behavior_goal_accepts_runtime_assertion(self) -> None:
+        quality = _claim_quality(
+            {"gates": [{"name": "claims", "claims": [
+                {"id": "run", "kind": "check", "command": "./a.out input | grep -F expected"}
+            ]}]},
+            "run the program and print the expected output",
+        )
+        self.assertTrue(quality["has_behavioral_check"])
+
+    def test_timeout_absolute_executable_is_behavioral(self) -> None:
+        quality = _claim_quality(
+            {"gates": [{"name": "claims", "claims": [{"kind": "check", "command": "timeout 90 /app/a.out input | tee /tmp/out; test -s /tmp/out"}]}]},
+            "run the program and print output",
+        )
+        self.assertTrue(quality["has_behavioral_check"])
+
+    def test_failed_check_feedback_includes_command_and_output(self) -> None:
+        feedback = gate_feedback(
+            {
+                "gates": [
+                    {
+                        "name": "claims",
+                        "passed": False,
+                        "reason": "failed compile",
+                        "claims": [
+                            {
+                                "id": "compile",
+                                "kind": "check",
+                                "passed": False,
+                                "command": "gcc app.c -lm",
+                                "output": "undefined reference to expf",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+        self.assertIn("gcc app.c -lm", feedback)
+        self.assertIn("undefined reference to expf", feedback)
+
+    def test_contract_digest_ignores_json_formatting(self) -> None:
+        self.assertEqual(_json_digest('{"claims": [{"id": "x"}]}'), _json_digest('{"claims":[{"id":"x"}]}'))
+
+
     def test_lowers_one_arity_writes_without_use_artifact(self) -> None:
         artifacts = {
             "README.md": "x",

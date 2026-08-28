@@ -87,6 +87,23 @@ to be the thing that creates the job stack. The host owns that.
    `.livingdict-run/gates-cache.json` and invalidated by the workspace/spec
    fingerprint; check claims are never cached.
 
+9. **Model-authored claims are audited, not trusted blindly.** Gate reports
+   record `claim_quality` and `progress`. Changes limited to `claims.json`,
+   `.sb/`, or `.livingdict-run/` do not count as product progress. Source/file
+   claims are weak evidence; executable checks or benchmark-native verifiers
+   remain the meaningful behavior signal. `--benchmark` is an explicit
+   isolated auto-approval lane: model-authored check claims are executed,
+   while source-only contracts remain incomplete and are fed back to the
+   planner. For behavior-oriented goals, compile-only, file-size, and
+   executable-presence checks are structural and cannot discharge the
+   contract without a check that invokes the product and observes a result.
+   Normal runs still require hidden/approved contracts for checks.
+
+   Adapters may provide an advisory `oracle_feedback(workspace, report)`
+   callback to `run_job`. Its structured result is shown to the next planner
+   episode and recorded with the gate report, but it cannot approve claims,
+   mutate the frozen contract, or change the core success predicate.
+
 To score this loop against grok headless and pi headless on the same
 prompt, see [`COMPARE.md`](COMPARE.md).
 

@@ -12,6 +12,8 @@ from planner import (
     observe_graph,
     observe_workspace,
     parse_stream_chunk,
+    repair_context,
+    GATE_AUDIT_SYSTEM,
 )
 
 
@@ -42,6 +44,20 @@ class PlannerParseTests(unittest.TestCase):
         self.assertIn("nodes:", SYSTEM)
         self.assertIn("depends_on", SYSTEM)
         self.assertIn("Kahn", SYSTEM)
+
+    def test_system_requires_behavioral_acceptance_claim(self) -> None:
+        self.assertIn('"kind":"check"', SYSTEM)
+        self.assertIn("Source/file/absent claims are", SYSTEM)
+        self.assertIn("MUST include a check that invokes the product", SYSTEM)
+
+    def test_repair_context_preserves_failure_and_contract(self) -> None:
+        text = repair_context({"contract": {"claims": []}, "last_failure": {"failed_claims": [{"id": "run"}]}})
+        self.assertIn("contract is frozen", text)
+        self.assertIn("failed_claims", text)
+
+    def test_gate_audit_forbids_weakening(self) -> None:
+        self.assertIn('"add_claims"', GATE_AUDIT_SYSTEM)
+        self.assertIn("Never delete", GATE_AUDIT_SYSTEM)
 
     def test_normalize_keeps_nodes_and_allows_empty_program(self) -> None:
         env = normalize_envelope(

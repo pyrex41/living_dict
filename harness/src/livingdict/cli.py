@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import argparse
 import contextvars
+import hashlib
 import json
 import os
 import shlex
 import subprocess
 import sys
 import threading
+import re
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -73,6 +75,85 @@ DEFAULT_FORBIDDEN = (
     "build/**",
 )
 DEFAULT_MAX_TURNS = 32
+BOOKKEEPING_PATHS = {
+    "claims.json",
+}
+
+
+def _meaningful_changed_files(changed: list[str]) -> list[str]:
+    """Exclude harness bookkeeping from the product-progress signal."""
+    return [
+        rel
+        for rel in changed
+        if rel not in BOOKKEEPING_PATHS
+        and not rel.startswith((".livingdict-run/", ".sb/"))
+    ]
+
+
+def _json_digest(text: str) -> str:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        value = text
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+_BEHAVIOR_WORDS = re.compile(
+    r"\b(run|execute|output|print|sample|serve|server|http|api|respond|render|"
+    r"request|response|compile and run|program)\b",
+    re.IGNORECASE,
+)
+_STRUCTURAL_CHECK = re.compile(
+    r"^(?:(?:gcc|g\+\+|clang|cc)\b|test\s+-[efxbs]|(?:wc|grep|sed|awk)\b)",
+    re.IGNORECASE,
+)
+_BEHAVIORAL_CHECK = re.compile(
+    r"(?:pytest|unittest|npm\s+(?:test|run)|cargo\s+test|go\s+test|mvn\s+test|"
+    r"curl\b|wget\b|assert|diff\b|expected|output|stdout|http://|https://|"
+    r"timeout\b|tee\b|(?:^|\s)(?:\./|/app/|python(?:3)?\s+|node\s+|ruby\s+|java\s+))",
+    re.IGNORECASE,
+)
+
+
+def _goal_requires_behavior(goal: str) -> bool:
+    return bool(_BEHAVIOR_WORDS.search(goal or ""))
+
+
+def _is_behavioral_check(command: str) -> bool:
+    command = command.strip()
+    if not command:
+        return False
+    # A build-and-run chain commonly starts with gcc/clang; inspect the full
+    # command rather than classifying it solely by its first token.
+    return bool(_BEHAVIORAL_CHECK.search(command))
+
+
+def _claim_quality(report: dict[str, Any], goal: str = "") -> dict[str, Any]:
+    """Audit model-authored claims without treating them as benchmark scores."""
+    claim_gate = next(
+        (gate for gate in report.get("gates") or [] if gate.get("name") == "claims"),
+        {},
+    )
+    claims = claim_gate.get("claims") or []
+    kinds = {str(item.get("kind") or "source").lower() for item in claims if isinstance(item, dict)}
+    source_only = bool(claims) and kinds <= {"source", "file", "absent"}
+    checks = [item for item in claims if isinstance(item, dict) and str(item.get("kind") or "").lower() == "check"]
+    has_behavioral_check = any(_is_behavioral_check(str(item.get("command") or "")) for item in checks)
+    requires_behavior = _goal_requires_behavior(goal)
+    warnings: list[str] = []
+    if source_only:
+        warnings.append("claims are source/file presence only; add behavior or executable checks")
+    if requires_behavior and checks and not has_behavioral_check:
+        warnings.append("behavior-oriented goal has no runtime behavioral check")
+    return {
+        "source_only": source_only,
+        "claim_count": len(claims),
+        "has_executable_check": "check" in kinds,
+        "requires_behavior": requires_behavior,
+        "has_behavioral_check": has_behavioral_check,
+        "warnings": warnings,
+    }
 
 
 class CLIError(Exception):
@@ -261,6 +342,103 @@ def critic_extra(errors: list[str]) -> str:
     return "\n".join(f"critic: {item}" for item in errors)
 
 
+def gate_feedback(report: dict[str, Any]) -> str:
+    """Make failed behavioral checks actionable for the next planner turn.
+
+    The compact gate stderr is useful for receipts but commonly omits the
+    compiler/test output that explains a failure.  Preserve bounded details
+    in planner backpressure so the model can repair the command or product.
+    """
+    lines: list[str] = []
+    for gate in report.get("gates") or []:
+        if not isinstance(gate, dict) or gate.get("passed") or gate.get("skipped"):
+            continue
+        lines.append(f"gate {gate.get('name') or '?'} failed: {gate.get('reason') or ''}".strip())
+        for claim in gate.get("claims") or []:
+            if not isinstance(claim, dict) or claim.get("passed"):
+                continue
+            detail = f"claim {claim.get('id') or '?'} failed"
+            if claim.get("command"):
+                detail += f"; command: {claim['command']}"
+            if claim.get("reason"):
+                detail += f"; reason: {claim['reason']}"
+            output = str(claim.get("output") or claim.get("stderr") or "").strip()
+            if output:
+                detail += f"; output: {output[-2000:]}"
+            lines.append(detail)
+    return "\n".join(lines)
+
+
+def _failed_executable_claims(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return failed executable claims, for the optional advisory audit."""
+    failed: list[dict[str, Any]] = []
+    for gate in report.get("gates") or []:
+        if not isinstance(gate, dict):
+            continue
+        for claim in gate.get("claims") or []:
+            if (
+                isinstance(claim, dict)
+                and str(claim.get("kind") or "").lower() == "check"
+                and not claim.get("passed")
+            ):
+                failed.append(claim)
+    return failed
+
+
+def audit_failed_gate(
+    cmd: list[str],
+    *,
+    goal: str,
+    contract: dict[str, Any] | None,
+    report: dict[str, Any],
+    workspace: Path,
+) -> dict[str, Any]:
+    """Ask the planner to audit a failed gate; the result is advisory only.
+
+    This deliberately does not alter claims or decide success.  Keeping the
+    protocol here (rather than in ``gates``) makes the LLM call auditable and
+    keeps the gate evaluator deterministic.
+    """
+    payload = {
+        "mode": "gate_audit",
+        "goal": goal,
+        "contract": contract or {},
+        "report": report,
+        "failed_claims": _failed_executable_claims(report),
+        "workspace": str(workspace),
+    }
+    result = call_planner_json(cmd, payload, workspace=workspace)
+    if not isinstance(result, dict):
+        raise CLIError("gate audit response must be an object")
+    verdict = str(result.get("verdict") or "").lower()
+    if verdict not in {"adequate", "incomplete", "invalid"}:
+        raise CLIError("gate audit verdict must be adequate, incomplete, or invalid")
+    additions = result.get("add_claims") or []
+    if not isinstance(additions, list) or not all(isinstance(item, dict) for item in additions):
+        raise CLIError("gate audit add_claims must be an array of objects")
+    existing = {
+        str(item.get("id"))
+        for item in (contract or {}).get("claims", [])
+        if isinstance(item, dict) and item.get("id") is not None
+    }
+    clean: list[dict[str, Any]] = []
+    for item in additions:
+        ident = str(item.get("id") or "")
+        if not ident or ident in existing or str(item.get("kind") or "").lower() != "check":
+            raise CLIError("gate audit may only propose new check claims")
+        if not str(item.get("command") or "").strip():
+            raise CLIError("gate audit check claims require a command")
+        existing.add(ident)
+        clean.append(dict(item))
+    return {
+        "verdict": verdict,
+        "reason": str(result.get("reason") or "")[:2000],
+        "repair": str(result.get("repair") or "")[:2000],
+        "add_claims": clean,
+        "advisory": True,
+    }
+
+
 def _host(
     workspace: Path,
     run_dir: Path,
@@ -301,6 +479,7 @@ def run_job(
     receipt_extra: dict[str, Any] | None = None,
     grant_verified: bool = False,
     contract: dict[str, Any] | None = None,
+    oracle_feedback: Callable[[Path, dict[str, Any]], dict[str, Any] | None] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     workspace = Path(workspace).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
@@ -329,6 +508,13 @@ def run_job(
     cmd = list(planner_cmd) if planner_cmd else default_planner_cmd()
     state = empty_state()
     extra = ""
+    oracle_note: dict[str, Any] | None = None
+    gate_audit_note: dict[str, Any] | None = None
+    frozen_contract = Path(claims) if claims is not None else run_dir / "contract.json"
+    if isinstance(contract, (str, Path)):
+        frozen_contract = Path(contract)
+    elif isinstance(contract, dict):
+        frozen_contract.write_text(json.dumps(contract, sort_keys=True), encoding="utf-8")
     store = open_store(run_dir)
     space = Space(store=store)
     before, job_tree_before = capture_tree(workspace, store)
@@ -359,7 +545,11 @@ def run_job(
                 receipt_extra=receipt_fields,
                 tree_before=job_tree_before,
             )
-        decision = reconcile(state, max_turns)
+        decision = reconcile(
+            state,
+            max_turns,
+            stop_on_duplicates=not bool(receipt_fields.get("benchmark_mode")),
+        )
         if decision.kind != "plan":
             return _finish(
                 decision,
@@ -384,6 +574,16 @@ def run_job(
             "run_dir": str(run_dir),
             "workspace": str(workspace),
         }
+        if frozen_contract.is_file():
+            observation["contract"] = json.loads(frozen_contract.read_text(encoding="utf-8"))
+        if state.last_failure is not None:
+            observation["last_failure"] = state.last_failure
+        if state.attempt_history:
+            observation["attempt_history"] = state.attempt_history
+        if oracle_note is not None:
+            observation["oracle_feedback"] = oracle_note
+        if gate_audit_note is not None:
+            observation["gate_audit"] = gate_audit_note
         if system_prompt:
             observation["system"] = system_prompt
         graph_file = workspace / "task_graph.json"
@@ -398,6 +598,7 @@ def run_job(
             "fingerprint": fp,
             "program": envelope.program,
             "rationale": envelope.rationale,
+            "dedupe_key": f"{fp}:{episode_tree_before}",
         }
         if envelope.nodes:
             planned["nodes"] = [
@@ -416,7 +617,7 @@ def run_job(
                 {"fingerprint": fp},
             )
             state = _commit(state, BUDGET_CONSUMED, {"steps": 1})
-            extra = f"critic: duplicate plan {fp}"
+            extra = (extra + "\n" if extra else "") + f"critic: duplicate plan {fp}; change the product or repair strategy"
             append_progress(run_dir, episode, [envelope.rationale or extra, extra])
             continue
 
@@ -494,12 +695,129 @@ def run_job(
                 {"episode": episode, "sha256": digest, "word": word},
             )
         receipt_fields["claims_source"] = claims_source(workspace, claims, claims_label)
+        contract_candidate = not frozen_contract.is_file() and (workspace / "claims.json").is_file()
         report = measure_workspace(
             workspace,
-            claims,
-            allow_check=receipt_fields["claims_source"] in ("hidden", "approved"),
+            frozen_contract if frozen_contract.is_file() else (claims if claims is not None else None),
+            # Benchmark runs are an explicit, isolated auto-approval lane:
+            # the planner owns the contract, and its executable checks must
+            # actually run.  Ordinary model-authored contracts remain
+            # untrusted (checks require a hidden/approved contract).
+            allow_check=(
+                receipt_fields["claims_source"] in ("hidden", "approved")
+                or bool(receipt_fields.get("benchmark_mode"))
+            ),
         )
+        if receipt_fields["claims_source"] == "workspace" and frozen_contract.is_file():
+            current_contract = workspace / "claims.json"
+            if current_contract.is_file() and _json_digest(current_contract.read_text(encoding="utf-8")) != _json_digest(frozen_contract.read_text(encoding="utf-8")):
+                report["passed"] = False
+                report.setdefault("gates", []).append({
+                    "name": "contract",
+                    "passed": False,
+                    "skipped": False,
+                    "layer": "goal",
+                    "reason": "model attempted to change the approved contract",
+                })
+                report["stderr"] = (str(report.get("stderr") or "") + "\nmodel attempted to change the approved contract").strip()
+        if oracle_feedback is not None:
+            try:
+                candidate = oracle_feedback(workspace, report)
+                oracle_note = dict(candidate) if isinstance(candidate, dict) else None
+            except Exception as exc:  # oracle diagnostics are advisory only
+                oracle_note = {"name": "oracle", "passed": False, "error": str(exc)}
+            if oracle_note is not None:
+                report["oracle_feedback"] = oracle_note
         after, tree_after = capture_tree(workspace, store)
+        all_changed = changed_files(before, after)
+        meaningful = _meaningful_changed_files(all_changed)
+        report["progress"] = {
+            "passed": bool(meaningful) or receipt_fields["claims_source"] in ("hidden", "approved"),
+            "changed_files": all_changed,
+            "meaningful_files": meaningful,
+        }
+        report["claim_quality"] = _claim_quality(report, goal)
+        benchmark_weak_claims = bool(
+            receipt_fields.get("benchmark_mode")
+            and receipt_fields["claims_source"] == "workspace"
+            and report["claim_quality"].get("source_only")
+        )
+        benchmark_missing_behavior = bool(
+            receipt_fields.get("benchmark_mode")
+            and receipt_fields["claims_source"] == "workspace"
+            and report["claim_quality"].get("requires_behavior")
+            and not report["claim_quality"].get("has_behavioral_check")
+        )
+        contract_ready = bool(
+            contract_candidate
+            and not report["claim_quality"].get("source_only")
+            and (not report["claim_quality"].get("requires_behavior") or report["claim_quality"].get("has_behavioral_check"))
+        )
+        if contract_ready:
+            contract_text = (workspace / "claims.json").read_text(encoding="utf-8")
+            frozen_contract.write_text(contract_text, encoding="utf-8")
+            state = _commit(
+                state,
+                CONTRACT_APPROVED,
+                {"digest": _json_digest(contract_text), "claims": json.loads(contract_text), "source": "benchmark-auto" if receipt_fields.get("benchmark_mode") else "workspace"},
+            )
+        # A failed executable gate gets a second, advisory audit.  The audit
+        # can explain that the contract is incomplete or suggest a repair,
+        # but it can never approve success or mutate the frozen contract.
+        gate_audit_note = None
+        if receipt_fields.get("audit_gates") and _failed_executable_claims(report):
+            try:
+                contract_blob: dict[str, Any] = {}
+                if frozen_contract.is_file():
+                    raw_contract = json.loads(frozen_contract.read_text(encoding="utf-8"))
+                    if isinstance(raw_contract, dict):
+                        contract_blob = raw_contract
+                gate_audit_note = audit_failed_gate(
+                    cmd,
+                    goal=goal,
+                    contract=contract_blob,
+                    report=report,
+                    workspace=workspace,
+                )
+                report["gate_audit"] = gate_audit_note
+            except (CLIError, OSError, json.JSONDecodeError) as exc:
+                gate_audit_note = {
+                    "verdict": "invalid",
+                    "reason": f"gate audit unavailable: {exc}",
+                    "repair": "repair the failed executable gate using its command and output",
+                    "add_claims": [],
+                    "advisory": True,
+                }
+                report["gate_audit"] = gate_audit_note
+        if (
+            receipt_fields["claims_source"] == "workspace"
+            and not meaningful
+        ) or benchmark_weak_claims or benchmark_missing_behavior:
+            report["passed"] = False
+            report.setdefault("gates", []).append(
+                {
+                    "name": "progress",
+                    "passed": False,
+                    "skipped": False,
+                    "layer": "goal",
+                    "reason": (
+                        "benchmark mode requires an executable or behavioral claim"
+                        if benchmark_weak_claims
+                        else "benchmark mode requires a runtime behavioral check for this goal"
+                        if benchmark_missing_behavior
+                        else "model-authored claims made no meaningful product change"
+                    ),
+                }
+            )
+            report["stderr"] = (
+                str(report.get("stderr") or "")
+                + "\n"
+                + (
+                    "benchmark mode requires an executable or behavioral claim"
+                    if benchmark_weak_claims
+                    else "model-authored claims made no meaningful product change"
+                )
+            ).strip()
         state = _commit(
             state,
             GATES_MEASURED,
@@ -536,7 +854,15 @@ def run_job(
         append_progress(run_dir, episode, bits)
         extra = critic_extra(list(state.last_errors))
         if not report.get("passed"):
-            extra = (extra + "\n" if extra else "") + f"gates: {report.get('stderr') or 'not discharged'}"
+            details = gate_feedback(report)
+            summary = f"gates: {report.get('stderr') or 'not discharged'}"
+            extra = (extra + "\n" if extra else "") + summary
+            if details:
+                extra += "\n" + details
+            if gate_audit_note:
+                extra += "\nGATE AUDIT (advisory; contract remains frozen): " + json.dumps(
+                    gate_audit_note, sort_keys=True, ensure_ascii=False
+                )
 
 
 def _finish(
@@ -568,6 +894,8 @@ def _finish(
         "tree_after": tree_after,
         "tree_before": tree_before,
         "workspace": str(workspace),
+        "last_failure": state.last_failure,
+        "attempt_history": state.attempt_history,
     }
     for key, value in (graph or {}).items():
         receipt[key] = value
@@ -594,6 +922,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cwd", type=Path, default=Path("."), help="product workspace")
     parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
     parser.add_argument("--claims", type=Path, help="hidden claims.json used for discharge")
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="mark the receipt as benchmark-driven; native verification remains authoritative",
+    )
+    parser.add_argument("--audit-gates", action="store_true", help="ask the planner to audit failed gates")
     parser.add_argument("--run-dir", type=Path, help="job state directory (default: CWD/.livingdict-run)")
     parser.add_argument(
         "--planner-cmd",
@@ -647,6 +981,7 @@ def main(argv: list[str] | None = None) -> int:
             planner_cmd=planner_cmd,
             wave_workers=args.wave_workers,
             serial=args.serial,
+            receipt_extra={"benchmark_mode": True, "audit_gates": True} if args.benchmark or args.audit_gates else None,
         )
     except (CLIError, EnvelopeError, KernelError) as exc:
         print(str(exc), file=sys.stderr)

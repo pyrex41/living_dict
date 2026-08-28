@@ -31,9 +31,14 @@ only record. Living Dictionary inverts all three:
   installs, gate results, and scheduling land in an append-only,
   hash-sequenced event log with content-addressed snapshots. You can
   reconstruct the workspace at any step and replay a run without a model.
-- **Skills persist as code.** Accepted colon definitions live in a
-  dictionary the next run loads and the critic re-checks — executable
-  memory, not advice in a markdown file.
+- **Skills persist as code, with types.** Accepted colon definitions
+  live in a dictionary the next run loads — executable memory, not
+  advice in a markdown file. Every persisted word carries an in-band
+  `( ins -- outs | effects )` contract: the critic abstractly interprets
+  the body against its declaration, rejects mismatches echoing both
+  renderings, and binds real arities so a starved call of a promoted
+  word is refused before any I/O. Contractless words are quarantined,
+  never promoted.
 
 ## Try it
 
@@ -61,13 +66,14 @@ planting strings to game the one weak claim in the contract.
 
 The rest of this README is the reference: the lab, the bodies, the ABI.
 
-## Three trees
+## Four trees
 
 | Path | What it is |
 |---|---|
+| [`beam/`](beam/) | **The live body.** Elixir/OTP host: Forth VM, native typed-Shen critic (shen-erl BEAM bytecode), Linda tuple space with generation-fenced leases, Jido obligation agents, executable-contract gates, benchmark adapters. See [`beam/README.md`](beam/README.md) and [`beam/RESULTS.md`](beam/RESULTS.md). |
 | [`eval/`](eval/) | Living Dictionary Eval v0.1.0. Hidden verifiers, cold/warm dictionaries, crash/resume, adapter protocol. The spec. |
-| [`harness/`](harness/) | Python capability host, Forth VM, plan envelopes, Python preflight, ldeval adapters. |
-| [`openresty/`](openresty/) | Same six words + Forth + **shen-lua** critic, once per nginx worker. HTTP `/think` and `livingdict-resty` adapter. |
+| [`harness/`](harness/) | Python capability host, Forth VM, plan envelopes, Python preflight, ldeval adapters. **Frozen reference** — the semantic spec the BEAM body was ported against; nothing new calls it. |
+| [`openresty/`](openresty/) | Same six words + Forth + shen-lua critic, once per nginx worker. HTTP `/think` and `livingdict-resty` adapter. |
 
 The eval suite must not have its oracles or protected tests edited to flatter an agent.
 
@@ -114,36 +120,55 @@ Every arm calls the same host words:
 
 Stack sugar: `DUP` `DROP` `SWAP` `OVER`, `S"`, `: ;`, `IF ELSE THEN`.
 
-## Shen
+## Shen: one typed critic, three shaken bodies
 
-**Not shen-go.** The intended pair is pyrex41’s dual-end:
+There is exactly **one** critic source of truth —
+[`shen/critic/validate.shen`](shen/critic/) — written as **fully typed
+Shen** (11 datatypes, every function signed). The types are verified at
+build time by `yggdrasil check` (a `(tc +)` pass on a live kernel added
+upstream for this project) and erased in the shake, so the deployed
+artifacts stay eval-free. One source, three targets:
 
-- **shen-lua** — this repo’s live critic on OpenResty (kernel 41.2, pin v0.10.1).
-- **ShenScript** — later, same `.shen` ideas in the browser.
+| Body | Artifact | Runtime |
+|---|---|---|
+| `beam/` | shen-erl compiled BEAM bytecode (`kl_kernel`/`kl_validate` in-VM) | native, 54–157µs/validate |
+| `openresty/` | yggdrasil `--target lua` | LuaJIT per nginx worker |
+| `browser/` | yggdrasil `--target js --web` | ES module in the tab |
 
-Shen does not emit patches, does not call the model, and does not replace Forth.
-It only answers Accept or Reject.
+Shen does not emit patches, does not call the model, and does not
+replace Forth. It only answers Accept or Reject — now with contract
+judgments: colon bodies are checked against their declared
+stack-and-effect contracts, absent contracts are inferred, recursion is
+rejected. `make critic-erl` / `make browser-shake` rebuild the
+artifacts through the typecheck gate (`typechecked=true` is asserted in
+the manifest). The Python preflight and per-port mirrors are frozen
+legacy.
 
-| Surface | Critic |
-|---|---|
-| `harness/adapters/forth.py` | none |
-| `harness/adapters/forth_shen.py` | `livingdict.preflight` (Python) |
-| `openresty/bin/livingdict-resty` and `POST /think` | `openresty/shen/preflight.shen` via shen-lua |
+## Claim — now measured
 
-Portable contracts: [`harness/shen/`](harness/shen/) and
-[`openresty/shen/contracts.shen`](openresty/shen/contracts.shen). See
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Same model, same sandbox, same capabilities, same budgets. Only the
+control language changes (ReAct tool loop vs Forth plan-program). Live
+numbers, full detail in [`beam/RESULTS.md`](beam/RESULTS.md):
 
-## Claim (still the experiment)
+| benchmark | ReAct baseline (grok CLI) | cold | warm |
+|---|---|---|---|
+| vendored eval, graph family (8) | 7/8 @ 299k tokens / 48 calls | **8/8 @ 15.8k / 9** | **8/8 @ 14.2k / 8** |
+| Aider Polyglot rust+go+cpp (95) | 29/30 @ 968k / 155 *(shared 30-task subsample)* | 91/95 @ 440k / 127 | **92/95 @ 404k / 116** |
+| Terminal-Bench 2.0 (curated 15, via Harbor) | — | 2/15 solved, mean 0.133 | — |
 
-Same model, same sandbox, same six capabilities, same budgets. Only the control
-language changes (ReAct vs JSON plan vs restricted Python vs Forth).
+Headline: at identical-or-better correctness, the plan-as-program arms
+use **~7.6–19× fewer input tokens and 4–5× fewer calls** than the same
+model in a ReAct loop.
 
-Go / no-go, from [`eval/docs/EVALUATION.md`](eval/docs/EVALUATION.md):
-
-- Forth + preflight stays within 5 percentage points of the strongest internal baseline.
-- It cuts median model calls or total tokens by at least 25% on routine multi-step families.
-- A warm dictionary may not buy that cost cut with more than 5 points of correctness loss, extra policy violations, or material negative transfer on sequence-8 false friends.
+The preregistered warm-dictionary go/no-go
+([`eval/docs/EVALUATION.md`](eval/docs/EVALUATION.md): ≤5pt correctness
+loss, ≥25% token cut, no new violations, no negative transfer) has been
+run and honestly reads **NO-GO so far**: warm wins are real (rust
+30/30 fixing cold's one miss, 4–10% token cuts, zero negative
+transfer) but the 25% amortization bar is unmet — cold already
+one-shots most tasks, leaving little for a dictionary to amortize. The
+open question is now sharp: warm needs task families that take cold
+multiple episodes.
 
 ## Status
 
@@ -161,14 +186,30 @@ Go / no-go, from [`eval/docs/EVALUATION.md`](eval/docs/EVALUATION.md):
 - Live loop contract: [`docs/HARNESS.md`](docs/HARNESS.md). Host allocates job files before plan; every episode runs `RUN-GATES`.
 - SCUD child: `livingdict run` speaks `rho.run/v1` (`docs/SCUD.md`).
 - Side-by-side compare (grok headless / pi headless / this host): [`docs/COMPARE.md`](docs/COMPARE.md).
-- Not started: Layer C, promotion evidence gates, ReAct/JSON/Python arms, Harbor / SWE-bench.
+- **BEAM body shipped** (`beam/`): full kernel loop, native typed critic,
+  typed promotion gates (contract required + claims discharged), **Layer C
+  open** — Linda tuple space with generation-fenced OTP-timer leases and
+  Jido obligation agents; deny-by-default dispatcher. 50+ ExUnit tests.
+- **Benchmarks run**: vendored eval families, Aider Polyglot (rust/go/cpp),
+  Terminal-Bench 2.0 via Harbor (self-contained linux releases for both
+  arches, `bench/harbor_ld_beam.py`). Results: [`beam/RESULTS.md`](beam/RESULTS.md).
+- Not started: SWE-bench, python/javascript/java polyglot tracks,
+  cross-process Layer B (remote wave dispatch).
 
 ## Commands
 
 Python 3.11+, `luajit`, and a shen-lua checkout (see [`openresty/README.md`](openresty/README.md)). OpenResty only for the HTTP host.
 
 ```bash
-make test                  # eval + harness + openresty + scudcheck
+# BEAM body (Elixir 1.18+/OTP 27+; brew install elixir)
+make beam-test             # 50+ ExUnit tests
+cd beam && mix ld.run --goal "..." --cwd PATH   # headless; exit 0 iff claims discharged
+cd beam && mix ld.demo --tasks graph-01,graph-02            # arms race, vendored eval
+cd beam && mix ld.polyglot --langs rust,go,cpp --arms cold,warm  # Aider Polyglot tracks
+make critic-erl            # typed Shen -> shen-erl BEAM critic (via yggdrasil check)
+make beam-release          # self-contained linux release tarball (Harbor installs)
+
+make test                  # eval + harness + openresty + critic-suite + beam + scudcheck
 make eval-oracle           # 40/40 expected
 make eval-resty-config-01  # ldeval config-01 via livingdict-resty
 make openresty-serve       # http://127.0.0.1:8080  (blocks)
@@ -212,6 +253,7 @@ browser/                      vanilla JS host + shaken ShenScript critic
 
 ## What this is not (yet)
 
-Layer C (shared space, obligation tuples), automatic promotion evidence gates,
-WAForth, Harbor, or SWE-bench. The planner, IR, store, in-process space, and
-OpenResty critic are in-tree; those next pieces are not.
+SWE-bench, WAForth, remote Layer B wave dispatch, or the full
+Terminal-Bench registry (74 tasks remain beyond the curated 15). Layer C
+(shared space, obligation tuples) and promotion evidence gates — long
+listed here — shipped with the BEAM body.

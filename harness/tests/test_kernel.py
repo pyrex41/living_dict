@@ -12,6 +12,7 @@ from livingdict.kernel import (
     DECISION_HALT_CAP,
     DECISION_PLAN,
     DECISION_SUCCESS,
+    claims_discharged,
     DICTIONARY_PROMOTED,
     EPISODE_BLOCKED_DUPLICATE,
     EPISODE_PLANNED,
@@ -107,6 +108,18 @@ class FingerprintTests(unittest.TestCase):
         self.assertNotEqual(base, fingerprint(other_keys))
         self.assertNotEqual(base, fingerprint(_env(claims_id="other")))
 
+    def test_artifact_contents_change_fingerprint(self) -> None:
+        base = fingerprint(_env())
+        changed = _env()
+        changed.artifacts["a"] = "different body"
+        self.assertNotEqual(base, fingerprint(changed))
+
+    def test_failed_gates_persist_structured_failure(self) -> None:
+        report = {"passed": False, "stderr": "failed", "gates": [{"name": "claims", "claims": [{"id": "run", "kind": "check", "command": "./app", "output": "bad", "passed": False}]}]}
+        state = reduce(empty_state(), Event(kind=GATES_MEASURED, payload={"report": report}))
+        self.assertEqual(state.last_failure["failed_claims"][0]["id"], "run")
+        self.assertEqual(len(state.attempt_history), 1)
+
     def test_nodes_change_fingerprint_without_affecting_absent(self) -> None:
         base = _env()
         self.assertEqual(fingerprint(base), fingerprint(base.to_dict()))
@@ -145,6 +158,22 @@ class FingerprintTests(unittest.TestCase):
 
 
 class ReconcileTests(unittest.TestCase):
+    def test_progress_failure_is_not_success(self) -> None:
+        report = {
+            "gates": [
+                {"name": "claims", "passed": True, "skipped": False},
+                {"name": "progress", "passed": False, "skipped": False},
+            ]
+        }
+        self.assertFalse(claims_discharged(report))
+
+    def test_contract_mutation_is_not_success(self) -> None:
+        report = {"gates": [
+            {"name": "claims", "passed": True, "skipped": False},
+            {"name": "contract", "passed": False, "skipped": False},
+        ]}
+        self.assertFalse(claims_discharged(report))
+
     def test_empty_state_plans(self) -> None:
         decision = reconcile(empty_state(), 8)
         self.assertEqual(decision.kind, DECISION_PLAN)
@@ -208,6 +237,14 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(state.consecutive_duplicates, 0)
         self.assertTrue(state.pending_execute)
         self.assertEqual(reconcile(state, 8).kind, DECISION_PLAN)
+
+    def test_same_plan_after_workspace_change_is_retryable(self) -> None:
+        fp = fingerprint(_env())
+        state = empty_state()
+        state = reduce(state, Event(kind=EPISODE_PLANNED, payload={"fingerprint": fp, "dedupe_key": "a"}))
+        state = reduce(state, Event(kind=EPISODE_PLANNED, payload={"fingerprint": fp, "dedupe_key": "b"}))
+        self.assertTrue(state.pending_execute)
+        self.assertEqual(state.consecutive_duplicates, 0)
 
     def test_cap_is_halt_never_success(self) -> None:
         state = reduce(empty_state(), Event(kind=BUDGET_CONSUMED, payload={"steps": 2}))

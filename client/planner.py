@@ -49,6 +49,21 @@ given, incorporate it exactly; if PRIOR CLAIMS are given, revise them
 rather than starting over.
 """
 
+GATE_AUDIT_SYSTEM = """You audit a failed acceptance gate for a coding task.
+You are not the judge and cannot declare success. Compare the GOAL, frozen
+CONTRACT, failed gate output, and workspace evidence. Emit exactly one JSON
+object:
+{"verdict":"adequate|incomplete|invalid", "reason":"...", "repair":"...",
+ "add_claims":[...]}
+
+Use verdict=adequate when the existing claims genuinely test the failed
+behavior and the product must be repaired. Use incomplete when the failure
+reveals an untested requirement; propose only additive claims with new ids.
+Use invalid for vacuous, skipped, source-only, or unsafe checks. Never delete, weaken,
+or rewrite an existing claim. Additive claims must be executable or
+behavioral and must not use unconditional true/skip paths.
+"""
+
 SYSTEM = """You are the planner for a general coding harness (Codex/Claude
 Code class) whose plan language is Forth. Forth is the harness, not
 the product. The product is whatever the GOAL names — any software.
@@ -79,8 +94,18 @@ Rules:
 - Do not emit a program that only reads files and writes a RECEIPT.
   Leftover product from an earlier job is not this goal being done.
 - FIRST episode (or whenever claims.json is missing): write claims.json
-  that states how THIS goal is done. Shape:
-    {"claims":[{"id":"…","kind":"source|file|absent","any":["needle"],"path":"src/…","min_bytes":200}]}
+  that states how THIS goal is done. The claims are the model's acceptance
+  criteria, not a changelog. Include at least one executable behavioral
+  check, for example:
+    {"claims":[{"id":"tests","kind":"check","command":"python -m pytest -q","timeout_seconds":120}]}
+  A behavior-oriented goal (run, execute, output, serve, HTTP/API, render,
+  sample, or similar) MUST include a check that invokes the product and
+  asserts an observable result. A compile command, `test -x`, source grep, or
+  file-size check is structural evidence only and is insufficient. If no test
+  runner exists, write a deterministic smoke command as part of this episode
+  and assert its output or exit behavior. Source/file/absent claims are
+  supplementary evidence only; a set without a behavioral check is incomplete
+  and will be sent back for repair in benchmark mode.
   Each real feature claim MUST name a source path that is not index.html.
   A title tag is not a product. Claims are derived from the GOAL.
 - Then write product files for this increment only.
@@ -530,6 +555,31 @@ def draft_claims(goal: str, workspace: Path, prior: Any = None, feedback: str = 
     return result
 
 
+def repair_context(payload: dict[str, Any]) -> str:
+    """Render durable harness state into the next planner prompt."""
+    fields = {key: payload[key] for key in ("contract", "last_failure", "attempt_history", "oracle_feedback") if payload.get(key) is not None}
+    if not fields:
+        return ""
+    return "REPAIR STATE (contract is frozen; repair the product, never weaken it):\n" + json.dumps(fields, ensure_ascii=False, sort_keys=True)
+
+
+def audit_gate(payload: dict[str, Any]) -> dict[str, Any]:
+    goal = str(payload.get("goal") or "")
+    workspace = Path(str(payload.get("workspace") or "."))
+    product = observe_workspace(workspace)
+    user = "\n".join([
+        f"GOAL:\n{goal}",
+        "FROZEN CONTRACT:\n" + json.dumps(payload.get("contract"), sort_keys=True),
+        "FAILED GATE:\n" + json.dumps(payload.get("report"), sort_keys=True),
+        "FAILED CLAIMS:\n" + json.dumps(payload.get("failed_claims") or [], sort_keys=True),
+        "WORKSPACE STATE:\n" + product,
+    ])
+    result, _telemetry = complete_json(GATE_AUDIT_SYSTEM, user)
+    if not isinstance(result, dict):
+        raise PlannerError("gate audit response is not an object")
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Living Dictionary Grok 4.6 planner")
     parser.add_argument("--goal", help="natural-language goal")
@@ -551,8 +601,14 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0
+        if payload.get("mode") == "gate_audit":
+            print(json.dumps(audit_gate(payload), indent=2, sort_keys=True))
+            return 0
         goal = str(payload.get("goal") or goal)
         extra = str(payload.get("extra") or "")
+        structured = repair_context(payload)
+        if structured:
+            extra = (extra + "\n\n" if extra else "") + structured
         ws = payload.get("workspace")
         if ws:
             args.workspace = Path(ws)
