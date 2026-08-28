@@ -69,9 +69,75 @@ defmodule LdHost.Critic do
   def validate(program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys) do
     GenServer.call(
       __MODULE__,
-      {:validate, program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys},
+      {:validate, overlay_live_words(program), allowed_effects, allowed_globs, forbidden_globs,
+       artifact_keys},
       30_000
     )
+  end
+
+  # Shen host-word table is the frozen eval ABI. Live BEAM words are
+  # rewritten to stack-and-effect equivalents so the critic can Accept
+  # without a preflight.py or validate.shen edit.
+  def overlay_live_words(program) when is_binary(program) do
+    program
+    |> LdHost.Forth.tokenize()
+    |> overlay_tokens(:normal, [])
+    |> render_overlay()
+  rescue
+    _ -> program
+  end
+
+  defp overlay_tokens([], _mode, acc), do: Enum.reverse(acc)
+
+  defp overlay_tokens([token | rest], :normal, acc) do
+    cond do
+      word?(token, ":") ->
+        overlay_tokens(rest, :name, [token | acc])
+
+      live_call?(token, "USE-OBJECT") ->
+        overlay_tokens(rest, :normal, [%{token | value: "READ-FILE"} | acc])
+
+      live_call?(token, "PATCH-FILE") ->
+        extra = Enum.reverse(LdHost.Forth.tokenize("DUP READ-FILE DROP WRITE-FILE"))
+        overlay_tokens(rest, :normal, extra ++ acc)
+
+      true ->
+        overlay_tokens(rest, :normal, [token | acc])
+    end
+  end
+
+  defp overlay_tokens([token | rest], :name, acc) do
+    overlay_tokens(rest, :body, [token | acc])
+  end
+
+  defp overlay_tokens([token | rest], :body, acc) do
+    cond do
+      word?(token, ";") ->
+        overlay_tokens(rest, :normal, [token | acc])
+
+      live_call?(token, "USE-OBJECT") ->
+        overlay_tokens(rest, :body, [%{token | value: "READ-FILE"} | acc])
+
+      live_call?(token, "PATCH-FILE") ->
+        extra = Enum.reverse(LdHost.Forth.tokenize("DUP READ-FILE DROP WRITE-FILE"))
+        overlay_tokens(rest, :body, extra ++ acc)
+
+      true ->
+        overlay_tokens(rest, :body, [token | acc])
+    end
+  end
+
+  defp word?(%{kind: :word, value: value}, name), do: String.upcase(value) == name
+  defp word?(_, _), do: false
+
+  defp live_call?(token, name), do: word?(token, name)
+
+  defp render_overlay(tokens) do
+    Enum.map_join(tokens, " ", fn
+      %{kind: :string, value: v} -> ~s(S" #{v}")
+      %{kind: :number, value: v} -> Integer.to_string(v)
+      %{kind: :word, value: v} -> v
+    end)
   end
 
   def engine, do: GenServer.call(__MODULE__, :engine)

@@ -282,6 +282,118 @@ defmodule LdHost.RunTest do
     assert LdHost.Policy.snapshot(ws) == %{}
   end
 
+  test "episode 1 interns; episode 2 installs by hash with empty artifacts" do
+    ws = workspace()
+    body = "hello from the beam\n"
+    sha = LdHost.Policy.sha256_hex(body)
+
+    episode1 = %{
+      "language" => "forth",
+      "program" => ~s{S" stash.txt" USE-ARTIFACT S" stash.txt" WRITE-FILE DROP RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"stash.txt" => body},
+      "rationale" => "intern the greeting body"
+    }
+
+    episode2 = %{
+      "language" => "forth",
+      "program" => ~s{S" #{sha}" USE-OBJECT S" greet.txt" WRITE-FILE RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{},
+      "rationale" => "install by hash"
+    }
+
+    assert map_size(episode2["artifacts"]) == 0
+    assert Enum.reduce(episode2["artifacts"], 0, fn {_k, v}, n -> n + byte_size(v) end) == 0
+
+    {:ok, n} = Agent.start_link(fn -> 0 end)
+
+    planner = fn _g, obs, _f ->
+      i = Agent.get_and_update(n, fn i -> {i, i + 1} end)
+
+      if i == 0 do
+        {:ok, episode1, %{}}
+      else
+        assert obs =~ sha
+        refute obs =~ "```"
+        {:ok, episode2, %{}}
+      end
+    end
+
+    result = Run.run("greet", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 3)
+
+    assert result.success
+    assert result.episodes == 2
+    assert File.read!(Path.join(ws, "greet.txt")) =~ "hello"
+    assert File.exists?(Path.join([result.run_dir, "objects", String.slice(sha, 0, 2), sha]))
+  end
+
+  test "two disjoint artifact keys dispatch one wave of node.ready" do
+    ws = workspace()
+
+    envelope = %{
+      "language" => "forth",
+      "program" =>
+        ~s{S" a.txt" USE-ARTIFACT S" a.txt" WRITE-FILE DROP } <>
+          ~s{S" b.txt" USE-ARTIFACT S" b.txt" WRITE-FILE DROP RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"a.txt" => "A\n", "b.txt" => "B\n"},
+      "rationale" => "two files"
+    }
+
+    contract = %{
+      claims: [
+        %{"id" => "both", "kind" => "check", "command" => "test -f a.txt && test -f b.txt", "timeout_seconds" => 5}
+      ],
+      source: "hidden"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
+    result = Run.run("pair", workspace: ws, contract: contract, planner_fn: planner, max_episodes: 1)
+
+    assert result.success
+    assert File.read!(Path.join(ws, "a.txt")) == "A\n"
+    assert File.read!(Path.join(ws, "b.txt")) == "B\n"
+
+    trace =
+      result.run_dir
+      |> Path.join("trace.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+
+    outs =
+      Enum.filter(trace, fn event ->
+        event["type"] == "space.out" and get_in(event, ["data", "pattern_or_tuple", "kind"]) == "node.ready"
+      end)
+
+    takes = Enum.filter(trace, fn event -> event["type"] == "space.take" end)
+
+    assert length(outs) == 2
+    assert length(takes) == 2
+    assert Enum.map(outs, &get_in(&1, ["data", "pattern_or_tuple", "wave"])) |> Enum.uniq() == [0]
+  end
+
+  test "overlapping writes in a wave are refused before I/O" do
+    ws = workspace()
+
+    envelope = %{
+      "language" => "forth",
+      "program" => "RECEIPT DROP",
+      "artifacts" => %{"greet.txt" => "hello\n"},
+      "nodes" => [
+        %{"id" => "left", "writes" => ["greet.txt"], "depends_on" => [], "program" => ""},
+        %{"id" => "right", "writes" => ["greet.txt"], "depends_on" => [], "program" => ""}
+      ],
+      "rationale" => "overlap"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
+    result = Run.run("overlap", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 1)
+
+    refute result.success
+    refute File.exists?(Path.join(ws, "greet.txt"))
+    events = File.read!(Path.join(result.run_dir, "events.jsonl"))
+    refute events =~ "artifacts.applied"
+  end
+
   test "CAT host-word alias is not written to the dictionary" do
     ws = workspace()
 

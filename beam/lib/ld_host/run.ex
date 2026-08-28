@@ -11,7 +11,7 @@ defmodule LdHost.Run do
   "model-authored claims" loudly.
   """
 
-  alias LdHost.{Critic, Contracts, Dictionary, Envelope, Forth, Gates, Host, Ledger}
+  alias LdHost.{Critic, Contracts, Dictionary, Envelope, Forth, Gates, Host, Ledger, Wave}
 
   @default_max_episodes 6
 
@@ -155,39 +155,78 @@ defmodule LdHost.Run do
         contract: state.contract,
         allow_model_checks: state.allow_model_checks,
         emit: Ledger.emitter(state.ledger),
-        receipt_path: Path.join(state.run_dir, "receipt.json")
+        receipt_path: Path.join(state.run_dir, "receipt.json"),
+        objects_dir: Path.join(state.run_dir, "objects")
       )
 
-    vm =
-      %Forth.VM{host: host, artifacts: envelope.artifacts}
-      |> Forth.bind_vocab(Dictionary.load_vocab(state.dictionary_dir))
+    Enum.each(envelope.artifacts, fn
+      {_key, body} when is_binary(body) -> Host.intern(host, body)
+      _ -> :ok
+    end)
 
-    Ledger.trace(state.ledger, "execution.program", %{program: envelope.program})
+    vocab = Dictionary.load_vocab(state.dictionary_dir)
+    nodes = envelope.nodes || Wave.synthesize(envelope.artifacts)
 
-    case interpret(vm, envelope.program) do
+    case dispatch_waves(state, host, nodes, envelope.artifacts, vocab, episode) do
+      {:error, :overlap, errors} ->
+        {:continue, feedback(state, "overlapping writes refused pre-I/O:\n" <> Enum.join(errors, "\n"))}
+
+      {:error, :graph, reason} ->
+        {:continue, feedback(state, "wave plan: #{reason}")}
+
       {:trap, code, message} ->
         Ledger.trace(state.ledger, "execution.trap", %{code: code, message: message})
         {:continue, feedback(state, "execution trap [#{code}]: #{message}")}
 
-      {:ok, vm} ->
-        {:ok, _} =
-          Ledger.commit(state.ledger, "artifacts.applied", %{
-            episode: episode,
-            count: map_size(envelope.artifacts)
-          })
+      {:ok, host} ->
+        vm = %Forth.VM{host: host, artifacts: envelope.artifacts} |> Forth.bind_vocab(vocab)
 
-        report = vm.host.last_check || Gates.run(vm.host)
-        {:ok, _} = Ledger.commit(state.ledger, "gates.measured", %{episode: episode, ok: report.ok == true, reason: report[:reason]})
-
-        state = %{state | last_report: report}
-        state = promote(state, episode, vm, composed, report)
-
-        if report.ok == true do
-          {_reply, _payload, _host} = Host.receipt(vm.host)
-          {:success, state}
+        if envelope.nodes do
+          finish_episode(state, episode, envelope, composed, vm)
         else
-          {:continue, feedback(state, gate_feedback(report))}
+          Ledger.trace(state.ledger, "execution.program", %{program: envelope.program})
+
+          case interpret(vm, envelope.program) do
+            {:trap, code, message} ->
+              Ledger.trace(state.ledger, "execution.trap", %{code: code, message: message})
+              {:continue, feedback(state, "execution trap [#{code}]: #{message}")}
+
+            {:ok, vm} ->
+              finish_episode(state, episode, envelope, composed, vm)
+          end
         end
+    end
+  end
+
+  defp dispatch_waves(_state, host, [], _artifacts, _vocab, _episode), do: {:ok, host}
+
+  defp dispatch_waves(state, host, nodes, artifacts, vocab, episode) do
+    Wave.execute(host, nodes, artifacts,
+      record: fn kind, payload -> Ledger.trace(state.ledger, kind, payload) end,
+      run_id: host.run_id,
+      episode: episode,
+      vocab: vocab
+    )
+  end
+
+  defp finish_episode(state, episode, envelope, composed, vm) do
+    {:ok, _} =
+      Ledger.commit(state.ledger, "artifacts.applied", %{
+        episode: episode,
+        count: map_size(envelope.artifacts)
+      })
+
+    report = vm.host.last_check || Gates.run(vm.host)
+    {:ok, _} = Ledger.commit(state.ledger, "gates.measured", %{episode: episode, ok: report.ok == true, reason: report[:reason]})
+
+    state = %{state | last_report: report}
+    state = promote(state, episode, vm, composed, report)
+
+    if report.ok == true do
+      {_reply, _payload, _host} = Host.receipt(vm.host)
+      {:success, state}
+    else
+      {:continue, feedback(state, gate_feedback(report))}
     end
   end
 
@@ -275,29 +314,37 @@ defmodule LdHost.Run do
   @observe_total_cap 60_000
 
   defp observe(state) do
+    snap = LdHost.Policy.snapshot(state.workspace)
+
     names =
-      state.workspace
-      |> LdHost.Policy.snapshot()
+      snap
       |> Map.keys()
       |> Enum.sort()
       |> Enum.take(200)
 
-    {files, _budget} =
-      Enum.map_reduce(names, @observe_total_cap, fn rel, budget ->
-        content =
-          case File.read(Path.join(state.workspace, rel)) do
-            {:ok, text} when byte_size(text) <= @observe_file_cap ->
-              if String.valid?(text) and budget - byte_size(text) > 0, do: text, else: nil
+    files =
+      if state.episode > 1 do
+        Enum.map(names, fn rel -> "#{rel} #{snap[rel]}" end)
+      else
+        {rows, _budget} =
+          Enum.map_reduce(names, @observe_total_cap, fn rel, budget ->
+            content =
+              case File.read(Path.join(state.workspace, rel)) do
+                {:ok, text} when byte_size(text) <= @observe_file_cap ->
+                  if String.valid?(text) and budget - byte_size(text) > 0, do: text, else: nil
 
-            _ ->
-              nil
-          end
+                _ ->
+                  nil
+              end
 
-        case content do
-          nil -> {"#{rel} (contents omitted)", budget}
-          text -> {"#{rel}:\n```\n#{text}```", budget - byte_size(text)}
-        end
-      end)
+            case content do
+              nil -> {"#{rel} (contents omitted)", budget}
+              text -> {"#{rel}:\n```\n#{text}```", budget - byte_size(text)}
+            end
+          end)
+
+        rows
+      end
 
     dictionary =
       case state.prelude_words do

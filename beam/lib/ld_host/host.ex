@@ -105,6 +105,8 @@ defmodule LdHost.Host do
   def call(host, "LIST-DIR", [path]), do: list_dir(host, path)
   def call(host, "SEARCH", [query]), do: search(host, query)
   def call(host, "WRITE-FILE", [content, path]), do: write_file(host, content, path)
+  def call(host, "USE-OBJECT", [sha]), do: fetch_object(host, sha)
+  def call(host, "PATCH-FILE", [patch, path]), do: patch_file(host, patch, path)
   def call(host, "RUN-TESTS", []), do: run_checks(host, "RUN-TESTS", false)
   def call(host, "RUN-GATES", []), do: run_checks(host, "RUN-GATES", true)
   def call(host, "RECEIPT", []), do: receipt(host)
@@ -285,6 +287,35 @@ defmodule LdHost.Host do
     {:ok, payload, host}
   end
 
+  @doc "CAS intern. Identical bytes reuse the same objects/<aa>/<sha> path."
+  def intern(%__MODULE__{} = host, content) when is_binary(content) do
+    digest = Policy.sha256_hex(content)
+    intern_blob(host, content, digest)
+    digest
+  end
+
+  @doc "Read an interned blob. Requires the read effect (USE-OBJECT)."
+  def fetch_object(host, sha) do
+    with {:ok, host} <- require_effect(host, "read") do
+      tool(host, "USE-OBJECT", %{sha256: sha})
+
+      case read_blob(host.objects_dir, sha) do
+        {:ok, data} ->
+          {:ok, data, host}
+
+        {:error, reason} ->
+          trap_event(host, %{reason: "missing_object", sha256: sha, detail: reason})
+          {:trap, "missing_object", "no object: #{sha}"}
+      end
+    end
+  end
+
+  def patch_file(host, patch, path) do
+    with {:ok, current, host} <- read_file(host, path) do
+      write_file(host, apply_patch(current, patch), path)
+    end
+  end
+
   # ---- internals --------------------------------------------------------
 
   defp require_effect(host, effect) do
@@ -316,18 +347,51 @@ defmodule LdHost.Host do
   defp empty_dot(""), do: "."
   defp empty_dot(rel), do: rel
 
-  defp intern_blob(%{objects_dir: nil}, _content, _digest), do: :ok
+  def intern_blob(%{objects_dir: nil}, _content, _digest), do: :ok
 
-  defp intern_blob(%{objects_dir: dir}, content, digest) do
-    <<aa::binary-size(2), _::binary>> = digest
-    path = Path.join([dir, aa, digest])
+  def intern_blob(%{objects_dir: dir}, content, digest) when is_binary(dir) and is_binary(digest) do
+    path = blob_path(dir, digest)
 
-    unless File.exists?(path) do
+    unless path == nil or File.exists?(path) do
       File.mkdir_p!(Path.dirname(path))
       File.write!(path, content)
     end
 
     :ok
+  end
+
+  def intern_blob(_host, _content, _digest), do: :ok
+
+  defp read_blob(nil, _sha), do: {:error, "no objects_dir"}
+
+  defp read_blob(dir, sha) do
+    case blob_path(dir, sha) do
+      nil ->
+        {:error, "invalid sha"}
+
+      path ->
+        case File.read(path) do
+          {:ok, data} -> {:ok, data}
+          {:error, _} -> {:error, "missing"}
+        end
+    end
+  end
+
+  defp blob_path(dir, sha) when is_binary(sha) do
+    if sha =~ ~r/^[0-9a-f]{64}$/ do
+      Path.join([dir, String.slice(sha, 0, 2), sha])
+    end
+  end
+
+  defp blob_path(_, _), do: nil
+
+  # First-occurrence find/replace when the patch has a >>> separator;
+  # otherwise the patch is the whole new body (file must already exist).
+  defp apply_patch(current, patch) do
+    case String.split(patch, ">>>", parts: 2) do
+      [find, replace] -> String.replace(current, find, replace, global: false)
+      _ -> patch
+    end
   end
 
   # Summary value for a non-UTF-8 read: size, first 4 bytes as hex, and

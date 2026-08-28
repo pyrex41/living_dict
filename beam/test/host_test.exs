@@ -42,4 +42,31 @@ defmodule LdHost.HostTest do
     assert %Host{allow_model_checks: false} = Host.new(ws)
     assert %Host{allow_model_checks: true} = Host.new(ws, allow_model_checks: true)
   end
+
+  test "intern is idempotent and fetch_object returns the blob" do
+    ws = workspace()
+    objects = Path.join(ws, "objects")
+    host = Host.new(ws, objects_dir: objects)
+
+    sha = Host.intern(host, "payload")
+    assert sha == Host.intern(host, "payload")
+    assert sha == LdHost.Policy.sha256_hex("payload")
+
+    path = Path.join([objects, String.slice(sha, 0, 2), sha])
+    assert File.exists?(path)
+    assert File.read!(path) == "payload"
+    assert {:ok, "payload", _} = Host.fetch_object(host, sha)
+
+    Host.intern_blob(host, "payload", sha)
+    assert sha in File.ls!(Path.dirname(path))
+  end
+
+  test "write_file interns into objects_dir" do
+    ws = workspace()
+    objects = Path.join(ws, "objects")
+    host = Host.new(ws, objects_dir: objects)
+    {:ok, receipt, _} = Host.write_file(host, "hello\n", "greet.txt")
+    sha = receipt.sha256
+    assert File.exists?(Path.join([objects, String.slice(sha, 0, 2), sha]))
+  end
 end
