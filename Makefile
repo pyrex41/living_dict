@@ -113,6 +113,10 @@ beam-deps:
 
 beam-test:
 	@if ! command -v mix >/dev/null 2>&1; then echo "skip beam: elixir not found"; exit 0; fi
+	@if [ ! -f beam/priv/spec-erl/app-erlang/ebin/kl_spec.beam ]; then \
+	  if [ -x "$(YGGDRASIL)" ]; then $(MAKE) spec-erl; \
+	  else echo "spec-erl artifact missing and yggdrasil not found; SpecTest will skip"; fi; \
+	fi
 	cd beam && mix test
 
 beam-run:

@@ -2,6 +2,8 @@
 \\ the shake. Self-contained: no load / eval / runtime (tc +).
 \\ `.` is cons, so obligation-kind constructors use hyphens; compile-product
 \\ restores the dotted host strings Space.@allowed_kinds uses.
+\\ Claim extras are nested so the typechecker does not blow inference on
+\\ an 8-cons (id/kind/command/path + any/min/timeout/deps).
 
 (datatype claimkind
   ______________
@@ -44,10 +46,15 @@
   ________________
   obligation : obligation-kind;)
 
+(datatype claimextra
+  Any : (list string); Min : number; Timeout : number; Deps : (list string);
+  ==========================================================================
+  [Any Min Timeout Deps] : claimextra;)
+
 (datatype claim
-  Id : string; Kind : claimkind; Command : string; Path : string;
-  ==============================================================
-  [Id Kind Command Path] : claim;)
+  Id : string; Kind : claimkind; Command : string; Path : string; Extra : claimextra;
+  =================================================================================
+  [Id Kind Command Path Extra] : claim;)
 
 (datatype product
   Claims : (list claim); Globs : (list glob);
@@ -56,9 +63,9 @@
   [Claims Globs Effects Kinds] : product;)
 
 (datatype claimmap
-  Id : string; Kind : string; Command : string; Path : string;
-  ____________________________________________________________
-  [Id Kind Command Path] : claimmap;)
+  Id : string; Kind : string; Command : string; Path : string; Extra : claimextra;
+  _______________________________________________________________________________
+  [Id Kind Command Path Extra] : claimmap;)
 
 (datatype compiled
   Claims : (list claimmap); Globs : (list string);
@@ -90,21 +97,41 @@
   { glob --> string }
   S -> S)
 
+(define extra-any
+  { claimextra --> (list string) }
+  [Any _ _ _] -> Any)
+
+(define extra-min
+  { claimextra --> number }
+  [_ Min _ _] -> Min)
+
+(define extra-timeout
+  { claimextra --> number }
+  [_ _ Timeout _] -> Timeout)
+
+(define extra-deps
+  { claimextra --> (list string) }
+  [_ _ _ Deps] -> Deps)
+
 (define claim-id
   { claim --> string }
-  [Id _ _ _] -> Id)
+  [Id _ _ _ _] -> Id)
 
 (define claim-kind
   { claim --> claimkind }
-  [_ Kind _ _] -> Kind)
+  [_ Kind _ _ _] -> Kind)
 
 (define claim-command
   { claim --> string }
-  [_ _ Command _] -> Command)
+  [_ _ Command _ _] -> Command)
 
 (define claim-path
   { claim --> string }
-  [_ _ _ Path] -> Path)
+  [_ _ _ Path _] -> Path)
+
+(define claim-extra
+  { claim --> claimextra }
+  [_ _ _ _ Extra] -> Extra)
 
 (define product-claims
   { product --> (list claim) }
@@ -122,12 +149,17 @@
   { product --> (list obligation-kind) }
   [_ _ _ Kinds] -> Kinds)
 
+(define compile-extra
+  { claimextra --> claimextra }
+  E -> [(extra-any E) (extra-min E) (extra-timeout E) (extra-deps E)])
+
 (define compile-claim
   { claim --> claimmap }
   C -> [(claim-id C)
         (claimkind-name (claim-kind C))
         (claim-command C)
-        (claim-path C)])
+        (claim-path C)
+        (compile-extra (claim-extra C))])
 
 (define compile-claims
   { (list claim) --> (list claimmap) }
@@ -158,7 +190,7 @@
 
 (define fixture-product
   { --> product }
-  -> [[["greets" check "grep -q hello greet.txt" ""]]
+  -> [[["greets" check "grep -q hello greet.txt" "" [[] 0 60 []]]]
       ["greet.txt"]
       [read write exec]
       [obligation]])

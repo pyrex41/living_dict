@@ -46,7 +46,7 @@ defmodule LdHost.Obligation do
       {:ok, %{status: if(summary.success, do: :completed, else: :failed), summary: summary}}
     end
 
-    defp contract_of(%{"contract" => %{"claims" => claims}}), do: %{claims: claims, source: "obligation"}
+    defp contract_of(%{"contract" => %{"claims" => claims}}), do: %{claims: claims, source: "approved"}
     defp contract_of(_), do: nil
 
     # Task forbiddens compose with the host's bookkeeping defaults.

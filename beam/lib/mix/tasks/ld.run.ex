@@ -13,8 +13,12 @@ defmodule Mix.Tasks.Ld.Run do
   it, the model's own claims are measured (checks refused) and the run
   is loudly labeled model-judged.
 
-  `--spec` compiles the same claims JSON through the typed product spec.
-  Checks stay refused until `--sign` (compiled is not approval).
+  `--spec` compiles a product JSON through the typed spec: claims plus
+  required `globs`, `effects`, and `obligation_kinds` lists (empty is
+  deny-all; missing lists are an error). Checks stay refused until
+  `--sign` (compiled is not approval). Claim objects may include the
+  `atomize_claim/1` fields (`any`/`must`, `min_bytes`, `timeout_seconds`,
+  `depends_on`); unknown keys are rejected.
 
   `--allow-model-checks` (benchmark mode) lets model-authored check
   claims execute advisorily when no approved contract exists; the report
@@ -70,7 +74,11 @@ defmodule Mix.Tasks.Ld.Run do
         base
 
       path ->
-        compiled = LdHost.Spec.compile_file(path)
+        compiled =
+          case LdHost.Spec.compile_file(path) do
+            {:error, reason} -> Mix.raise(reason)
+            map -> map
+          end
 
         contract =
           if opts[:sign] do

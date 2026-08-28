@@ -27,14 +27,9 @@ defmodule LdHost.Gates do
 
     {claims, provenance, allow_check?, advisory?} =
       case host.contract do
-        %{claims: claims, source: "unsigned"} when is_list(claims) and claims != [] ->
-          {claims, "unsigned spec", false, false}
-
-        %{claims: claims, source: "spec-derived"} when is_list(claims) and claims != [] ->
-          {claims, "spec-derived", true, false}
-
-        %{claims: claims} when is_list(claims) and claims != [] ->
-          {claims, "approved contract", true, false}
+        %{claims: claims} = contract when is_list(claims) and claims != [] ->
+          source = Map.get(contract, :source)
+          {claims, provenance_for(source), allow_checks?(source), false}
 
         _ ->
           advisory? = host.allow_model_checks == true
@@ -68,6 +63,19 @@ defmodule LdHost.Gates do
     end
 
     report
+  end
+
+  # Missing source is a legacy Host.contract map; unknown strings are not.
+  defp allow_checks?(nil), do: true
+  defp allow_checks?(source), do: LdHost.Spec.approved_source?(source)
+
+  defp provenance_for("unsigned"), do: "unsigned spec"
+  defp provenance_for("spec-derived"), do: "spec-derived"
+
+  defp provenance_for(source) do
+    if source == nil or LdHost.Spec.approved_source?(source),
+      do: "approved contract",
+      else: "unsigned spec"
   end
 
   defp workspace_claims(workspace) do

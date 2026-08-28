@@ -398,7 +398,7 @@ defmodule LdHost.Run do
     %{claims: Enum.map(claims, &LdHost.Gates.atomize_claim/1), source: "approved"}
   end
 
-  defp list_or(list, _default) when is_list(list) and list != [], do: list
+  defp list_or(list, _default) when is_list(list), do: list
   defp list_or(_, default), do: default
 
   defp judge_label(nil), do: "no gates measured"

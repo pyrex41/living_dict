@@ -38,4 +38,5 @@ beam/_build/
 beam/deps/
 beam/runs/
 beam/priv/spec-erl/
+shen/product/*.kl
 erl_crash.dump
