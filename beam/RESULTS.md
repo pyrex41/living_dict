@@ -37,6 +37,29 @@ Same-model baseline on the identical first-10 subsample per language
 - Rust crates for gigasecond/grep/simple-cipher were prefetched into the
   cargo cache; all three passed offline.
 
+## Terminal-Bench v5: the effectiveness bundle, 2026-08-28
+
+Same 15 tasks, same model, four fixes: (1) **advisory model-checks** —
+the agent's self-drafted `check` claims now execute in-container as
+backpressure (judge provenance stays `model-authored claims`; Harbor's
+hidden verifier remains the only real judge); (2) binary READ-FILE
+returns a summary instead of trapping; (3) the planner prompt asks for
+`claims.json` with a behavioral check on episode 1 and mandates
+relative paths; (4) real wall clock via `--agent-timeout-multiplier 2`.
+Raw run: `bench/results/beam/beam-tb15-v5`, release `beam-v0.1.1`.
+
+| campaign | mean reward | solved |
+|---|---|---|
+| v4 (blind) | 0.133 | 2/15 |
+| **v5 (bundle)** | **0.533** | **8/15** — extract-elf, regex-log, db-wal-recovery, git-leak-recovery, git-multibranch, nginx-request-logging, openssl-selfsigned-cert, overfull-hbox |
+
+**4× in one iteration**, zero errors, zero timeouts (both v4 timeout
+casualties now solve). Receipt-level evidence of the mechanism:
+git-multibranch's model-authored check (`advisory: true, returncode 0`)
+drove self-judged convergence in 3 episodes; the hidden verifier
+agreed. Executable backpressure was the missing organ, exactly as the
+v4 autopsy predicted.
+
 ## Terminal-Bench 2.0 via Harbor (curated 15-task subset), 2026-08-27
 
 First-ever completed Terminal-Bench campaign for this project (every
