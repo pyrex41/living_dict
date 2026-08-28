@@ -25,7 +25,7 @@ defmodule LdHost.Run do
 
     {:ok, ledger} = Ledger.start_link(run_dir)
 
-    if contract do
+    if contract && LdHost.Spec.approved_source?(contract.source) do
       {:ok, _} = Ledger.commit(ledger, "contract.approved", %{claims: length(contract.claims), source: contract.source})
     end
 
@@ -42,8 +42,9 @@ defmodule LdHost.Run do
       planner_fn: planner_fn,
       prelude: prelude,
       prelude_words: prelude_words,
-      allowed_effects: Keyword.get(opts, :allowed_effects, ["read", "write", "exec"]),
-      allowed_globs: Keyword.get(opts, :allowed_globs, ["**"]),
+      allowed_effects:
+        Keyword.get(opts, :allowed_effects, list_or(contract && contract[:allowed_effects], ["read", "write", "exec"])),
+      allowed_globs: Keyword.get(opts, :allowed_globs, list_or(contract && contract[:allowed_globs], ["**"])),
       forbidden_globs:
         Keyword.get(opts, :forbidden_globs, [".livingdict-run/*", ".git/*", "node_modules/*", "dist/*"]),
       seen: MapSet.new(),
@@ -384,12 +385,21 @@ defmodule LdHost.Run do
   defp normalize_contract(nil), do: nil
 
   defp normalize_contract(%{claims: claims} = contract) when is_list(claims) do
-    %{claims: Enum.map(claims, &LdHost.Gates.atomize_claim/1), source: Map.get(contract, :source, "approved")}
+    %{
+      claims: Enum.map(claims, &LdHost.Gates.atomize_claim/1),
+      source: Map.get(contract, :source, "approved"),
+      allowed_globs: Map.get(contract, :allowed_globs),
+      allowed_effects: Map.get(contract, :allowed_effects),
+      obligation_kinds: Map.get(contract, :obligation_kinds)
+    }
   end
 
   defp normalize_contract(claims) when is_list(claims) do
     %{claims: Enum.map(claims, &LdHost.Gates.atomize_claim/1), source: "approved"}
   end
+
+  defp list_or(list, _default) when is_list(list) and list != [], do: list
+  defp list_or(_, default), do: default
 
   defp judge_label(nil), do: "no gates measured"
   defp judge_label(report), do: report[:judge] || "unknown"

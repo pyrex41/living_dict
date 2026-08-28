@@ -4,6 +4,7 @@ defmodule Mix.Tasks.Ld.Run do
   Headless run: exits 0 iff the contract's claims discharged.
 
       mix ld.run --goal "..." --cwd PATH [--contract claims.json]
+                 [--spec PATH --sign]
                  [--dictionary DIR] [--max-episodes N]
                  [--allow-model-checks]
 
@@ -11,6 +12,9 @@ defmodule Mix.Tasks.Ld.Run do
   approved/hidden contract whose `check` commands judge success. Without
   it, the model's own claims are measured (checks refused) and the run
   is loudly labeled model-judged.
+
+  `--spec` compiles the same claims JSON through the typed product spec.
+  Checks stay refused until `--sign` (compiled is not approval).
 
   `--allow-model-checks` (benchmark mode) lets model-authored check
   claims execute advisorily when no approved contract exists; the report
@@ -28,6 +32,8 @@ defmodule Mix.Tasks.Ld.Run do
           goal: :string,
           cwd: :string,
           contract: :string,
+          spec: :string,
+          sign: :boolean,
           dictionary: :string,
           max_episodes: :integer,
           allow_model_checks: :boolean
@@ -37,12 +43,7 @@ defmodule Mix.Tasks.Ld.Run do
     goal = opts[:goal] || Mix.raise("--goal is required")
 
     run_opts =
-      LdHost.CLI.run_opts(opts[:cwd] || File.cwd!(),
-        contract: LdHost.CLI.load_contract(opts[:contract]),
-        dictionary_dir: opts[:dictionary],
-        max_episodes: opts[:max_episodes],
-        allow_model_checks: opts[:allow_model_checks]
-      )
+      LdHost.CLI.run_opts(opts[:cwd] || File.cwd!(), spec_run_extras(opts))
 
     result = LdHost.Run.run(goal, run_opts)
 
@@ -54,5 +55,35 @@ defmodule Mix.Tasks.Ld.Run do
     IO.puts(if result.success, do: "SUCCESS — claims discharged", else: "FAILED — claims not discharged")
 
     unless result.success, do: exit({:shutdown, 1})
+  end
+
+  defp spec_run_extras(opts) do
+    base = [
+      contract: LdHost.CLI.load_contract(opts[:contract]),
+      dictionary_dir: opts[:dictionary],
+      max_episodes: opts[:max_episodes],
+      allow_model_checks: opts[:allow_model_checks]
+    ]
+
+    case opts[:spec] do
+      nil ->
+        base
+
+      path ->
+        compiled = LdHost.Spec.compile_file(path)
+
+        contract =
+          if opts[:sign] do
+            LdHost.Spec.sign(compiled, nil)
+          else
+            compiled
+          end
+
+        Keyword.merge(base,
+          contract: contract,
+          allowed_globs: compiled.globs,
+          allowed_effects: compiled.effects
+        )
+    end
   end
 end

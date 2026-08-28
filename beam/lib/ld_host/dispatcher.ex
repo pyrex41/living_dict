@@ -40,6 +40,7 @@ defmodule LdHost.Dispatcher do
       ledger: ledger,
       worker_id: worker_id,
       run_opts: Keyword.get(opts, :run_opts, []),
+      obligation_kinds: Keyword.get(opts, :obligation_kinds),
       running: %{},
       idle_waiters: []
     }
@@ -89,7 +90,7 @@ defmodule LdHost.Dispatcher do
     ob = claim.tuple
     ob_id = ob["id"] || claim.tuple_id
 
-    case deny_reason(ob) do
+    case deny_reason(ob, state.obligation_kinds) do
       reason when is_binary(reason) ->
         Space.ack(state.space, claim.token)
         record(state, "obligation.denied", %{id: ob_id, reason: reason})
@@ -108,8 +109,15 @@ defmodule LdHost.Dispatcher do
     end
   end
 
-  defp deny_reason(ob) do
+  def deny_reason(ob), do: deny_reason(ob, nil)
+
+  def deny_reason(ob, compiled_kinds) do
+    kind = ob["kind"] || ob[:kind]
+
     cond do
+      is_list(compiled_kinds) and kind != nil and to_string(kind) not in Enum.map(compiled_kinds, &to_string/1) ->
+        "unknown tuple kind: #{kind}"
+
       not is_binary(ob["goal"]) or String.trim(ob["goal"] || "") == "" ->
         "obligation has no goal"
 

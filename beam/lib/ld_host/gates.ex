@@ -27,6 +27,12 @@ defmodule LdHost.Gates do
 
     {claims, provenance, allow_check?, advisory?} =
       case host.contract do
+        %{claims: claims, source: "unsigned"} when is_list(claims) and claims != [] ->
+          {claims, "unsigned spec", false, false}
+
+        %{claims: claims, source: "spec-derived"} when is_list(claims) and claims != [] ->
+          {claims, "spec-derived", true, false}
+
         %{claims: claims} when is_list(claims) and claims != [] ->
           {claims, "approved contract", true, false}
 

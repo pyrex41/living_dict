@@ -11,7 +11,7 @@ ifneq ($(wildcard $(SHENSCRIPT)),)
 YGGDRASIL_HOST ?= node $(SHENSCRIPT)
 endif
 
-.PHONY: eval-test eval-oracle harness-test openresty-test eval-resty-config-01 openresty-serve think-config-01 client-test livingdict client-web test browser-test browser-shake browser-serve compare compare-dry scudcheck pack-critic critic-suite beam-deps beam-test beam-run
+.PHONY: eval-test eval-oracle harness-test openresty-test eval-resty-config-01 openresty-serve think-config-01 client-test livingdict client-web test browser-test browser-shake browser-serve compare compare-dry scudcheck pack-critic critic-suite beam-deps beam-test beam-run spec-erl
 
 eval-test:
 	cd eval && python3 -m unittest discover -s tests -v
@@ -122,6 +122,10 @@ beam-run:
 # Native BEAM critic: typed Shen -> shen-erl BEAM modules (loads into beam/).
 critic-erl:
 	$(YGGDRASIL) build shen/critic/validate.shen openresty/dist/critic-erl --target erlang --typecheck $(if $(YGGDRASIL_HOST),--host "$(YGGDRASIL_HOST)")
+
+# Product spec (beam-only shake; not the critic).
+spec-erl:
+	$(YGGDRASIL) build shen/product/spec.shen beam/priv/spec-erl --target erlang --typecheck $(if $(YGGDRASIL_HOST),--host "$(YGGDRASIL_HOST)")
 
 # ---- Terminal-Bench / Harbor packaging (bench/) ----
 BENCH_CRITIC := bench/artifacts/critic

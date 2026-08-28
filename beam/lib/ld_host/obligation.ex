@@ -19,6 +19,16 @@ defmodule LdHost.Obligation do
       ]
 
     def run(%{obligation: ob, run_opts: extra}, _context) do
+      case LdHost.Dispatcher.deny_reason(ob, extra[:obligation_kinds]) do
+        reason when is_binary(reason) ->
+          {:error, reason}
+
+        nil ->
+          run_goal(ob, extra)
+      end
+    end
+
+    defp run_goal(ob, extra) do
       goal = ob["goal"] || ""
       workspace = ob["workspace"]
 

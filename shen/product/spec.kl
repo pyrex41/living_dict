@@ -1,0 +1,40 @@
+(defun claimkind-name (V3468) (cond ((= check V3468) "check") ((= source V3468) "source") ((= file V3468) "file") ((= absent V3468) "absent") (true (simple-error "partial function claimkind-name"))))
+
+(defun effect-name (V3469) (cond ((= read V3469) "read") ((= write V3469) "write") ((= exec V3469) "exec") (true (simple-error "partial function effect-name"))))
+
+(defun obligation-kind-name (V3470) (cond ((= node-ready V3470) "node.ready") ((= gate-result V3470) "gate.result") ((= critic-reject V3470) "critic.reject") ((= obligation V3470) "obligation") (true (simple-error "partial function obligation-kind-name"))))
+
+(defun glob-name (V3471) V3471)
+
+(defun claim-id (V3478) (cond ((and (cons? V3478) (and (cons? (tl V3478)) (and (cons? (tl (tl V3478))) (and (cons? (tl (tl (tl V3478)))) (= () (tl (tl (tl (tl V3478))))))))) (hd V3478)) (true (simple-error "partial function claim-id"))))
+
+(defun claim-kind (V3485) (cond ((and (cons? V3485) (and (cons? (tl V3485)) (and (cons? (tl (tl V3485))) (and (cons? (tl (tl (tl V3485)))) (= () (tl (tl (tl (tl V3485))))))))) (hd (tl V3485))) (true (simple-error "partial function claim-kind"))))
+
+(defun claim-command (V3492) (cond ((and (cons? V3492) (and (cons? (tl V3492)) (and (cons? (tl (tl V3492))) (and (cons? (tl (tl (tl V3492)))) (= () (tl (tl (tl (tl V3492))))))))) (hd (tl (tl V3492)))) (true (simple-error "partial function claim-command"))))
+
+(defun claim-path (V3499) (cond ((and (cons? V3499) (and (cons? (tl V3499)) (and (cons? (tl (tl V3499))) (and (cons? (tl (tl (tl V3499)))) (= () (tl (tl (tl (tl V3499))))))))) (hd (tl (tl (tl V3499))))) (true (simple-error "partial function claim-path"))))
+
+(defun product-claims (V3506) (cond ((and (cons? V3506) (and (cons? (tl V3506)) (and (cons? (tl (tl V3506))) (and (cons? (tl (tl (tl V3506)))) (= () (tl (tl (tl (tl V3506))))))))) (hd V3506)) (true (simple-error "partial function product-claims"))))
+
+(defun product-globs (V3513) (cond ((and (cons? V3513) (and (cons? (tl V3513)) (and (cons? (tl (tl V3513))) (and (cons? (tl (tl (tl V3513)))) (= () (tl (tl (tl (tl V3513))))))))) (hd (tl V3513))) (true (simple-error "partial function product-globs"))))
+
+(defun product-effects (V3520) (cond ((and (cons? V3520) (and (cons? (tl V3520)) (and (cons? (tl (tl V3520))) (and (cons? (tl (tl (tl V3520)))) (= () (tl (tl (tl (tl V3520))))))))) (hd (tl (tl V3520)))) (true (simple-error "partial function product-effects"))))
+
+(defun product-kinds (V3527) (cond ((and (cons? V3527) (and (cons? (tl V3527)) (and (cons? (tl (tl V3527))) (and (cons? (tl (tl (tl V3527)))) (= () (tl (tl (tl (tl V3527))))))))) (hd (tl (tl (tl V3527))))) (true (simple-error "partial function product-kinds"))))
+
+(defun compile-claim (V3528) (cons (claim-id V3528) (cons (claimkind-name (claim-kind V3528)) (cons (claim-command V3528) (cons (claim-path V3528) ())))))
+
+(defun compile-claims (V3529) (cond ((= () V3529) ()) ((cons? V3529) (cons (compile-claim (hd V3529)) (compile-claims (tl V3529)))) (true (simple-error "partial function compile-claims"))))
+
+(defun compile-globs (V3530) (cond ((= () V3530) ()) ((cons? V3530) (cons (glob-name (hd V3530)) (compile-globs (tl V3530)))) (true (simple-error "partial function compile-globs"))))
+
+(defun compile-effects (V3531) (cond ((= () V3531) ()) ((cons? V3531) (cons (effect-name (hd V3531)) (compile-effects (tl V3531)))) (true (simple-error "partial function compile-effects"))))
+
+(defun compile-kinds (V3532) (cond ((= () V3532) ()) ((cons? V3532) (cons (obligation-kind-name (hd V3532)) (compile-kinds (tl V3532)))) (true (simple-error "partial function compile-kinds"))))
+
+(defun compile-product (V3533) (cons (compile-claims (product-claims V3533)) (cons (compile-globs (product-globs V3533)) (cons (compile-effects (product-effects V3533)) (cons (compile-kinds (product-kinds V3533)) ())))))
+
+(defun fixture-product () (cons (cons (cons "greets" (cons check (cons "grep -q hello greet.txt" (cons "" ())))) ()) (cons (cons "greet.txt" ()) (cons (cons read (cons write (cons exec ()))) (cons (cons obligation ()) ())))))
+
+(defun compile-fixture () (compile-product (fixture-product)))
+

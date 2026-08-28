@@ -69,12 +69,16 @@ defmodule LdHost.CLI do
   `mix ld.run`; nil extras are dropped.
   """
   def run_opts(workspace, extras \\ []) do
-    Enum.reduce([:contract, :dictionary_dir, :max_episodes, :run_dir, :allow_model_checks], [workspace: Path.expand(workspace)], fn key, opts ->
-      case Keyword.get(extras, key) do
-        nil -> opts
-        value -> Keyword.put(opts, key, value)
+    Enum.reduce(
+      [:contract, :dictionary_dir, :max_episodes, :run_dir, :allow_model_checks, :allowed_globs, :allowed_effects],
+      [workspace: Path.expand(workspace)],
+      fn key, opts ->
+        case Keyword.get(extras, key) do
+          nil -> opts
+          value -> Keyword.put(opts, key, value)
+        end
       end
-    end)
+    )
   end
 
   @doc """

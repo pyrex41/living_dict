@@ -37,4 +37,5 @@ openresty/.shen-kernel-cache.bin
 beam/_build/
 beam/deps/
 beam/runs/
+beam/priv/spec-erl/
 erl_crash.dump
