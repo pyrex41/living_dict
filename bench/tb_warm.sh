@@ -39,7 +39,7 @@ OUT="$REPO/bench/results/beam/tbwarm-$STAMP"
 DRY_RUN=0
 MULTIPLIER="2.0"
 MAX_EPISODES="8"
-SEED_MAX_BYTES=204800  # 200KB hard cap; argv ceiling is ~256KB
+SEED_MAX_BYTES=120000  # under Linux MAX_ARG_STRLEN (131072) per review  # 200KB hard cap; argv ceiling is ~256KB
 
 while [ $# -gt 0 ]; do
   case "$1" in
