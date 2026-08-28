@@ -9,6 +9,12 @@ defmodule LdHost.Gates do
     claims.json is measured too, but its checks are refused with the
     reference's exact reason, and the report is labeled with judge
     provenance so a run judged by the model's own claims says so loudly.
+  - Benchmark (advisory) mode: when the host has `allow_model_checks:
+    true` and no approved contract, model-authored `check` claims DO
+    execute. Every executed check entry carries `advisory: true` and the
+    judge label stays "model-authored claims" — the pass/fail is the
+    model's self-judgment (it terminates the loop and gates promotion);
+    a hidden benchmark verifier still judges the task.
   - Claim kinds: check (sh command, exit 0, timeout, depends_on
     blocking), source (substring evidence), file (existence/min_bytes),
     absent.
@@ -19,13 +25,14 @@ defmodule LdHost.Gates do
   def run(%Host{} = host, opts \\ []) do
     persist? = Keyword.get(opts, :persist?, true)
 
-    {claims, provenance, allow_check?} =
+    {claims, provenance, allow_check?, advisory?} =
       case host.contract do
         %{claims: claims} when is_list(claims) and claims != [] ->
-          {claims, "approved contract", true}
+          {claims, "approved contract", true, false}
 
         _ ->
-          {workspace_claims(host.workspace), "model-authored claims", false}
+          advisory? = host.allow_model_checks == true
+          {workspace_claims(host.workspace), "model-authored claims", advisory?, advisory?}
       end
 
     report =
@@ -42,7 +49,7 @@ defmodule LdHost.Gates do
           %{name: "claims", ok: false, layer: "goal", reason: "claims.json has no claims[]"}
 
         list ->
-          measure_claims(host, list, allow_check?)
+          measure_claims(host, list, allow_check?, advisory?)
       end
       |> Map.put(:judge, provenance)
 
@@ -101,10 +108,10 @@ defmodule LdHost.Gates do
 
   defp int_or(_, default), do: default
 
-  defp measure_claims(host, claims, allow_check?) do
+  defp measure_claims(host, claims, allow_check?, advisory?) do
     {results, _failed} =
       Enum.reduce(claims, {[], MapSet.new()}, fn claim, {results, failed} ->
-        entry = measure_claim(host, claim, failed, allow_check?)
+        entry = measure_claim(host, claim, failed, allow_check?, advisory?)
         failed = if entry.passed, do: failed, else: MapSet.put(failed, entry.id)
         {[entry | results], failed}
       end)
@@ -120,7 +127,7 @@ defmodule LdHost.Gates do
     end
   end
 
-  defp measure_claim(host, %{kind: "file"} = claim, _failed, _allow) do
+  defp measure_claim(host, %{kind: "file"} = claim, _failed, _allow, _advisory) do
     target = Path.join(host.workspace, claim.path)
 
     ok =
@@ -131,12 +138,12 @@ defmodule LdHost.Gates do
     %{id: claim.id, passed: ok, kind: "file", path: claim.path}
   end
 
-  defp measure_claim(host, %{kind: "absent"} = claim, _failed, _allow) do
+  defp measure_claim(host, %{kind: "absent"} = claim, _failed, _allow, _advisory) do
     ok = claim.path != "" and not File.exists?(Path.join(host.workspace, claim.path))
     %{id: claim.id, passed: ok, kind: "absent", path: claim.path}
   end
 
-  defp measure_claim(host, %{kind: "check"} = claim, failed, allow_check?) do
+  defp measure_claim(host, %{kind: "check"} = claim, failed, allow_check?, advisory?) do
     command = String.trim(to_string(claim.command || ""))
     blocked_by = Enum.filter(claim.depends_on, &MapSet.member?(failed, &1))
 
@@ -175,12 +182,14 @@ defmodule LdHost.Gates do
           timed_out: outcome.timed_out
         }
 
+        entry = if advisory?, do: Map.put(entry, :advisory, true), else: entry
+
         tail = String.trim(outcome.output)
         if tail == "", do: entry, else: Map.put(entry, :output, String.slice(tail, -400, 400))
     end
   end
 
-  defp measure_claim(host, claim, _failed, _allow) do
+  defp measure_claim(host, claim, _failed, _allow, _advisory) do
     cond do
       claim.any == [] ->
         %{id: claim.id, passed: false, kind: "source", reason: "source claim has no any/must"}

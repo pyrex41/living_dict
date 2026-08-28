@@ -59,6 +59,12 @@ defmodule LdHost.Planner do
   - Follow the GOAL. Implement ONE increment — the next missing piece.
   - Install artifacts with: S" key" USE-ARTIFACT S" path" WRITE-FILE
   - After sources exist, RUN-GATES. Failed claims are backpressure.
+  - FIRST episode, when no approved contract exists: write claims.json —
+    {"claims":[{"id","kind":"check","command","timeout_seconds"}]} —
+    with at least one executable check that invokes the product and
+    observes a result; RUN-GATES then measures it; failed claims are
+    backpressure.
+  - Use workspace-relative paths only; absolute paths are rejected.
   - Never weaken claims. Do not write .livingdict-run/**, .git/**,
     node_modules/**, dist/**.
   - End the program with RECEIPT.

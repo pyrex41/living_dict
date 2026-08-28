@@ -6,6 +6,13 @@ defmodule LdHost.Host do
   same receipt shape. Events go through the `emit` closure (wired to the
   run's Ledger); the host itself owns no process state, it is a value
   threaded through the Forth VM.
+
+  Documented divergence from the frozen Python reference: READ-FILE on a
+  non-UTF-8 file does NOT trap `decode`. It returns a summary value string
+  (`"<<binary file: N bytes, magic xxxxxxxx 'printable head'>>"`) so the
+  planner can observe the file exists and is binary instead of retrying
+  the read and burning episodes. The `decode` trap code itself remains
+  reserved for any other path that used it.
   """
 
   @behaviour LdHost.Capability
@@ -27,6 +34,7 @@ defmodule LdHost.Host do
             effects_used: MapSet.new(),
             last_check: nil,
             contract: nil,
+            allow_model_checks: false,
             objects_dir: nil,
             receipt_path: nil,
             write_receipt?: true
@@ -54,6 +62,7 @@ defmodule LdHost.Host do
       policy: Policy.new(workspace, allowed, forbidden),
       before: Policy.snapshot(workspace),
       contract: Keyword.get(opts, :contract),
+      allow_model_checks: Keyword.get(opts, :allow_model_checks, false),
       objects_dir: Keyword.get(opts, :objects_dir),
       receipt_path: Keyword.get(opts, :receipt_path),
       write_receipt?: Keyword.get(opts, :write_receipt?, true)
@@ -114,7 +123,10 @@ defmodule LdHost.Host do
           if String.valid?(data) do
             {:ok, data, host}
           else
-            {:trap, "decode", "not utf-8 text: #{rel}"}
+            # Divergence from the Python reference (which traps "decode"):
+            # a binary read returns a summary so the planner does not
+            # blindly retry the read. See the moduledoc.
+            {:ok, binary_summary(data), host}
           end
 
         {:error, _} ->
@@ -316,6 +328,26 @@ defmodule LdHost.Host do
     end
 
     :ok
+  end
+
+  # Summary value for a non-UTF-8 read: size, first 4 bytes as hex, and
+  # up to 16 leading printable chars (e.g. a magic string like
+  # "SQLite format 3").
+  defp binary_summary(data) do
+    size = byte_size(data)
+    magic = data |> binary_part(0, min(4, size)) |> Base.encode16(case: :lower)
+
+    head =
+      data
+      |> :binary.bin_to_list(0, min(16, size))
+      |> Enum.take_while(&(&1 in 32..126))
+      |> List.to_string()
+
+    if head == "" do
+      "<<binary file: #{size} bytes, magic #{magic}>>"
+    else
+      "<<binary file: #{size} bytes, magic #{magic} '#{head}'>>"
+    end
   end
 
   defp tool(host, name, data), do: emit(host, "tool.call", Map.put(data, :tool, name))

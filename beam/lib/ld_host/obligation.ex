@@ -29,6 +29,7 @@ defmodule LdHost.Obligation do
         |> maybe(:max_episodes, get_in(ob, ["limits", "max_episodes"]))
         |> maybe(:allowed_globs, ob["allowed_globs"])
         |> maybe(:forbidden_globs, forbidden_of(ob))
+        |> maybe(:allow_model_checks, ob["allow_model_checks"])
         |> Keyword.merge(extra)
 
       summary = LdHost.Run.run(goal, opts)
