@@ -8,10 +8,10 @@ defmodule LdHost.Dispatcher do
     recorded — a denied obligation must not loop forever). The gate
     never widens scope: the run's own Host confines every write to the
     obligation's workspace regardless of what the tuple asks for.
-  - Success or terminal failure acks the lease (the run *finished*;
-    retry policy is the obligation author's concern). A crashed run
-    expires it immediately — the honest signal, and the tuple returns
-    to the bag for another taker.
+  - Success or terminal Run failure acks the lease (the run *finished*;
+    retry policy is the obligation author's concern). A crashed run or
+    a hold probe-fail expires it immediately — the tuple returns to the
+    bag so a sibling can retake.
   - Lifecycle lands in the orchestrator ledger (trace shape), never in
     any run's events.jsonl: run dirs stay run-owned, the single-writer
     rule never crosses processes.

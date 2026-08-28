@@ -22,6 +22,17 @@ defmodule LdHost.ObligationHoldTest do
   defp spawn_held_os_pid do
     port = Port.open({:spawn_executable, "/bin/sleep"}, [:binary, :hide, args: ["30"]])
     {:os_pid, pid} = Port.info(port, :os_pid)
+
+    on_exit(fn ->
+      try do
+        Port.close(port)
+      rescue
+        ArgumentError -> :ok
+      end
+
+      kill_os_pid(pid)
+    end)
+
     {port, pid}
   end
 
@@ -82,11 +93,13 @@ defmodule LdHost.ObligationHoldTest do
   end
 
   test "killing the pid before hold_ms fails with no planner_fn call" do
-    %{space: space, dispatcher: dispatcher} = orchestrator()
-    parent = self()
+    me = self()
+
+    %{space: space, ledger: ledger, dispatcher: dispatcher} =
+      orchestrator(record: fn kind, payload -> send(me, {:space, kind, payload}) end)
 
     planner_fn = fn _goal, _obs, _feedback ->
-      send(parent, :planner_called)
+      send(me, :planner_called)
       {:error, "should not plan during hold"}
     end
 
@@ -109,15 +122,27 @@ defmodule LdHost.ObligationHoldTest do
       })
 
     assert_receive {:ld_progress, {:obligation, "hold-1"}, :spawned}, 2_000
+    wait_until(fn -> map_size(:sys.get_state(dispatcher).running) == 1 end)
+    %{claim: claim} = hd(Map.values(:sys.get_state(dispatcher).running))
+    stale = claim.token
+
     kill_os_pid(os_pid)
 
     assert_receive {:ld_progress, {:obligation, "hold-1"}, {:failed, summary}}, 3_000
     assert summary.probe_failed
     refute summary.success
+    assert_receive {:space, "space.lease_expired", %{generation: 1}}, 1_000
+    refute_received {:space, "space.ack", _}
+    refute Space.ack(space, stale)
 
-    # Stop before the dispatcher retakes the expired tuple.
+    # Stop before the dispatcher tight-loops retakes of a dead probe.
     GenServer.stop(dispatcher)
     refute_received :planner_called
+
+    trace = File.read!(Path.join(:sys.get_state(ledger).run_dir, "trace.jsonl"))
+    assert trace =~ "obligation.failed"
+    assert trace =~ "hold_ms"
+    assert trace =~ "last_probe"
   end
 
   test "killing the agent mid-hold expires the lease; sibling retake; stale token cannot ack" do

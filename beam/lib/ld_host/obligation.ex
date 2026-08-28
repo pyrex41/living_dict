@@ -61,8 +61,6 @@ defmodule LdHost.Obligation do
       ]
   end
 
-  # Probe cadence: tight enough that a dead property fails inside a 1s
-  # hold, coarse enough not to thrash Cmd.sh.
   @probe_interval_ms 100
 
   @doc """
