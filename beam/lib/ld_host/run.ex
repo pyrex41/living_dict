@@ -38,6 +38,7 @@ defmodule LdHost.Run do
       dictionary_dir: dictionary_dir,
       ledger: ledger,
       contract: contract,
+      allow_model_checks: Keyword.get(opts, :allow_model_checks, false),
       planner_fn: planner_fn,
       prelude: prelude,
       prelude_words: prelude_words,
@@ -48,6 +49,7 @@ defmodule LdHost.Run do
       seen: MapSet.new(),
       feedback: "",
       last_report: nil,
+      promoted_words: [],
       tokens: %{input_tokens: 0, output_tokens: 0},
       model_calls: 0
     }
@@ -61,6 +63,7 @@ defmodule LdHost.Run do
       judge: judge_label(elem(result, 1).last_report),
       tokens: elem(result, 1).tokens,
       model_calls: elem(result, 1).model_calls,
+      promoted_words: elem(result, 1).promoted_words,
       run_dir: run_dir
     }
   end
@@ -150,6 +153,7 @@ defmodule LdHost.Run do
         run_id: Path.basename(state.run_dir),
         episode: episode,
         contract: state.contract,
+        allow_model_checks: state.allow_model_checks,
         emit: Ledger.emitter(state.ledger),
         receipt_path: Path.join(state.run_dir, "receipt.json")
       )
@@ -240,6 +244,8 @@ defmodule LdHost.Run do
 
       Ledger.trace(state.ledger, "dictionary.quarantined", %{word: name, reasons: reasons})
     end)
+
+    state = %{state | promoted_words: state.promoted_words ++ Enum.map(written, &elem(&1, 0))}
 
     if written != [] do
       {prelude, words} = Dictionary.load_prelude(state.dictionary_dir)

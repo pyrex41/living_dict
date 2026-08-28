@@ -60,6 +60,51 @@ defmodule LdHost.RunTest do
     assert Enum.map(events, & &1["sequence"]) == Enum.to_list(1..length(events))
   end
 
+  test "advisory round trip: failed model check feeds back, next episode self-judges green" do
+    ws = workspace()
+
+    claims_json =
+      JSON.encode!(%{claims: [%{id: "smoke", kind: "check", command: "grep -q hello greet.txt", timeout_seconds: 5}]})
+
+    episode1 = %{
+      "language" => "forth",
+      "program" => ~s{S" claims.json" USE-ARTIFACT S" claims.json" WRITE-FILE DROP RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"claims.json" => claims_json},
+      "rationale" => "write claims first"
+    }
+
+    episode2 = %{
+      "language" => "forth",
+      "program" =>
+        ~s{: INSTALL ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ; } <>
+          ~s{S" greet.txt" S" greet.txt" INSTALL RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"greet.txt" => "hello from advisory mode\n"},
+      "rationale" => "satisfy the claim"
+    }
+
+    {:ok, feedback_log} = Agent.start_link(fn -> [] end)
+
+    planner = fn _goal, _obs, feedback ->
+      Agent.update(feedback_log, &[feedback | &1])
+      envelope = if feedback == "", do: episode1, else: episode2
+      {:ok, envelope, %{input_tokens: 1, output_tokens: 1}}
+    end
+
+    result = Run.run("greet", workspace: ws, planner_fn: planner, allow_model_checks: true, max_episodes: 4)
+
+    # Episode 1 failed its own check; the id came back as backpressure.
+    feedbacks = Agent.get(feedback_log, &Enum.reverse/1)
+    assert Enum.at(feedbacks, 1) =~ "smoke"
+
+    # Episode 2 self-judged success and the loop terminated there.
+    assert result.success
+    assert result.episodes == 2
+    assert result.judge == "model-authored claims"
+    assert [%{advisory: true, passed: true}] = result.report.claims
+    assert result.promoted_words == ["INSTALL"]
+    assert File.read!(Path.join(ws, "greet.txt")) =~ "hello"
+  end
+
   test "critic rejection feeds back and duplicate resubmission is blocked" do
     ws = workspace()
     bad = %{"language" => "forth", "program" => "MYSTERY RECEIPT", "artifacts" => %{}, "rationale" => "bad"}

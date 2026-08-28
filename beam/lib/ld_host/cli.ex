@@ -12,6 +12,9 @@ defmodule LdHost.CLI do
     * `LD_RUN_DIR` — run ledger/artifacts directory
     * `LD_MAX_EPISODES` — episode budget (optional)
     * `LD_CONTRACT` — path to an approved claims JSON (optional)
+    * `LD_ALLOW_MODEL_CHECKS` — truthy ("1"/"true") lets model-authored
+      check claims execute advisorily when no approved contract exists
+    * `LD_DICTIONARY` — dictionary directory for warm-start/promotion
 
   Prints exactly ONE JSON line with the run summary, then halts with an
   HONEST exit code: 0 iff the claims discharged, 1 otherwise. Exit-0
@@ -36,7 +39,9 @@ defmodule LdHost.CLI do
       run_opts(System.get_env("LD_CWD") || File.cwd!(),
         run_dir: System.get_env("LD_RUN_DIR"),
         max_episodes: parse_positive_int(System.get_env("LD_MAX_EPISODES")),
-        contract: load_contract(System.get_env("LD_CONTRACT"))
+        contract: load_contract(System.get_env("LD_CONTRACT")),
+        dictionary_dir: System.get_env("LD_DICTIONARY"),
+        allow_model_checks: parse_truthy(System.get_env("LD_ALLOW_MODEL_CHECKS"))
       )
 
     result = LdHost.Run.run(goal, opts)
@@ -48,6 +53,7 @@ defmodule LdHost.CLI do
         episodes: result.episodes,
         model_calls: result.model_calls,
         tokens: result.tokens,
+        promoted_words: result.promoted_words,
         engine: LdHost.Critic.engine(),
         run_dir: result.run_dir
       })
@@ -58,11 +64,12 @@ defmodule LdHost.CLI do
 
   @doc """
   Build `LdHost.Run.run/2` options from a workspace and optional extras
-  (`:contract`, `:dictionary_dir`, `:max_episodes`, `:run_dir`). Shared
-  by the release entry point and `mix ld.run`; nil extras are dropped.
+  (`:contract`, `:dictionary_dir`, `:max_episodes`, `:run_dir`,
+  `:allow_model_checks`). Shared by the release entry point and
+  `mix ld.run`; nil extras are dropped.
   """
   def run_opts(workspace, extras \\ []) do
-    Enum.reduce([:contract, :dictionary_dir, :max_episodes, :run_dir], [workspace: Path.expand(workspace)], fn key, opts ->
+    Enum.reduce([:contract, :dictionary_dir, :max_episodes, :run_dir, :allow_model_checks], [workspace: Path.expand(workspace)], fn key, opts ->
       case Keyword.get(extras, key) do
         nil -> opts
         value -> Keyword.put(opts, key, value)
@@ -81,6 +88,17 @@ defmodule LdHost.CLI do
       %{"claims" => claims} -> %{claims: claims, source: "approved"}
       claims when is_list(claims) -> %{claims: claims, source: "approved"}
     end
+  end
+
+  @doc """
+  Truthy env parsing for `LD_ALLOW_MODEL_CHECKS`: "1"/"true" (any case)
+  -> true; anything else (including nil) -> nil, so `run_opts/2` drops it
+  and the run keeps its default (false).
+  """
+  def parse_truthy(nil), do: nil
+
+  def parse_truthy(text) do
+    if String.downcase(String.trim(text)) in ["1", "true"], do: true, else: nil
   end
 
   defp parse_positive_int(nil), do: nil

@@ -73,6 +73,51 @@ defmodule LdHost.GatesTest do
     assert [%{reason: "check claims execute only under an approved or hidden contract"}] = report.claims
   end
 
+  test "advisory mode: model-authored checks execute and carry advisory: true" do
+    ws = workspace()
+    File.write!(Path.join(ws, "hello.txt"), "hi")
+
+    File.write!(
+      Path.join(ws, "claims.json"),
+      JSON.encode!(%{claims: [%{id: "t", kind: "check", command: "grep -q hi hello.txt", timeout_seconds: 5}]})
+    )
+
+    report = Gates.run(host(ws, allow_model_checks: true), persist?: false)
+
+    assert report.judge == "model-authored claims"
+    assert report.ok == true
+    assert [%{id: "t", passed: true, returncode: 0, advisory: true}] = report.claims
+  end
+
+  test "advisory mode: failing check counts against report.ok" do
+    ws = workspace()
+
+    File.write!(
+      Path.join(ws, "claims.json"),
+      JSON.encode!(%{claims: [%{id: "boom", kind: "check", command: "exit 7", timeout_seconds: 5}]})
+    )
+
+    report = Gates.run(host(ws, allow_model_checks: true), persist?: false)
+
+    assert report.judge == "model-authored claims"
+    refute report.ok
+    assert report.reason == "failed boom"
+    assert [%{id: "boom", passed: false, returncode: 7, advisory: true}] = report.claims
+  end
+
+  test "advisory mode: approved contract still wins, no advisory flag" do
+    ws = workspace()
+    File.write!(Path.join(ws, "hello.txt"), "hi")
+
+    contract = %{claims: [Gates.atomize_claim(%{"id" => "greets", "kind" => "check", "command" => "grep -q hi hello.txt"})]}
+    report = Gates.run(host(ws, contract: contract, allow_model_checks: true), persist?: false)
+
+    assert report.judge == "approved contract"
+    assert report.ok == true
+    assert [claim] = report.claims
+    refute Map.has_key?(claim, :advisory)
+  end
+
   test "no claims at all fails with reference reason" do
     report = Gates.run(host(workspace()), persist?: false)
     assert report.reason =~ "no claims.json"

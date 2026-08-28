@@ -5,11 +5,16 @@ defmodule Mix.Tasks.Ld.Run do
 
       mix ld.run --goal "..." --cwd PATH [--contract claims.json]
                  [--dictionary DIR] [--max-episodes N]
+                 [--allow-model-checks]
 
   `--contract` points at a JSON file `{"claims": [...]}` — the
   approved/hidden contract whose `check` commands judge success. Without
   it, the model's own claims are measured (checks refused) and the run
   is loudly labeled model-judged.
+
+  `--allow-model-checks` (benchmark mode) lets model-authored check
+  claims execute advisorily when no approved contract exists; the report
+  stays labeled "model-authored claims".
   """
   use Mix.Task
 
@@ -24,7 +29,8 @@ defmodule Mix.Tasks.Ld.Run do
           cwd: :string,
           contract: :string,
           dictionary: :string,
-          max_episodes: :integer
+          max_episodes: :integer,
+          allow_model_checks: :boolean
         ]
       )
 
@@ -34,7 +40,8 @@ defmodule Mix.Tasks.Ld.Run do
       LdHost.CLI.run_opts(opts[:cwd] || File.cwd!(),
         contract: LdHost.CLI.load_contract(opts[:contract]),
         dictionary_dir: opts[:dictionary],
-        max_episodes: opts[:max_episodes]
+        max_episodes: opts[:max_episodes],
+        allow_model_checks: opts[:allow_model_checks]
       )
 
     result = LdHost.Run.run(goal, run_opts)
