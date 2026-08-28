@@ -56,10 +56,15 @@ defmodule LdHost.Cmd do
   defp truncate(iodata) do
     out = IO.iodata_to_binary(iodata)
 
-    if byte_size(out) > @max_output do
-      binary_part(out, byte_size(out) - @max_output, @max_output)
-    else
-      out
-    end
+    out =
+      if byte_size(out) > @max_output do
+        binary_part(out, byte_size(out) - @max_output, @max_output)
+      else
+        out
+      end
+
+    # Command output is arbitrary bytes; downstream it lands in ledgers,
+    # gate feedback, and planner requests — all JSON. Scrub once here.
+    if String.valid?(out), do: out, else: String.replace_invalid(out)
   end
 end

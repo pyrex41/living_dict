@@ -80,7 +80,11 @@ defmodule LdHost.Planner do
     with {:ok, token} <- credentials() do
       messages = [
         %{role: "system", content: Keyword.get(opts, :system, @system)},
-        %{role: "user", content: "GOAL:\n#{goal}\n\n#{observation}"}
+        # Goal and observation carry arbitrary workspace-derived bytes
+        # (file names, command output); scrub invalid UTF-8 or the JSON
+        # encoder rejects the whole request (observed: a stray 0xA3
+        # killed every episode of a Terminal-Bench run).
+        %{role: "user", content: sanitize("GOAL:\n#{goal}\n\n#{observation}")}
       ]
 
       body = %{model: Keyword.get(opts, :model, model()), messages: messages, temperature: 0.2}
@@ -215,6 +219,11 @@ defmodule LdHost.Planner do
     File.write!(tmp, JSON.encode!(blob) <> "\n")
     File.chmod!(tmp, 0o600)
     File.rename!(tmp, path)
+  end
+
+  @doc "Replace invalid UTF-8 bytes so downstream JSON encoding never rejects."
+  def sanitize(text) when is_binary(text) do
+    if String.valid?(text), do: text, else: String.replace_invalid(text)
   end
 
   @doc "Pull the first JSON object out of model text (port of the reference)."

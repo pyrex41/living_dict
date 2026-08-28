@@ -353,7 +353,16 @@ defmodule LdHost.Run do
   # Transient transport failures (timeouts, resets) must not kill a run:
   # retry with backoff before declaring the planner unreachable.
   defp plan_with_retry(state, observation, attempts) do
-    case state.planner_fn.(state.goal, observation, state.feedback) do
+    result =
+      try do
+        state.planner_fn.(state.goal, observation, state.feedback)
+      rescue
+        # A raising planner (encoding, transport internals) must become a
+        # retryable error, not instant run death.
+        e -> {:error, "planner raised: #{Exception.message(e)}"}
+      end
+
+    case result do
       {:ok, _, _} = ok ->
         ok
 

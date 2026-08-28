@@ -57,12 +57,16 @@ defmodule LdHost.Ledger do
 
   @impl true
   def handle_cast({:trace, type, data}, state) do
+    payload = %{type: type, timestamp: DateTime.utc_now() |> DateTime.to_iso8601(), data: data}
+
+    # Trace data can carry workspace-derived bytes; a bad byte must cost
+    # one lossy line, never the ledger process.
     line =
-      JSON.encode!(%{
-        type: type,
-        timestamp: DateTime.utc_now() |> DateTime.to_iso8601(),
-        data: data
-      })
+      try do
+        JSON.encode!(payload)
+      rescue
+        _ -> JSON.encode!(%{payload | data: inspect(data, limit: 50)})
+      end
 
     IO.write(state.trace, line <> "\n")
     {:noreply, state}
