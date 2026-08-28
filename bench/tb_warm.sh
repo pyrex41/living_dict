@@ -143,11 +143,20 @@ for TASK in "${TASKS[@]}"; do
   fi
 
   echo "tb_warm: [$NN/${#TASKS[@]}] $TASK (seed=${SEED_BYTES}B, words=$WORD_COUNT)"
+  # OAuth access tokens outlive neither this chain nor a long job: refresh
+  # per task via the planner's own flow (persists the rotated record to
+  # ~/.grok/auth.json). Falls back to the env key on failure.
+  FRESH_KEY="$(cd "$REPO/beam" && mix run -e '
+    case LdHost.Planner.credentials() do
+      {:ok, key} -> IO.puts(key)
+      {:error, reason} -> IO.puts(:stderr, reason); System.halt(1)
+    end' 2>/dev/null | tail -1)"
+  [ -n "$FRESH_KEY" ] || FRESH_KEY="$XAI_API_KEY"
   # Real run: pass the key by value (never echoed; set -x stays off).
   RCMD=()
   for a in "${CMD[@]}"; do
     case "$a" in
-      "XAI_API_KEY=\$XAI_API_KEY") RCMD+=("XAI_API_KEY=$XAI_API_KEY") ;;
+      "XAI_API_KEY=\$XAI_API_KEY") RCMD+=("XAI_API_KEY=$FRESH_KEY") ;;
       *) RCMD+=("$a") ;;
     esac
   done
