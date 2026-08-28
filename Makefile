@@ -111,11 +111,13 @@ browser-serve:
 beam-deps:
 	cd beam && mix deps.get
 
+SPEC_ERL_BEAM := beam/priv/spec-erl/app-erlang/ebin/kl_spec.beam
+
 beam-test:
 	@if ! command -v mix >/dev/null 2>&1; then echo "skip beam: elixir not found"; exit 0; fi
-	@if [ ! -f beam/priv/spec-erl/app-erlang/ebin/kl_spec.beam ]; then \
-	  if [ -x "$(YGGDRASIL)" ]; then $(MAKE) spec-erl; \
-	  else echo "spec-erl artifact missing and yggdrasil not found; SpecTest will skip"; fi; \
+	@if [ -x "$(YGGDRASIL)" ]; then $(MAKE) spec-erl; \
+	else \
+	  if [ ! -f "$(SPEC_ERL_BEAM)" ]; then echo "spec-erl artifact missing and yggdrasil not found; SpecTest will skip"; fi; \
 	fi
 	cd beam && mix test
 
@@ -127,8 +129,10 @@ beam-run:
 critic-erl:
 	$(YGGDRASIL) build shen/critic/validate.shen openresty/dist/critic-erl --target erlang --typecheck $(if $(YGGDRASIL_HOST),--host "$(YGGDRASIL_HOST)")
 
-# Product spec (beam-only shake; not the critic).
-spec-erl:
+# Product spec (beam-only shake; not the critic). Rebuild when spec.shen is newer.
+spec-erl: $(SPEC_ERL_BEAM)
+
+$(SPEC_ERL_BEAM): shen/product/spec.shen
 	$(YGGDRASIL) build shen/product/spec.shen beam/priv/spec-erl --target erlang --typecheck $(if $(YGGDRASIL_HOST),--host "$(YGGDRASIL_HOST)")
 
 # ---- Terminal-Bench / Harbor packaging (bench/) ----
