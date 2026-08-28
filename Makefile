@@ -158,3 +158,26 @@ bench-beam-smoke:
 bench-beam-two:
 	PYTHONPATH=$(REPO) harbor run -d terminal-bench@2.1 -l 2 \
 	  -a bench.harbor_ld_beam:LivingDictBeam -m xai/grok-4.6 -n 2
+
+# The 15-task family-ordered slice shared by the cold rerun and the warm
+# driver (bench/tb_warm.sh keeps its own copy in the same order).
+BEAM_TB15_TASKS := fix-git git-multibranch git-leak-recovery \
+  sanitize-git-repo regex-log log-summary-date-ranges \
+  openssl-selfsigned-cert nginx-request-logging sqlite-db-truncate \
+  db-wal-recovery extract-elf overfull-hbox schemelike-metacircular-eval \
+  fix-code-vulnerability filter-js-from-html
+
+# Cold rerun of the 15-task slice against the v0.1.1 release shim.
+bench-beam-tb15-v5:
+	@test -n "$$XAI_API_KEY" || { echo "bench-beam-tb15-v5: XAI_API_KEY required"; exit 1; }
+	PYTHONPATH=$(REPO) harbor run -d terminal-bench@2.0 \
+	  $(foreach t,$(BEAM_TB15_TASKS),-i $(t)) \
+	  -a bench.harbor_ld_beam:LivingDictBeam -m xai/grok-4.6 \
+	  --ak max_episodes=8 --agent-timeout-multiplier 2.0 \
+	  --ae XAI_API_KEY="$$XAI_API_KEY" \
+	  -n 2 -o bench/results/beam --job-name beam-tb15-v5
+
+# Warm-across-tasks chain: one sequential harbor job per task, dictionary
+# accumulated between jobs (see bench/tb_warm.sh; --dry-run to preview).
+bench-beam-tbwarm:
+	bash bench/tb_warm.sh

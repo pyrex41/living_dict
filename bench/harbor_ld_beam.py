@@ -11,6 +11,14 @@ XAI_API_KEY flows in via harbor --ae/host env; it is never printed here.
 The wrapped command ALWAYS exits 0 — the release's honest exit code lands
 in /logs/agent/exit_status instead, so Harbor's verifier (not
 NonZeroAgentExitCodeError) decides the reward.
+
+v2 additions for the warm-across-tasks driver (bench/tb_warm.sh):
+  - dict_seed_b64: a base64'd `tar -cz` of a dictionary `words/` tree,
+    extracted into /logs/agent/dict before the host starts. It rides
+    inside the agent command string (shlex-quoted), never via --ae.
+  - LD_DICTIONARY=/logs/agent/dict is always exported, so the trial's
+    grown dictionary lands under /logs/agent and Harbor collects it.
+  - allow_model_checks: exports LD_ALLOW_MODEL_CHECKS=1 (default on).
 """
 
 from __future__ import annotations
@@ -32,13 +40,15 @@ class LivingDictBeam(BaseInstalledAgent):
     def __init__(
         self,
         *args,
-        release_tag: str = "beam-v0.1.0",
+        release_tag: str = "beam-v0.1.1",
         release_url_template: str = (
             "https://github.com/pyrex41/living_dict/releases/download/"
             "{tag}/ld_host-0.1.0-linux-{arch}.tar.gz"
         ),
         max_episodes: int = 8,
         agent_timeout_sec: int = 3600,
+        allow_model_checks: bool = True,
+        dict_seed_b64: str | None = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -46,6 +56,8 @@ class LivingDictBeam(BaseInstalledAgent):
         self._release_url_template = release_url_template
         self._max_episodes = int(max_episodes)
         self._agent_timeout_sec = int(agent_timeout_sec)
+        self._allow_model_checks = bool(allow_model_checks)
+        self._dict_seed_b64 = dict_seed_b64
 
     @staticmethod
     def name() -> str:
@@ -108,10 +120,23 @@ class LivingDictBeam(BaseInstalledAgent):
         context: AgentContext,
     ) -> None:
         goal = shlex.quote(instruction)
+        seed_setup = ""
+        if self._dict_seed_b64:
+            seed = shlex.quote(self._dict_seed_b64)
+            seed_setup = (
+                "mkdir -p /logs/agent/dict; "
+                f"printf '%s' {seed} | base64 -d | tar -xz -C /logs/agent/dict; "
+            )
+        model_checks = (
+            "export LD_ALLOW_MODEL_CHECKS=1; " if self._allow_model_checks else ""
+        )
         await self.exec_as_agent(
             environment,
             command=(
-                "mkdir -p /logs/agent/run; "
+                "mkdir -p /logs/agent/run /logs/agent/dict; "
+                f"{seed_setup}"
+                "export LD_DICTIONARY=/logs/agent/dict; "
+                f"{model_checks}"
                 f"printf %s {goal} > /logs/agent/goal.txt; "
                 "export LD_GOAL_FILE=/logs/agent/goal.txt "
                 "LD_CWD=\"$(pwd)\" LD_RUN_DIR=/logs/agent/run "
