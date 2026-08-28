@@ -122,24 +122,39 @@ defmodule LdHost.Run do
           rationale: envelope.rationale
         })
 
-      composed = compose(state.prelude, envelope.program)
-      artifact_keys = envelope.artifacts |> Map.keys() |> Enum.sort()
-
-      case Critic.validate(composed, state.allowed_effects, state.allowed_globs, state.forbidden_globs, artifact_keys) do
-        {:reject, errors, _depth, _effects} ->
+      case Dictionary.catalog_pressure(state.prelude_words, envelope) do
+        {:error, message} ->
+          errors = [message]
           {:ok, _} = Ledger.commit(state.ledger, "critic.rejected", %{episode: episode, errors: errors})
           Ledger.trace(state.ledger, "preflight.rejected", %{errors: errors})
-          {:continue, feedback(state, "critic rejected the plan:\n" <> Enum.join(errors, "\n"))}
+          {:continue, feedback(state, "critic rejected the plan:\n" <> message)}
 
-        {:accept, depth, effects} ->
-          {:ok, _} =
-            Ledger.commit(state.ledger, "critic.accepted", %{episode: episode, depth: depth, effects: effects})
+        :ok ->
+          composed = compose(state.prelude, envelope.program)
+          artifact_keys = envelope.artifacts |> Map.keys() |> Enum.sort()
 
-          execute_episode(state, episode, envelope, composed)
+          case Critic.validate(
+                 composed,
+                 state.allowed_effects,
+                 state.allowed_globs,
+                 state.forbidden_globs,
+                 artifact_keys
+               ) do
+            {:reject, errors, _depth, _effects} ->
+              {:ok, _} = Ledger.commit(state.ledger, "critic.rejected", %{episode: episode, errors: errors})
+              Ledger.trace(state.ledger, "preflight.rejected", %{errors: errors})
+              {:continue, feedback(state, "critic rejected the plan:\n" <> Enum.join(errors, "\n"))}
 
-        {:error, reason} ->
-          Ledger.trace(state.ledger, "critic.unavailable", %{reason: reason})
-          {:halt, state}
+            {:accept, depth, effects} ->
+              {:ok, _} =
+                Ledger.commit(state.ledger, "critic.accepted", %{episode: episode, depth: depth, effects: effects})
+
+              execute_episode(state, episode, envelope, composed)
+
+            {:error, reason} ->
+              Ledger.trace(state.ledger, "critic.unavailable", %{reason: reason})
+              {:halt, state}
+          end
       end
     end
   end

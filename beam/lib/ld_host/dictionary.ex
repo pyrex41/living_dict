@@ -50,6 +50,86 @@ defmodule LdHost.Dictionary do
     end)
   end
 
+  @install_covering_error "catalog has INSTALL; use it instead of WRITE-FILE"
+
+  @doc """
+  Reject WRITE-FILE / the USE-ARTIFACT+WRITE-FILE zipper when INSTALL is
+  already in the catalog. Tokenizes envelope.program only so a carried
+  INSTALL.fs body cannot false-trigger itself.
+  """
+  def catalog_pressure(prelude_words, envelope) when is_list(prelude_words) do
+    names = MapSet.new(Enum.map(prelude_words, &String.upcase/1))
+
+    if not MapSet.member?(names, "INSTALL") do
+      :ok
+    else
+      artifacts = envelope_artifacts(envelope)
+      words = program_words(envelope)
+
+      cond do
+        # Read-only empty-artifact episodes have nothing INSTALL could cover.
+        artifacts == %{} and "WRITE-FILE" not in words ->
+          :ok
+
+        "INSTALL" in words ->
+          :ok
+
+        "WRITE-FILE" in words or zipper?(words) ->
+          {:error, @install_covering_error}
+
+        true ->
+          :ok
+      end
+    end
+  end
+
+  defp envelope_artifacts(%{artifacts: arts}) when is_map(arts), do: arts
+  defp envelope_artifacts(_), do: %{}
+
+  defp program_words(%{program: source}) when is_binary(source) do
+    source
+    |> Forth.tokenize()
+    |> skip_colon_bodies()
+    |> Enum.filter(&(&1.kind == :word))
+    |> Enum.map(&String.upcase(&1.value))
+  rescue
+    _ -> []
+  end
+
+  defp program_words(_), do: []
+
+  defp zipper?(words), do: "USE-ARTIFACT" in words and "WRITE-FILE" in words
+
+  # Covering judges calls, not tokens inside a definition the program is introducing.
+  defp skip_colon_bodies(tokens) do
+    {kept, _} =
+      Enum.reduce(tokens, {[], :top}, fn token, {acc, mode} ->
+        case {mode, token} do
+          {:top, %{kind: :word, value: value}} ->
+            if String.upcase(value) == ":" do
+              {acc, :colon}
+            else
+              {[token | acc], :top}
+            end
+
+          {:colon, %{kind: :word, value: value}} ->
+            if String.upcase(value) == ";" do
+              {acc, :top}
+            else
+              {acc, :colon}
+            end
+
+          {:colon, _} ->
+            {acc, :colon}
+
+          {:top, token} ->
+            {[token | acc], :top}
+        end
+      end)
+
+    Enum.reverse(kept)
+  end
+
   @doc "True when the colon body is stack sugar plus exactly one host primitive."
   def tautology?(tokens) when is_list(tokens) do
     if Enum.any?(tokens, &(&1.kind != :word)) do
