@@ -62,7 +62,7 @@ defmodule LdHost.DictionaryTest do
   test "prelude skips AppleDouble sidecars and invalid UTF-8 word files" do
     dir = dict_dir()
     File.write!(Path.join([dir, "words", "CAT.fs"]), ": CAT ( -- ) ;\n")
-    # macOS copyfile sidecar: glob `*.fs` matches `._CAT.fs`; content is binary.
+    # macOS copyfile sidecar: File.ls includes `._CAT.fs`; basename fails @safe_name.
     File.write!(Path.join([dir, "words", "._CAT.fs"]), <<0xA3, 0, 0, 0, "ATTR">>)
     File.write!(Path.join([dir, "words", "JUNK.fs"]), <<0xA3, 0, 0, 0, "ATTR">>)
 
@@ -95,6 +95,19 @@ defmodule LdHost.DictionaryTest do
 
     assert install_sig == {["key", "path"], [], ["read", "write"]}
     assert Enum.map(install_tokens, & &1.value) == ["SWAP", "USE-ARTIFACT", "SWAP", "WRITE-FILE", "DROP"]
+  end
+
+  test "load skips files whose colon name does not match the filename stem" do
+    dir = dict_dir()
+    File.write!(Path.join([dir, "words", "FOO.fs"]), ": BAR ( n -- n ) DUP ;\n")
+    File.write!(Path.join([dir, "words", "CAT.fs"]), ": CAT ( -- ) ;\n")
+
+    {prelude, words} = Dictionary.load_prelude(dir)
+    assert words == ["CAT"]
+    refute prelude =~ "BAR"
+
+    names = Enum.map(Dictionary.load_vocab(dir), &elem(&1, 0))
+    assert names == ["CAT"]
   end
 
   test "tautology? is stack sugar plus exactly one host primitive" do

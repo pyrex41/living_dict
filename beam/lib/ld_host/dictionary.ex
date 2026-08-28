@@ -23,7 +23,7 @@ defmodule LdHost.Dictionary do
 
   @doc "Composed prelude source (topologically ordered) and its word names."
   def load_prelude(dictionary_dir) do
-    sources = load_word_sources(dictionary_dir)
+    sources = load_aligned_sources(dictionary_dir)
     ordered = topo_order(sources)
     {ordered |> Enum.map(&Map.fetch!(sources, &1)) |> Enum.join("\n"), ordered}
   end
@@ -33,14 +33,14 @@ defmodule LdHost.Dictionary do
   def-before-use order. Bodies are the file's tokens, never invented stubs.
   """
   def load_vocab(dictionary_dir) do
-    sources = load_word_sources(dictionary_dir)
+    sources = load_aligned_sources(dictionary_dir)
 
     sources
     |> topo_order()
     |> Enum.flat_map(fn name ->
       source = Map.fetch!(sources, name)
 
-      case colon_body(source) do
+      case colon_body(source, name) do
         {:ok, tokens} ->
           [{name, tokens, contract_sig(source, name), source}]
 
@@ -149,12 +149,23 @@ defmodule LdHost.Dictionary do
     end
   end
 
-  defp colon_body(source) do
+  # Filename stem and colon name must be the same identity or the critic
+  # (prelude source) and Forth (vocab bind) would define different words.
+  defp load_aligned_sources(dictionary_dir) do
+    Enum.reduce(load_word_sources(dictionary_dir), %{}, fn {name, source}, acc ->
+      case colon_body(source, name) do
+        {:ok, _} -> Map.put(acc, name, source)
+        :error -> acc
+      end
+    end)
+  end
+
+  defp colon_body(source, expected_name) do
     tokens = Forth.tokenize(source)
 
     case tokens do
-      [%{kind: :word, value: colon}, %{kind: :word} | rest] ->
-        if String.upcase(colon) == ":" do
+      [%{kind: :word, value: colon}, %{kind: :word, value: name} | rest] ->
+        if String.upcase(colon) == ":" and String.upcase(name) == expected_name do
           take_colon_body(rest, [])
         else
           :error
