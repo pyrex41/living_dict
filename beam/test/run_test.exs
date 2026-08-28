@@ -179,6 +179,9 @@ defmodule LdHost.RunTest do
 
     planner2 = fn _g, obs, _f ->
       assert obs =~ "INSTALL"
+      assert obs =~ "( key path -- | read, write )"
+      refute obs =~ "USE-ARTIFACT"
+      refute obs =~ "SWAP"
       {:ok, reuse, %{}}
     end
 
@@ -253,9 +256,23 @@ defmodule LdHost.RunTest do
     assert ran == program
     refute ran =~ "USE-ARTIFACT"
     refute ran =~ "DUP"
+
+    preflight =
+      result.run_dir
+      |> Path.join("trace.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+      |> Enum.find(&(&1["type"] == "preflight.program"))
+      |> get_in(["data", "program"])
+
+    assert preflight == program
+    refute preflight =~ "USE-ARTIFACT"
+    refute preflight =~ "SWAP"
+    refute preflight =~ "WRITE-FILE"
   end
 
-  test "starved seeded INSTALL still rejects pre-I/O via composed critic" do
+  test "starved seeded INSTALL still rejects pre-I/O via catalog critic" do
     ws = workspace()
     dict = System.tmp_dir!() |> Path.join("lddictstarve-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(dict, "words"))
@@ -280,6 +297,61 @@ defmodule LdHost.RunTest do
     assert events =~ "critic.rejected"
     assert events =~ "stack underflow at INSTALL"
     assert LdHost.Policy.snapshot(ws) == %{}
+
+    preflight =
+      result.run_dir
+      |> Path.join("trace.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+      |> Enum.find(&(&1["type"] == "preflight.program"))
+      |> get_in(["data", "program"])
+
+    assert preflight == starved["program"]
+    refute preflight =~ "USE-ARTIFACT"
+  end
+
+  test "junk AppleDouble sidecars cannot enter the critic because compose is gone" do
+    ws = workspace()
+    dict = System.tmp_dir!() |> Path.join("lddictjunk-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(Path.join(dict, "words"))
+
+    File.write!(
+      Path.join([dict, "words", "INSTALL.fs"]),
+      ": INSTALL ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ;\n"
+    )
+
+    File.write!(Path.join([dict, "words", "._INSTALL.fs"]), <<0xA3, 0, 0, 0, "ATTR">>)
+    File.write!(Path.join([dict, "words", "EVIL.fs"]), ": EVIL ( -- ) MYSTERY ;\n")
+
+    program = ~s{S" greet.txt" S" greet.txt" INSTALL RUN-GATES DROP RECEIPT DROP}
+
+    envelope = %{
+      "language" => "forth",
+      "program" => program,
+      "artifacts" => %{"greet.txt" => "hello from catalog\n"},
+      "rationale" => "call INSTALL; junk must not compose"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
+    result = Run.run("greet", workspace: ws, contract: contract(), planner_fn: planner, dictionary_dir: dict, max_episodes: 1)
+
+    assert result.success
+
+    preflight =
+      result.run_dir
+      |> Path.join("trace.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+      |> Enum.find(&(&1["type"] == "preflight.program"))
+      |> get_in(["data", "program"])
+
+    assert preflight == program
+    refute preflight =~ "MYSTERY"
+    refute preflight =~ "USE-ARTIFACT"
+    refute preflight =~ <<0xA3>>
+    refute preflight =~ "EVIL"
   end
 
   test "CAT host-word alias is not written to the dictionary" do
