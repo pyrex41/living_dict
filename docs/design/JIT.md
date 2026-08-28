@@ -6,23 +6,34 @@ Scaling Harness Intelligence via Just-in-Time Harness Evolution* (LV-NUS,
 
 ## What the paper claims
 
-The harness — memory management, planning strategy, action protocol, tool
-and skill orchestration — often dominates the model's contribution, and
-harness design is manual, task-specific, and unscalable. So: make the
-harness a **composable, machine-generatable artifact** under a fixed
-four-module protocol (memory / planning / action / capability), and train a
-model, JIT-Agent, to emit one per task. It does three things:
+The harness, not the weights, is the scaling surface. A frozen backbone is
+wrapped in a just-in-time four-tuple `h = (M, P, A, F)` — Memory, Planning,
+Action, Capability orchestration — emitted as Python modules plus a YAML
+prompt (`memory.py`, `planning.py`, `action.py`, `tool_policy.py`,
+`prompt.yaml`) behind a tagged protocol. Three stages: **customize** for the
+task, **repair** from compiler and interface diagnostics, **evolve** an
+archive of prior harnesses with Evo-GDPO (reward, latency, cost carried as
+separate advantages). Streaming inference updates the bank at test time
+without touching weights. A seed bank of 13 scaffolds (ReAct,
+Plan-and-Execute, ReSum, Flash-Searcher, …) is the starting population.
 
-1. **customize** a harness for the task at hand,
-2. **repair** a harness that executes unstably,
-3. **self-evolve** by distilling performance signals from a growing archive
-   of prior harness configurations.
+Reported: DeepSeek-V4-Flash + generated harness beats GPT-5.6 on
+DeepSearchQA (+9.1) and OdysseyBench (+4.3); GLM-5.2 picks up as much as
++20.2; generated harnesses compete with OpenCode and Claude Code.
 
-Reported: DeepSeek-V4-Flash + JIT-Agent beats GPT-5.6 on DeepSearchQA
-(+9.1) and OdysseyBench (+4.3); generated harnesses are competitive with
-mature runtimes like OpenCode and Claude Code. The framing — harness
-intelligence as a trainable, transferable, compounding axis orthogonal to
-model scale — is the interesting part.
+Three properties of that pipeline matter here:
+
+- The generated artifact is **unconstrained Python**. Validation is
+  syntactic and interface-level — it imports, it subclasses the right base.
+- **Repair is another patch.** Stage II imitates teacher edits that made the
+  Python compile. The failure has already happened; the artifact that caused
+  it is unverifiable in principle.
+- **Evolution is score-and-keep.** The archive stores configurations and
+  performance signals. A harness that scored well because the verifier was
+  weak is indistinguishable from one that worked.
+
+There is no theorem anywhere in the loop, and the generator checking its own
+Python is the student grading the exam.
 
 ## Why this repo is already most of the substrate
 
@@ -247,6 +258,134 @@ gate rather than the task. The approved-contract split and
 `contract_provenance` in the archive are what make that visible instead of
 just profitable.
 
+## Audit: the drift is not a risk, it has already happened
+
+The sharpest objection to all of this is that a proof about `WRITE-FILE` is
+worth nothing unless every host obeys the same contract, and this repo has
+three hosts. I went and counted. The same `(inputs, outputs, effects)` table
+for the same nineteen words is hand-maintained in **five** places:
+
+| file | form | role |
+|---|---|---|
+| `shen/critic/contracts.shen` | untyped, effect names as **strings** | portable critic |
+| `openresty/shen/contracts.shen` | typed `{string --> number}` | live shen-lua critic |
+| `harness/src/livingdict/preflight.py` | `HOST_DICTIONARY` dataclasses | Python critic |
+| `openresty/lua/forth.lua` | table at the top of the **VM** | Lua executor |
+| `browser/js/forth.js` | object literal in the **VM** | JS executor |
+
+They currently agree. I checked every arity and effect set: `WRITE-FILE`
+`(2 -- 1) write`, `OVER (2 -- 3)`, `RECEIPT (0 -- 1)` with no effect, all
+five identical, and `forth.py::_write_file` pops two and pushes one as
+promised. `RECEIPT` declaring no `write` effect is defensible — `host.receipt()`
+computes the payload, the caller persists it.
+
+So there is no live bug. There is something more instructive: **the only
+mechanism keeping five copies in sync is that someone has kept five copies in
+sync.** And the sixth copy has already fallen out of the family —
+`harness/shen/contracts.shen` uses a different function name
+(`allowed-effect?` over **symbols**, not `allowed-effect-name?` over strings),
+carries no contract table at all, and its header says *"Stack effects are
+documentary."* Drift has happened exactly once, in the one file nobody
+executes. That is the whole argument for a generator, made empirically.
+
+Note also *where* the tables live. In Lua and JS the contract sits inside
+`forth.lua` / `forth.js` — the executor and its declared type in one file. In
+Python the contract is in `preflight.py` and the executor is `forth.py`, which
+has **no declarative table at all**, only imperative `_pop` / `_push` in
+method bodies. The reference body is the one where critic and VM are related
+by nothing but hand-agreement.
+
+**One spec, six outputs.** A machine-readable primitive spec should emit: the
+two `contracts.shen` tables, `HOST_DICTIONARY`, the Lua and JS VM tables, and
+a cross-body conformance fixture that runs the same program through all three
+executors and asserts identical depth, effects, and traps. Then compare
+declared effects against `effects_used` in the receipt on every run: proof
+governs admission, receipts audit whether the implementation honored the
+model it was proved against. This is the first thing to build and it is small.
+
+## Where I would push back
+
+**The Forth in the sketch is not the Forth in this repo.** `VOCABULARY`,
+`CREATE`/`DOES>`, `IMMEDIATE`, and search-order manipulation are the classic
+self-modification story, and none of them exist here. The VM is a token
+walker over seven host words plus stack sugar — no return stack, no
+compile-time execution, no defining words. The sketch proposes adding them
+and then closes with *"no new host words, which preserves the existing
+six-word security boundary."* Those are not compatible.
+
+The cost is worse than an ABI violation. `IMMEDIATE` means code runs at
+compile time, so the critic can no longer know what the program *is* by
+walking tokens — it would have to execute to find out. The critic stops
+being a total linear pass and becomes an interpreter, which is precisely the
+property that makes it trustworthy today. `CREATE`/`DOES>` puts a code
+pointer in the dictionary and takes stack-effect inference from decidable to
+undecidable.
+
+The good news is you do not need any of it. **Dictionary-level
+self-modification already exists and is enough:** a colon word admitted this
+episode is loaded as prelude next episode; a later definition shadows an
+earlier one; the ledger keeps both bodies; rollback is changing which word
+loads. Shadowing plus promotion gives you the whole evolutionary story —
+`RECOVER` v1 and v2 coexisting, the frontier deciding — at zero cost to the
+trusted computing base. **Evolve the dictionary, not the compiler.**
+
+**"Make the signatures theorems" has a portability blocker.** The header of
+`shen/critic/contracts.shen` reads *"Portable, eval-free. No lua.call,
+js.call, declare, or `(tc +)`."* Type checking is off in the portable critic;
+only the OpenResty copy carries `{...}` signatures, and those are annotations
+under a kernel that may or may not check them. A `datatype` with sequent
+rules needs `(tc +)` on shen-lua *and* ShenScript, verified equal. That is a
+prerequisite task, not a detail.
+
+## Proof-carrying, not proof-searching
+
+THORN in the critic is the one place I would change the shape of the idea.
+The critic today is total, deterministic, and fast — a single linear walk
+that always terminates with `accept` or `reject`. Proof *search* is none of
+those. Putting a first-order prover on the admission path means validation
+time becomes unbounded and input-dependent, which is a denial-of-service
+surface the planner controls.
+
+The fix is the move the system already makes everywhere else: **the model
+proposes, a deterministic thing disposes.** Extend the envelope from
+`{language, program, artifacts, rationale}` to carry a certificate:
+
+```
+{ language, program, artifacts, rationale, certificate }
+```
+
+The planner emits the proof term. The critic **checks** it — linear in the
+size of the certificate, total, still non-LLM. Search cost moves to the
+model, where it is already being paid and already being measured in the
+token budget. This is proof-carrying code, it is the natural next turn of
+"the plan is a program, not a conversation," and it keeps every property
+that makes the critic worth having.
+
+It also makes rejection sharper. Today a reject is a list of error strings.
+A failed certificate names the judgment that did not hold, which is a much
+better repair signal than a compiler diagnostic — the Stage II advantage the
+paper is reaching for.
+
+## The cheapest real win: self-witnessing claims
+
+"Goodhart becomes a type error" is the best idea in the sketch, and it does
+not need types.
+
+The `examples/shen-todo` session caught the model planting strings to satisfy
+`grep -RqiE -- '--shake'`. That failure is **statically detectable today**:
+the claim's witness is a path the same episode declared in its write-set. A
+check whose evidence comes from bytes the episode authored is not evidence.
+
+```
+claim.witness_paths ∩ node.writes ≠ ∅   →   reject: self-witnessing claim
+```
+
+Roughly thirty lines in the existing walker, no proofs, no new theory, and it
+closes the one hole that is already on tape in this repo's own headline
+example. It is also **upstream of everything else in this document**: an
+Evo-GDPO-style archive is a compounding delusion if the reward signal is
+gameable, so claim integrity has to land before harness evolution, not after.
+
 ## Risks
 
 - **Inference cost in the critic.** `walk-colon` makes validation
@@ -268,16 +407,24 @@ just profitable.
 
 ## Smallest useful next step
 
-Not the harness generator. Do this first, in order, and each step is
-independently worth having:
+Not the generator, and not a cartridge schema. In this order, each step
+independently worth having, each one a prerequisite for the next:
 
-1. `walk-colon` in `shen/critic/validate.shen` + mirror in
-   `preflight.py`; balanced-branch and definition-order rules; tests that a
-   colon-wrapped `WRITE-FILE` now rejects under a read-only contract
-   instead of trapping.
-2. Inferred contract sidecars in `dictionary_dir/words/`, re-derived and
-   compared on load.
-3. Wire `promotion.py` into the loop, with `inferred_contract` and
+1. **One primitive spec, six generated outputs** — two `contracts.shen`, the
+   Python `HOST_DICTIONARY`, the Lua and JS VM tables, plus a cross-body
+   conformance fixture. Add declared-vs-`effects_used` reconciliation on the
+   receipt. Fixes a live fork and is the foundation every proof stands on.
+2. **Self-witnessing claim rejection** — the write-set intersection rule.
+   Makes the reward signal trustworthy before anything starts optimizing
+   against it.
+3. **`walk-colon`** in `validate.shen` and `preflight.py` — infer
+   `[In Out Effects]`, require depth-balanced branches and
+   definition-order-only references, pin the inferred contract as a sidecar
+   keyed by `sha256` and re-derive-and-compare on load.
+4. **Wire `promotion.py`** into the loop with `inferred_contract` and
    `contract_provenance` in the evidence record.
+5. **Then** a certificate field in the envelope, and only then a harness
+   cartridge schema.
 
-Only then is there anything safe to JIT.
+Only after 1–4 is there anything safe to JIT, and only after 1–3 is there a
+reward signal worth evolving against.
