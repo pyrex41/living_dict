@@ -29,7 +29,7 @@ defmodule LdHost.Run do
       {:ok, _} = Ledger.commit(ledger, "contract.approved", %{claims: length(contract.claims), source: contract.source})
     end
 
-    {prelude, prelude_words} = Dictionary.load_prelude(dictionary_dir)
+    prelude_words = vocab_names(dictionary_dir)
 
     state = %{
       goal: goal,
@@ -40,7 +40,6 @@ defmodule LdHost.Run do
       contract: contract,
       allow_model_checks: Keyword.get(opts, :allow_model_checks, false),
       planner_fn: planner_fn,
-      prelude: prelude,
       prelude_words: prelude_words,
       allowed_effects: Keyword.get(opts, :allowed_effects, ["read", "write", "exec"]),
       allowed_globs: Keyword.get(opts, :allowed_globs, ["**"]),
@@ -223,22 +222,34 @@ defmodule LdHost.Run do
           not Dictionary.tautology?(vm.colon[name])
       end)
 
+    # Same-episode callees are already bound in the program walk; isolated
+    # `: NAME (c) body ;` still needs their contracts on the word table.
+    catalog = catalog ++ Enum.flat_map(promotable, &sibling_catalog_row(&1, contracts))
+
     {accepted, critic_rejected} =
-      Enum.split_with(promotable, fn name ->
+      Enum.reduce(promotable, {[], %{}}, fn name, {ok, rejected} ->
         contract = Contracts.canonical(contracts[name])
         source = ": #{name} #{contract} #{Dictionary.body_source(vm.colon[name])} ;\n"
 
-        match?(
-          {:accept, _, _},
-          Critic.validate(
-            source,
-            state.allowed_effects,
-            state.allowed_globs,
-            state.forbidden_globs,
-            [],
-            catalog
-          )
-        )
+        # Empty artifact keys: colon persistence is not allowed to close over
+        # episode-scoped USE-ARTIFACT literals.
+        case Critic.validate(
+               source,
+               state.allowed_effects,
+               state.allowed_globs,
+               state.forbidden_globs,
+               [],
+               catalog
+             ) do
+          {:accept, _, _} ->
+            {ok ++ [name], rejected}
+
+          {:reject, errors, _, _} ->
+            {ok, Map.put(rejected, name, errors)}
+
+          {:error, reason} ->
+            {ok, Map.put(rejected, name, [reason])}
+        end
       end)
 
     entries =
@@ -247,7 +258,7 @@ defmodule LdHost.Run do
       end)
 
     written = Dictionary.save_words(state.dictionary_dir, entries)
-    quarantined = quarantined ++ critic_rejected
+    quarantined = quarantined ++ Map.keys(critic_rejected)
 
     Enum.each(written, fn {name, sha} ->
       contract = Contracts.canonical(contracts[name])
@@ -269,8 +280,8 @@ defmodule LdHost.Run do
           Dictionary.tautology?(vm.colon[name]) ->
             ["host-word alias"]
 
-          name in critic_rejected ->
-            ["critic rejected definition"]
+          Map.has_key?(critic_rejected, name) ->
+            ["critic rejected definition" | critic_rejected[name]]
 
           true ->
             [] ++
@@ -292,8 +303,7 @@ defmodule LdHost.Run do
     state = %{state | promoted_words: state.promoted_words ++ Enum.map(written, &elem(&1, 0))}
 
     if written != [] do
-      {prelude, words} = Dictionary.load_prelude(state.dictionary_dir)
-      %{state | prelude: prelude, prelude_words: words}
+      %{state | prelude_words: vocab_names(state.dictionary_dir)}
     else
       state
     end
@@ -301,10 +311,48 @@ defmodule LdHost.Run do
 
   # ---- helpers ----------------------------------------------------------
 
+  defp vocab_names(dictionary_dir) do
+    Enum.map(Dictionary.load_vocab(dictionary_dir), &elem(&1, 0))
+  end
+
   defp vocab_catalog(dictionary_dir) do
-    Enum.map(Dictionary.load_vocab(dictionary_dir), fn {name, _tokens, {ins, outs, effects}, _source} ->
-      {name, length(ins), length(outs), Enum.sort(effects)}
+    Enum.map(Dictionary.load_vocab(dictionary_dir), fn {name, _tokens, sig, _source} ->
+      catalog_row(name, sig)
     end)
+  end
+
+  defp sibling_catalog_row(name, contracts) do
+    case catalog_row_from_inner(name, contracts[name]) do
+      nil -> []
+      row -> [row]
+    end
+  end
+
+  defp catalog_row(name, {ins, outs, effects}) when is_list(ins) do
+    {name, length(ins), length(outs), Enum.sort(effects)}
+  end
+
+  defp catalog_row_from_inner(_name, nil), do: nil
+
+  defp catalog_row_from_inner(name, inner) do
+    words =
+      inner
+      |> String.replace(",", " ")
+      |> String.split(~r/\s+/, trim: true)
+
+    case Enum.split_while(words, &(&1 != "--")) do
+      {ins, ["--" | rest]} ->
+        {outs, effects} =
+          case Enum.split_while(rest, &(&1 != "|")) do
+            {outs, ["|" | effects]} -> {outs, effects}
+            {outs, []} -> {outs, []}
+          end
+
+        catalog_row(name, {ins, outs, effects})
+
+      _ ->
+        nil
+    end
   end
 
   @observe_file_cap 8_000
