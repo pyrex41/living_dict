@@ -11,7 +11,7 @@ defmodule LdHost.Run do
   "model-authored claims" loudly.
   """
 
-  alias LdHost.{Critic, Contracts, Dictionary, Envelope, Forth, Gates, Host, Ledger}
+  alias LdHost.{Critic, Contracts, Dictionary, Envelope, Forth, Gates, Host, Ledger, Wave}
 
   @default_max_episodes 6
 
@@ -162,14 +162,8 @@ defmodule LdHost.Run do
           composed = compose(state.prelude, envelope.program)
           artifact_keys = envelope.artifacts |> Map.keys() |> Enum.sort()
 
-          case Critic.validate(
-                 composed,
-                 state.allowed_effects,
-                 state.allowed_globs,
-                 state.forbidden_globs,
-                 artifact_keys
-               ) do
-            {:reject, errors, _depth, _effects} ->
+          case critic_plan(state, envelope, composed, artifact_keys) do
+            {:reject, errors} ->
               {:ok, _} =
                 Ledger.commit(state.ledger, "critic.rejected", %{episode: episode, errors: errors})
 
@@ -207,45 +201,163 @@ defmodule LdHost.Run do
         contract: state.contract,
         allow_model_checks: state.allow_model_checks,
         emit: Ledger.emitter(state.ledger),
-        receipt_path: Path.join(state.run_dir, "receipt.json")
+        receipt_path: Path.join(state.run_dir, "receipt.json"),
+        objects_dir: Path.join(state.run_dir, "objects")
       )
 
-    vm =
-      %Forth.VM{host: host, artifacts: envelope.artifacts}
-      |> Forth.bind_vocab(Dictionary.load_vocab(state.dictionary_dir))
+    Enum.each(envelope.artifacts, fn
+      {_key, body} when is_binary(body) -> Host.intern(host, body)
+      _ -> :ok
+    end)
 
-    Ledger.trace(state.ledger, "execution.program", %{program: envelope.program})
+    vocab = Dictionary.load_vocab(state.dictionary_dir)
+    nodes = envelope.nodes || Wave.synthesize(envelope.artifacts)
 
-    case interpret(vm, envelope.program) do
+    case dispatch_waves(state, host, nodes, envelope.artifacts, vocab, episode) do
+      {:error, :overlap, errors} ->
+        {:continue, feedback(state, "overlapping writes refused pre-I/O:\n" <> Enum.join(errors, "\n"))}
+
+      {:error, :graph, reason} ->
+        {:continue, feedback(state, "wave plan: #{reason}")}
+
       {:trap, code, message} ->
         Ledger.trace(state.ledger, "execution.trap", %{code: code, message: message})
         {:continue, feedback(state, "execution trap [#{code}]: #{message}")}
 
-      {:ok, vm} ->
-        {:ok, _} =
-          Ledger.commit(state.ledger, "artifacts.applied", %{
-            episode: episode,
-            count: map_size(envelope.artifacts)
-          })
+      {:ok, host, colon} ->
+        vm =
+          %Forth.VM{host: host, artifacts: envelope.artifacts}
+          |> Forth.bind_vocab(vocab)
 
-        report = vm.host.last_check || Gates.run(vm.host)
+        vm = %{vm | colon: Map.merge(vm.colon, colon)}
+        composed = promote_source(composed, envelope)
 
-        {:ok, _} =
-          Ledger.commit(state.ledger, "gates.measured", %{
-            episode: episode,
-            ok: report.ok == true,
-            reason: report[:reason]
-          })
-
-        state = %{state | last_report: report}
-        state = promote(state, episode, vm, composed, report)
-
-        if report.ok == true do
-          {_reply, _payload, _host} = Host.receipt(vm.host)
-          {:success, state}
+        if envelope.nodes do
+          finish_episode(state, episode, envelope, composed, vm)
         else
-          {:continue, feedback(state, gate_feedback(report))}
+          Ledger.trace(state.ledger, "execution.program", %{program: envelope.program})
+
+          case interpret(vm, envelope.program) do
+            {:trap, code, message} ->
+              Ledger.trace(state.ledger, "execution.trap", %{code: code, message: message})
+              {:continue, feedback(state, "execution trap [#{code}]: #{message}")}
+
+            {:ok, vm} ->
+              finish_episode(state, episode, envelope, composed, vm)
+          end
         end
+    end
+  end
+
+  defp critic_plan(state, envelope, composed, artifact_keys) do
+    case Critic.validate(
+           composed,
+           state.allowed_effects,
+           state.allowed_globs,
+           state.forbidden_globs,
+           artifact_keys
+         ) do
+      {:error, reason} ->
+        {:error, reason}
+
+      {:reject, errors, _depth, _effects} ->
+        {:reject, errors}
+
+      {:accept, depth, effects} ->
+        case node_preflight(state, envelope, artifact_keys) do
+          [] -> {:accept, depth, effects}
+          errors -> {:reject, errors}
+        end
+    end
+  end
+
+  defp node_preflight(state, envelope, artifact_keys) do
+    nodes = envelope.nodes || Wave.synthesize(envelope.artifacts)
+
+    graph =
+      case nodes do
+        [] ->
+          []
+
+        _ ->
+          case Wave.plan_waves(nodes) do
+            {:error, reason} -> [reason]
+            {:ok, waves} -> Enum.flat_map(waves, &Wave.overlap_errors/1)
+          end
+      end
+
+    critics =
+      Enum.flat_map(nodes, fn node ->
+        program = node.program || ""
+
+        if String.trim(program) == "" do
+          []
+        else
+          composed = compose(state.prelude, program)
+          allowed = node_allowed_globs(node, state.allowed_globs)
+
+          case Critic.validate(
+                 composed,
+                 state.allowed_effects,
+                 allowed,
+                 state.forbidden_globs,
+                 artifact_keys
+               ) do
+            {:accept, _, _} -> []
+            {:reject, errors, _, _} -> Enum.map(errors, &"node #{node.id}: #{&1}")
+            {:error, reason} -> ["node #{node.id}: critic unavailable: #{reason}"]
+          end
+        end
+      end)
+
+    graph ++ critics
+  end
+
+  defp node_allowed_globs(node, fallback) do
+    case Wave.write_globs(node) do
+      [] -> fallback
+      globs -> globs
+    end
+  end
+
+  defp dispatch_waves(_state, host, [], _artifacts, _vocab, _episode), do: {:ok, host, %{}}
+
+  defp dispatch_waves(state, host, nodes, artifacts, vocab, episode) do
+    Wave.execute(host, nodes, artifacts,
+      record: fn kind, payload -> Ledger.trace(state.ledger, kind, payload) end,
+      run_id: host.run_id,
+      episode: episode,
+      vocab: vocab
+    )
+  end
+
+  defp finish_episode(state, episode, envelope, composed, vm) do
+    {:ok, _} =
+      Ledger.commit(state.ledger, "artifacts.applied", %{
+        episode: episode,
+        count: map_size(envelope.artifacts)
+      })
+
+    report =
+      case vm.host.last_check do
+        nil ->
+          Gates.run(vm.host)
+
+        existing ->
+          persist_discharge(vm.host, existing)
+          existing
+      end
+
+    {:ok, _} = Ledger.commit(state.ledger, "gates.measured", %{episode: episode, ok: report.ok == true, reason: report[:reason]})
+
+    state = %{state | last_report: report}
+    state = promote(state, episode, vm, composed, report)
+
+    if report.ok == true do
+      {_reply, _payload, _host} = Host.receipt(vm.host)
+      {:success, state}
+    else
+      {:continue, feedback(state, gate_feedback(report))}
     end
   end
 
@@ -364,36 +476,57 @@ defmodule LdHost.Run do
 
   # ---- helpers ----------------------------------------------------------
 
+  defp persist_discharge(host, report) do
+    dir = Path.join(host.workspace, ".sb")
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "discharge_report.json"), JSON.encode!(report))
+  end
+
   defp compose("", program), do: program
   defp compose(prelude, program), do: prelude <> "\n" <> program
+
+  defp promote_source(composed, %{nodes: nil}), do: composed
+
+  defp promote_source(composed, %{nodes: nodes}) when is_list(nodes) do
+    extra = Enum.map_join(nodes, "\n", &(&1.program || ""))
+    compose(composed, extra)
+  end
 
   @observe_file_cap 8_000
   @observe_total_cap 60_000
 
   defp observe(state) do
+    snap = LdHost.Policy.snapshot(state.workspace)
+
     names =
-      state.workspace
-      |> LdHost.Policy.snapshot()
+      snap
       |> Map.keys()
       |> Enum.sort()
       |> Enum.take(200)
 
-    {files, _budget} =
-      Enum.map_reduce(names, @observe_total_cap, fn rel, budget ->
-        content =
-          case File.read(Path.join(state.workspace, rel)) do
-            {:ok, text} when byte_size(text) <= @observe_file_cap ->
-              if String.valid?(text) and budget - byte_size(text) > 0, do: text, else: nil
+    files =
+      if state.episode > 1 do
+        Enum.map(names, fn rel -> "#{rel} #{snap[rel]}" end)
+      else
+        {rows, _budget} =
+          Enum.map_reduce(names, @observe_total_cap, fn rel, budget ->
+            content =
+              case File.read(Path.join(state.workspace, rel)) do
+                {:ok, text} when byte_size(text) <= @observe_file_cap ->
+                  if String.valid?(text) and budget - byte_size(text) > 0, do: text, else: nil
 
-            _ ->
-              nil
-          end
+                _ ->
+                  nil
+              end
 
-        case content do
-          nil -> {"#{rel} (contents omitted)", budget}
-          text -> {"#{rel}:\n```\n#{text}```", budget - byte_size(text)}
-        end
-      end)
+            case content do
+              nil -> {"#{rel} (contents omitted)", budget}
+              text -> {"#{rel}:\n```\n#{text}```", budget - byte_size(text)}
+            end
+          end)
+
+        rows
+      end
 
     dictionary =
       case state.prelude_words do

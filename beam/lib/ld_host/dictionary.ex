@@ -17,7 +17,7 @@ defmodule LdHost.Dictionary do
   @safe_name ~r/^[A-Z][A-Z0-9-]{0,62}$/
   @reserved ~w(: ; IF ELSE THEN DUP DROP SWAP OVER + - *
                READ-FILE LIST-DIR SEARCH WRITE-FILE RUN-TESTS RUN-GATES
-               RECEIPT USE-ARTIFACT)
+               RECEIPT USE-ARTIFACT USE-OBJECT PATCH-FILE)
 
   def words_dir(dictionary_dir), do: Path.join(dictionary_dir, "words")
 
