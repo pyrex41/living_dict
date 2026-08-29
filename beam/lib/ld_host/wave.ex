@@ -190,6 +190,7 @@ defmodule LdHost.Wave do
       claim ->
         node_id = claim.tuple["node"]
         node = Enum.find(ready, &(&1.id == node_id))
+        t0 = System.monotonic_time(:millisecond)
 
         result =
           if node == nil do
@@ -206,6 +207,12 @@ defmodule LdHost.Wave do
               e -> {:trap, "error", Exception.message(e)}
             end
           end
+
+        # Uniqueness reads these from trace.jsonl; 0ms writes still need a
+        # non-empty interval so same-wave overlap is representable.
+        t1 = System.monotonic_time(:millisecond)
+        t1 = if t1 > t0, do: t1, else: t0 + 1
+        host.emit.("graph.wave.node", %{node: node_id, wave: wave_index, start_ms: t0, finish_ms: t1})
 
         Space.ack(space, claim.token)
         result

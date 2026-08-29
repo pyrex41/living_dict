@@ -24,7 +24,7 @@ defmodule LdHost.Bench.Polyglot do
     optional `grok` baseline on the first `:grok_sample` exercises.
   """
 
-  alias LdHost.{Cmd, Dispatcher, Ledger, Policy, Progress, Space, Verdict}
+  alias LdHost.{Cmd, Dispatcher, Ledger, Policy, Progress, Space, Uniqueness, Verdict}
   alias LdHost.Bench.GrokArm
 
   @default_arms ~w(cold warm)
@@ -296,7 +296,13 @@ defmodule LdHost.Bench.Polyglot do
         model_calls: (summary && summary.model_calls) || 0,
         wall_ms: System.monotonic_time(:millisecond) - started,
         policy_violations: policy_violation_count(ws, baseline, task),
-        run_dir: summary && summary.run_dir
+        run_dir: summary && summary.run_dir,
+        judge: summary && summary.judge,
+        promoted_words: (summary && summary.promoted_words) || [],
+        dictionary_dir:
+          (if arm == "warm",
+             do: shared_dict,
+             else: summary && Path.join(summary.run_dir, "dictionary"))
       }
 
       Ledger.trace(ctx.ledger, "polyglot.arm_result", result)
@@ -370,9 +376,20 @@ defmodule LdHost.Bench.Polyglot do
         {lang, verdict}
       end)
 
-    summary = %{langs: langs, results: results_by_lang, verdicts: verdicts}
+    orch = :sys.get_state(ledger).run_dir
+
+    uniqueness =
+      Map.new(langs, fn lang ->
+        {lang, Uniqueness.score(Map.put(results_by_lang[lang] || %{}, :orchestrator, orch))}
+      end)
+
+    summary = %{langs: langs, results: results_by_lang, uniqueness: uniqueness, verdicts: verdicts}
     File.write!(Path.join(out, "summary.json"), JSON.encode!(summary))
-    File.write!(Path.join(out, "summary.md"), render_markdown(langs, results_by_lang, verdicts))
+    File.write!(Path.join(out, "summary.md"), render_markdown(langs, results_by_lang, uniqueness, verdicts))
+
+    Enum.each(uniqueness, fn {lang, score} ->
+      Ledger.trace(ledger, "polyglot.uniqueness", Map.put(score, :lang, lang))
+    end)
 
     Enum.each(verdicts, fn {lang, verdict} ->
       if verdict, do: Ledger.trace(ledger, "polyglot.verdict", Map.put(verdict, :lang, lang))
@@ -381,7 +398,7 @@ defmodule LdHost.Bench.Polyglot do
     Map.put(summary, :out, out)
   end
 
-  defp render_markdown(langs, results_by_lang, verdicts) do
+  defp render_markdown(langs, results_by_lang, uniqueness, verdicts) do
     sections =
       Enum.map_join(langs, "\n", fn lang ->
         results = results_by_lang[lang] || %{}
@@ -416,10 +433,16 @@ defmodule LdHost.Bench.Polyglot do
             "| #{arm} | #{cells} | #{tin}/#{tout} | #{calls} |\n"
           end)
 
-        "## #{lang}\n\n" <> header <> divider <> rows <> verdict_markdown(verdicts[lang])
+        "## #{lang}\n\n" <>
+          Uniqueness.render_markdown(uniqueness[lang] || Uniqueness.score(%{})) <>
+          "\n" <>
+          header <>
+          divider <>
+          rows <>
+          verdict_markdown(verdicts[lang])
       end)
 
-    "# Polyglot arms race: same goals, hidden judge\n\n" <> sections
+    "# Polyglot arms race: uniqueness first, TB hygiene\n\n" <> sections
   end
 
   defp verdict_markdown(nil), do: "\n_No cold/warm pair — verdict not computed._\n"

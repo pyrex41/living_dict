@@ -19,7 +19,7 @@ defmodule LdHost.Demo do
   stack, arms racing concurrently on separate channels.
   """
 
-  alias LdHost.{Cmd, Dispatcher, Ledger, Policy, Progress, Space, Verdict}
+  alias LdHost.{Cmd, Dispatcher, Ledger, Policy, Progress, Space, Uniqueness, Verdict}
 
   @default_arms ~w(grok cold warm)
 
@@ -185,7 +185,13 @@ defmodule LdHost.Demo do
         model_calls: (summary && summary.model_calls) || 0,
         wall_ms: System.monotonic_time(:millisecond) - started,
         policy_violations: policy_violation_count(ws, task),
-        run_dir: summary && summary.run_dir
+        run_dir: summary && summary.run_dir,
+        judge: summary && summary.judge,
+        promoted_words: (summary && summary.promoted_words) || [],
+        dictionary_dir:
+          (if arm == "warm",
+             do: shared_dict,
+             else: summary && Path.join(summary.run_dir, "dictionary"))
       }
 
       Ledger.trace(ctx.ledger, "demo.arm_result", result)
@@ -239,16 +245,25 @@ defmodule LdHost.Demo do
         %{measures: measures, allowed: allowed, reasons: reasons}
       end
 
-    summary = %{tasks: Enum.map(tasks, & &1.id), results: results, verdict: verdict}
-    File.write!(Path.join(out, "summary.json"), JSON.encode!(summary))
-    File.write!(Path.join(out, "summary.md"), render_markdown(tasks, results, verdict))
+    uniqueness = Uniqueness.score(Map.put(results, :orchestrator, :sys.get_state(ledger).run_dir))
 
+    summary = %{
+      tasks: Enum.map(tasks, & &1.id),
+      results: results,
+      uniqueness: uniqueness,
+      verdict: verdict
+    }
+
+    File.write!(Path.join(out, "summary.json"), JSON.encode!(summary))
+    File.write!(Path.join(out, "summary.md"), render_markdown(tasks, results, uniqueness, verdict))
+
+    Ledger.trace(ledger, "demo.uniqueness", uniqueness)
     if verdict, do: Ledger.trace(ledger, "demo.verdict", verdict)
 
     Map.put(summary, :out, out)
   end
 
-  defp render_markdown(tasks, results, verdict) do
+  defp render_markdown(tasks, results, uniqueness, verdict) do
     header = "| arm | " <> Enum.map_join(tasks, " | ", & &1.id) <> " | tokens (in/out) | model calls |\n"
     divider = "|---|" <> String.duplicate("---|", length(tasks) + 2) <> "\n"
 
@@ -290,7 +305,13 @@ defmodule LdHost.Demo do
           """
       end
 
-    "# Arms race: same goals, hidden judge\n\n" <> header <> divider <> rows <> verdict_md
+    "# Arms race: uniqueness first, TB hygiene\n\n" <>
+      Uniqueness.render_markdown(uniqueness) <>
+      "\n" <>
+      header <>
+      divider <>
+      rows <>
+      verdict_md
   end
 
   defp stamp, do: DateTime.utc_now() |> Calendar.strftime("%Y%m%d-%H%M%S")
