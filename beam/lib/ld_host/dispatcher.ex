@@ -8,10 +8,10 @@ defmodule LdHost.Dispatcher do
     recorded — a denied obligation must not loop forever). The gate
     never widens scope: the run's own Host confines every write to the
     obligation's workspace regardless of what the tuple asks for.
-  - Success or terminal failure acks the lease (the run *finished*;
-    retry policy is the obligation author's concern). A crashed run
-    expires it immediately — the honest signal, and the tuple returns
-    to the bag for another taker.
+  - Success or terminal Run failure acks the lease (the run *finished*;
+    retry policy is the obligation author's concern). A crashed run or
+    a hold probe-fail expires it immediately — the tuple returns to the
+    bag so a sibling can retake.
   - Lifecycle lands in the orchestrator ledger (trace shape), never in
     any run's events.jsonl: run dirs stay run-owned, the single-writer
     rule never crosses processes.
@@ -104,7 +104,7 @@ defmodule LdHost.Dispatcher do
             Obligation.execute(state.space, claim, state.run_opts)
           end)
 
-        put_in(state.running[task.ref], %{claim: claim, id: ob_id})
+        put_in(state.running[task.ref], %{claim: claim, id: ob_id, pid: task.pid})
     end
   end
 
@@ -128,18 +128,15 @@ defmodule LdHost.Dispatcher do
 
       {%{claim: claim, id: ob_id}, running} ->
         case outcome do
+          {:done, {:failed, %{probe_failed: true} = summary}} ->
+            # Expire so a sibling can retake; ack would consume the tuple.
+            Space.expire(state.space, claim.token)
+            record(state, "obligation.failed", trace_data(ob_id, summary))
+            Progress.broadcast({:obligation, ob_id}, {:failed, summary})
+
           {:done, {status, summary}} ->
             Space.ack(state.space, claim.token)
-
-            record(state, "obligation.#{status}", %{
-              id: ob_id,
-              success: summary.success,
-              episodes: summary.episodes,
-              judge: summary.judge,
-              tokens: summary.tokens,
-              run_dir: summary.run_dir
-            })
-
+            record(state, "obligation.#{status}", trace_data(ob_id, summary))
             Progress.broadcast({:obligation, ob_id}, {status, summary})
 
           {:crashed, reason} ->
@@ -160,4 +157,21 @@ defmodule LdHost.Dispatcher do
   end
 
   defp record(state, type, data), do: LdHost.Ledger.trace(state.ledger, type, data)
+
+  defp trace_data(ob_id, summary) do
+    %{
+      id: ob_id,
+      success: summary.success,
+      episodes: summary.episodes,
+      judge: summary.judge,
+      tokens: summary.tokens,
+      run_dir: summary.run_dir
+    }
+    |> maybe_put(:hold_ms, Map.get(summary, :hold_ms))
+    |> maybe_put(:probes, Map.get(summary, :probes))
+    |> maybe_put(:last_probe, Map.get(summary, :last_probe))
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end
