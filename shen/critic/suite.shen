@@ -1007,12 +1007,23 @@
             [accept Depth (sort-strings Effects)]
             [reject AllErr Depth (sort-strings Effects)]))))
 
+\\ Catalog is the initial word table: names and (in out effects) only.
+\\ Hosts must not concatenate prelude bodies into the program — a later
+\\ episode that merely *calls* INSTALL would otherwise re-check INSTALL's
+\\ zipper and treat sidecar junk as source.
+(define validate-catalog
+  { (list token) --> (list wordrow) --> (list string) --> (list string)
+    --> (list string) --> (list string) --> verdict }
+  Tokens Catalog AllowedEffects AllowedGlobs ForbiddenGlobs ArtifactKeys ->
+    (let R (walk Tokens 0 0 Catalog [] AllowedGlobs ForbiddenGlobs ArtifactKeys [])
+      (finish (wres-errors R) (wres-depth R) (wres-effs R) AllowedEffects)))
+
 (define validate-tokens
   { (list token) --> (list string) --> (list string) --> (list string)
     --> (list string) --> verdict }
   Tokens AllowedEffects AllowedGlobs ForbiddenGlobs ArtifactKeys ->
-    (let R (walk Tokens 0 0 [] [] AllowedGlobs ForbiddenGlobs ArtifactKeys [])
-      (finish (wres-errors R) (wres-depth R) (wres-effs R) AllowedEffects)))
+    (validate-catalog Tokens [] AllowedEffects AllowedGlobs ForbiddenGlobs
+                      ArtifactKeys))
 
 (define validate
   { string --> (list string) --> (list string) --> (list string)
@@ -1182,6 +1193,19 @@
                       (and (= (tok-value (hd Toks)) " a note ")
                            (= (hd R) accept)))))))
 
+(define check-catalog-install
+  -> (let Prog (cn (s-lit "greet.txt")
+                   (cn " " (cn (s-lit "greet.txt") " INSTALL")))
+       (let R (validate-catalog (tokenise-program Prog)
+                                [["INSTALL" 2 0 ["read" "write"]]]
+                                ["read" "write" "exec"]
+                                ["**"]
+                                []
+                                ["greet.txt"])
+         (report "catalog-install-no-zipper"
+                 (and (= (hd R) accept)
+                      (not (contains-sub? Prog "USE-ARTIFACT")))))))
+
 (define all-pass
   [] -> true
   [true | Rest] -> (all-pass Rest)
@@ -1201,7 +1225,8 @@
                    (check-colon-invalid)
                    (check-colon-inference)
                    (check-colon-body-path)
-                   (check-comment-token)]
+                   (check-comment-token)
+                   (check-catalog-install)]
        (if (all-pass Results)
            (do (output "ALL PASS~%") true)
            (do (output "SOME FAIL~%") false))))

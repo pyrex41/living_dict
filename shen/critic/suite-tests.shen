@@ -157,6 +157,19 @@
                       (and (= (tok-value (hd Toks)) " a note ")
                            (= (hd R) accept)))))))
 
+(define check-catalog-install
+  -> (let Prog (cn (s-lit "greet.txt")
+                   (cn " " (cn (s-lit "greet.txt") " INSTALL")))
+       (let R (validate-catalog (tokenise-program Prog)
+                                [["INSTALL" 2 0 ["read" "write"]]]
+                                ["read" "write" "exec"]
+                                ["**"]
+                                []
+                                ["greet.txt"])
+         (report "catalog-install-no-zipper"
+                 (and (= (hd R) accept)
+                      (not (contains-sub? Prog "USE-ARTIFACT")))))))
+
 (define all-pass
   [] -> true
   [true | Rest] -> (all-pass Rest)
@@ -176,7 +189,8 @@
                    (check-colon-invalid)
                    (check-colon-inference)
                    (check-colon-body-path)
-                   (check-comment-token)]
+                   (check-comment-token)
+                   (check-catalog-install)]
        (if (all-pass Results)
            (do (output "ALL PASS~%") true)
            (do (output "SOME FAIL~%") false))))

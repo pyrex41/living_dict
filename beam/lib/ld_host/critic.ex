@@ -65,11 +65,20 @@ defmodule LdHost.Critic do
   Validate a Forth program. Returns
   `{:accept, depth, effects} | {:reject, errors, depth, effects}`,
   or `{:error, reason}` when no critic engine is available.
+
+  `validate/5` is the empty-catalog form (eval-ABI callers). `validate/6`
+  seeds the critic word table with `{name, in, out, effects}` rows so a
+  host can check `envelope.program` without composing prelude bodies.
   """
   def validate(program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys) do
+    validate(program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys, [])
+  end
+
+  def validate(program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys, catalog)
+      when is_list(catalog) do
     GenServer.call(
       __MODULE__,
-      {:validate, program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys},
+      {:validate, program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys, catalog},
       30_000
     )
   end
@@ -207,14 +216,15 @@ defmodule LdHost.Critic do
   @impl true
   def handle_call(:engine, _from, state), do: {:reply, state.engine, state}
 
-  def handle_call({:validate, _p, _e, _g, _f, _a}, _from, %{engine: :none} = state) do
+  def handle_call({:validate, _p, _e, _g, _f, _a, _c}, _from, %{engine: :none} = state) do
     {:reply, {:error, state.error}, state}
   end
 
-  def handle_call({:validate, program, effects, globs, forbidden, artifacts}, _from, %{engine: :beam} = state) do
+  def handle_call({:validate, program, effects, globs, forbidden, artifacts, catalog}, _from, %{engine: :beam} = state) do
     result =
-      :kl_validate.validate(
-        shen_str(program),
+      :kl_validate."validate-catalog"(
+        :kl_validate."tokenise-program"(shen_str(program)),
+        shen_catalog(catalog),
         shen_strs(effects),
         shen_strs(globs),
         shen_strs(forbidden),
@@ -229,7 +239,12 @@ defmodule LdHost.Critic do
     kind, val -> {:reply, {:reject, ["critic error: #{kind} #{inspect(val, limit: 3)}"], 0, []}, state}
   end
 
-  def handle_call({:validate, program, effects, globs, forbidden, artifacts}, _from, %{engine: :luerl} = state) do
+  def handle_call({:validate, _p, _e, _g, _f, _a, catalog}, _from, %{engine: :luerl} = state)
+      when catalog != [] do
+    {:reply, {:error, "catalog validation requires the beam critic"}, state}
+  end
+
+  def handle_call({:validate, program, effects, globs, forbidden, artifacts, []}, _from, %{engine: :luerl} = state) do
     args = [program, effects, globs, forbidden, artifacts]
 
     case :luerl.call_function([:ld_validate], args, state.lua) do
@@ -240,7 +255,12 @@ defmodule LdHost.Critic do
     e -> {:reply, {:reject, ["critic error: #{Exception.message(e)}"], 0, []}, state}
   end
 
-  def handle_call({:validate, program, effects, globs, forbidden, artifacts}, _from, %{engine: :node} = state) do
+  def handle_call({:validate, _p, _e, _g, _f, _a, catalog}, _from, %{engine: :node} = state)
+      when catalog != [] do
+    {:reply, {:error, "catalog validation requires the beam critic"}, state}
+  end
+
+  def handle_call({:validate, program, effects, globs, forbidden, artifacts, []}, _from, %{engine: :node} = state) do
     id = state.next_id
 
     request =
@@ -287,6 +307,13 @@ defmodule LdHost.Critic do
 
   defp shen_str(s), do: {:string, String.to_charlist(s)}
   defp shen_strs(list), do: Enum.map(list, &shen_str/1)
+
+  # wordrow is [Name In Out Effects]; In/Out are arities, not body tokens.
+  defp shen_catalog(rows) do
+    Enum.map(rows, fn {name, ins, outs, effects} ->
+      [shen_str(name), ins, outs, shen_strs(effects)]
+    end)
+  end
 
   defp decode_beam([:accept, depth, effects]), do: {:accept, depth, plain_beam(effects)}
 

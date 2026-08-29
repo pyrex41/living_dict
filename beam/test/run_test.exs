@@ -179,6 +179,9 @@ defmodule LdHost.RunTest do
 
     planner2 = fn _g, obs, _f ->
       assert obs =~ "INSTALL"
+      assert obs =~ "( key path -- | read, write )"
+      refute obs =~ "USE-ARTIFACT"
+      refute obs =~ "SWAP"
       {:ok, reuse, %{}}
     end
 
@@ -253,9 +256,23 @@ defmodule LdHost.RunTest do
     assert ran == program
     refute ran =~ "USE-ARTIFACT"
     refute ran =~ "DUP"
+
+    preflight =
+      result.run_dir
+      |> Path.join("trace.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+      |> Enum.find(&(&1["type"] == "preflight.program"))
+      |> get_in(["data", "program"])
+
+    assert preflight == program
+    refute preflight =~ "USE-ARTIFACT"
+    refute preflight =~ "SWAP"
+    refute preflight =~ "WRITE-FILE"
   end
 
-  test "starved seeded INSTALL still rejects pre-I/O via composed critic" do
+  test "starved seeded INSTALL still rejects pre-I/O via catalog critic" do
     ws = workspace()
     dict = System.tmp_dir!() |> Path.join("lddictstarve-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(dict, "words"))
@@ -280,6 +297,157 @@ defmodule LdHost.RunTest do
     assert events =~ "critic.rejected"
     assert events =~ "stack underflow at INSTALL"
     assert LdHost.Policy.snapshot(ws) == %{}
+
+    preflight =
+      result.run_dir
+      |> Path.join("trace.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+      |> Enum.find(&(&1["type"] == "preflight.program"))
+      |> get_in(["data", "program"])
+
+    assert preflight == starved["program"]
+    refute preflight =~ "USE-ARTIFACT"
+  end
+
+  test "AppleDouble sidecar is not composed into critic input" do
+    ws = workspace()
+    dict = System.tmp_dir!() |> Path.join("lddictjunk-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(Path.join(dict, "words"))
+
+    File.write!(
+      Path.join([dict, "words", "INSTALL.fs"]),
+      ": INSTALL ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ;\n"
+    )
+
+    File.write!(Path.join([dict, "words", "._INSTALL.fs"]), <<0xA3, 0, 0, 0, "ATTR">>)
+
+    program = ~s{S" greet.txt" S" greet.txt" INSTALL RUN-GATES DROP RECEIPT DROP}
+
+    envelope = %{
+      "language" => "forth",
+      "program" => program,
+      "artifacts" => %{"greet.txt" => "hello from catalog\n"},
+      "rationale" => "call INSTALL; sidecar must not compose"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
+    result = Run.run("greet", workspace: ws, contract: contract(), planner_fn: planner, dictionary_dir: dict, max_episodes: 1)
+
+    assert result.success
+
+    preflight =
+      result.run_dir
+      |> Path.join("trace.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+      |> Enum.find(&(&1["type"] == "preflight.program"))
+      |> get_in(["data", "program"])
+
+    assert preflight == program
+    refute preflight =~ <<0xA3>>
+  end
+
+  test "catalog trusts declared contracts, not bodies" do
+    ws = workspace()
+    dict = System.tmp_dir!() |> Path.join("lddictevil-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(Path.join(dict, "words"))
+
+    File.write!(Path.join([dict, "words", "EVIL.fs"]), ": EVIL ( -- ) MYSTERY ;\n")
+
+    program = ~s{EVIL RECEIPT DROP}
+
+    envelope = %{
+      "language" => "forth",
+      "program" => program,
+      "artifacts" => %{},
+      "rationale" => "call EVIL by catalog contract"
+    }
+
+    planner = fn _g, obs, _f ->
+      assert obs =~ "EVIL"
+      assert obs =~ "( -- )"
+      refute obs =~ "MYSTERY"
+      {:ok, envelope, %{}}
+    end
+
+    result = Run.run("evil", workspace: ws, contract: contract(), planner_fn: planner, dictionary_dir: dict, max_episodes: 1)
+
+    refute result.success
+
+    events = File.read!(Path.join(result.run_dir, "events.jsonl"))
+    assert events =~ "critic.accepted"
+    refute events =~ "critic.rejected"
+
+    traces =
+      result.run_dir
+      |> Path.join("trace.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+
+    preflight = Enum.find(traces, &(&1["type"] == "preflight.program")) |> get_in(["data", "program"])
+    assert preflight == program
+    refute preflight =~ "MYSTERY"
+
+    trap = Enum.find(traces, &(&1["type"] == "execution.trap"))
+    assert trap["data"]["message"] =~ "unknown word MYSTERY"
+  end
+
+  test "same-episode INNER and OUTER both persist" do
+    ws = workspace()
+
+    envelope = %{
+      "language" => "forth",
+      "program" =>
+        ~s{: INNER ( n -- n n ) DUP ; : OUTER ( n -- n n n ) INNER DUP ; } <>
+          ~s{S" greet.txt" USE-ARTIFACT S" greet.txt" WRITE-FILE DROP RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"greet.txt" => "hello\n"},
+      "rationale" => "interdependent defs"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
+    result = Run.run("goal", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 1)
+
+    assert result.success
+    words_dir = Path.join([result.run_dir, "dictionary", "words"])
+    assert File.exists?(Path.join(words_dir, "INNER.fs"))
+    assert File.exists?(Path.join(words_dir, "OUTER.fs"))
+    assert "INNER" in result.promoted_words
+    assert "OUTER" in result.promoted_words
+  end
+
+  test "promotion evidence includes critic reject errors" do
+    ws = workspace()
+
+    envelope = %{
+      "language" => "forth",
+      "program" =>
+        ~s{: FETCH ( -- | read ) S" greet.txt" USE-ARTIFACT DROP ; } <>
+          ~s{S" greet.txt" USE-ARTIFACT S" greet.txt" WRITE-FILE DROP RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"greet.txt" => "hello\n"},
+      "rationale" => "episode artifact must not persist into FETCH"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
+    result = Run.run("goal", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 1)
+
+    assert result.success
+    refute File.exists?(Path.join([result.run_dir, "dictionary", "words", "FETCH.fs"]))
+
+    events =
+      result.run_dir
+      |> Path.join("events.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+
+    evidence = Enum.find(events, &(&1["kind"] == "dictionary.promotion_evidence" and &1["payload"]["word"] == "FETCH"))
+    assert evidence["payload"]["eligible"] == false
+    assert "critic rejected definition" in evidence["payload"]["reasons"]
+    assert Enum.any?(evidence["payload"]["reasons"], &(&1 =~ "no artifact: greet.txt"))
   end
 
   test "CAT host-word alias is not written to the dictionary" do

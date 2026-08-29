@@ -24,8 +24,9 @@ The trinity, each in its right place:
 goal + observation ──▶ planner (grok-4.6; the ONLY model-facing module)
         │ envelope {program, artifacts, rationale}   fingerprinted; identical
         ▼                                            resubmission is blocked
-   critic.validate  ──reject──▶ errors become next episode's feedback
+   critic.validate(program, catalog)  ──reject──▶ errors become next episode's feedback
         │ accept (native BEAM call, ~54-157µs)
+        │ program only — catalog rows are name + (in out effects), never prelude bodies
         ▼
    Forth VM executes host words     ← model switched off; policy-fenced
         │                             workspace writes; effects gated
@@ -49,8 +50,8 @@ monotonic sequence, single writer) + `trace.jsonl`.
 | `host.ex` / `policy.ex` | capability words, fnmatch-parity globs, workspace confinement |
 | `gates.ex` / `cmd.ex` | executable contract claims, bounded shell execution |
 | `ledger.ex` | kernel event log + trace, single-writer by construction |
-| `run.ex` | the kernel loop; duplicate blocking; planner retry w/ backoff |
-| `dictionary.ex` / `contracts.ex` | warm dictionary, in-band contracts, topo-ordered prelude |
+| `run.ex` | the kernel loop; program-only critic; duplicate blocking; planner retry w/ backoff |
+| `dictionary.ex` / `contracts.ex` | warm dictionary, in-band contracts, vocab bind, topo-ordered prelude |
 | `space.ex` | Linda tuple space: generation-fenced leases (OTP timers), specificity-ordered handoff, obligation kind accepted |
 | `obligation.ex` / `dispatcher.ex` | Jido agents per obligation, lease heartbeats, deny-by-default gate |
 | `verdict.ex` | preregistered warm-dictionary go/no-go thresholds |
@@ -90,6 +91,12 @@ the ReAct baseline; first Terminal-Bench campaign at mean reward 0.133.
 The reason this body exists: promoted colon words used to bind
 `Contract(0,0,∅)` — bodies unchecked, arities unknown. Now a promoted
 word's `( ins -- outs | effects )` contract is proved against its body
-by the critic at accept time, persisted in-band, re-bound on load, and
-a starved call is rejected **before any I/O** (see
+by the critic at accept time, persisted in-band, re-bound on load as a
+catalog row, and a starved call is rejected **before any I/O** (see
 `test/run_test.exs:"starved call..."` — workspace provably untouched).
+
+The critic never sees composed prelude source. Each episode validates
+`envelope.program` against the catalog word table (`validate-catalog`);
+colon bodies are re-checked as a single `: NAME (c) body ;` at
+promotion, not concatenated into later programs. Observation lists
+callable names and canonical contracts, not bodies.

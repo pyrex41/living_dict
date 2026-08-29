@@ -29,7 +29,7 @@ defmodule LdHost.Run do
       {:ok, _} = Ledger.commit(ledger, "contract.approved", %{claims: length(contract.claims), source: contract.source})
     end
 
-    {prelude, prelude_words} = Dictionary.load_prelude(dictionary_dir)
+    prelude_words = vocab_names(dictionary_dir)
 
     state = %{
       goal: goal,
@@ -40,7 +40,6 @@ defmodule LdHost.Run do
       contract: contract,
       allow_model_checks: Keyword.get(opts, :allow_model_checks, false),
       planner_fn: planner_fn,
-      prelude: prelude,
       prelude_words: prelude_words,
       allowed_effects: Keyword.get(opts, :allowed_effects, ["read", "write", "exec"]),
       allowed_globs: Keyword.get(opts, :allowed_globs, ["**"]),
@@ -122,10 +121,20 @@ defmodule LdHost.Run do
           rationale: envelope.rationale
         })
 
-      composed = compose(state.prelude, envelope.program)
+      # Program only: catalog rows seed the word table. Composing prelude
+      # source would put colon bodies (and sidecar junk) in the critic.
+      catalog = vocab_catalog(state.dictionary_dir)
       artifact_keys = envelope.artifacts |> Map.keys() |> Enum.sort()
+      Ledger.trace(state.ledger, "preflight.program", %{program: envelope.program})
 
-      case Critic.validate(composed, state.allowed_effects, state.allowed_globs, state.forbidden_globs, artifact_keys) do
+      case Critic.validate(
+             envelope.program,
+             state.allowed_effects,
+             state.allowed_globs,
+             state.forbidden_globs,
+             artifact_keys,
+             catalog
+           ) do
         {:reject, errors, _depth, _effects} ->
           {:ok, _} = Ledger.commit(state.ledger, "critic.rejected", %{episode: episode, errors: errors})
           Ledger.trace(state.ledger, "preflight.rejected", %{errors: errors})
@@ -135,7 +144,7 @@ defmodule LdHost.Run do
           {:ok, _} =
             Ledger.commit(state.ledger, "critic.accepted", %{episode: episode, depth: depth, effects: effects})
 
-          execute_episode(state, episode, envelope, composed)
+          execute_episode(state, episode, envelope)
 
         {:error, reason} ->
           Ledger.trace(state.ledger, "critic.unavailable", %{reason: reason})
@@ -144,7 +153,7 @@ defmodule LdHost.Run do
     end
   end
 
-  defp execute_episode(state, episode, envelope, composed) do
+  defp execute_episode(state, episode, envelope) do
     host =
       Host.new(state.workspace,
         allowed_effects: state.allowed_effects,
@@ -180,7 +189,7 @@ defmodule LdHost.Run do
         {:ok, _} = Ledger.commit(state.ledger, "gates.measured", %{episode: episode, ok: report.ok == true, reason: report[:reason]})
 
         state = %{state | last_report: report}
-        state = promote(state, episode, vm, composed, report)
+        state = promote(state, episode, vm, envelope.program, report)
 
         if report.ok == true do
           {_reply, _payload, _host} = Host.receipt(vm.host)
@@ -199,9 +208,10 @@ defmodule LdHost.Run do
 
   # ---- typed promotion --------------------------------------------------
 
-  defp promote(state, episode, vm, composed, report) do
-    contracts = Contracts.extract(composed)
+  defp promote(state, episode, vm, program, report) do
+    contracts = Contracts.extract(program)
     candidates = Forth.defined_names(vm) -- state.prelude_words
+    catalog = vocab_catalog(state.dictionary_dir)
 
     eligible? = report.ok == true
 
@@ -212,12 +222,43 @@ defmodule LdHost.Run do
           not Dictionary.tautology?(vm.colon[name])
       end)
 
+    # Same-episode callees are already bound in the program walk; isolated
+    # `: NAME (c) body ;` still needs their contracts on the word table.
+    catalog = catalog ++ Enum.flat_map(promotable, &sibling_catalog_row(&1, contracts))
+
+    {accepted, critic_rejected} =
+      Enum.reduce(promotable, {[], %{}}, fn name, {ok, rejected} ->
+        contract = Contracts.canonical(contracts[name])
+        source = ": #{name} #{contract} #{Dictionary.body_source(vm.colon[name])} ;\n"
+
+        # Empty artifact keys: colon persistence is not allowed to close over
+        # episode-scoped USE-ARTIFACT literals.
+        case Critic.validate(
+               source,
+               state.allowed_effects,
+               state.allowed_globs,
+               state.forbidden_globs,
+               [],
+               catalog
+             ) do
+          {:accept, _, _} ->
+            {ok ++ [name], rejected}
+
+          {:reject, errors, _, _} ->
+            {ok, Map.put(rejected, name, errors)}
+
+          {:error, reason} ->
+            {ok, Map.put(rejected, name, [reason])}
+        end
+      end)
+
     entries =
-      Enum.map(promotable, fn name ->
+      Enum.map(accepted, fn name ->
         {name, Dictionary.body_source(vm.colon[name]), Contracts.canonical(contracts[name])}
       end)
 
     written = Dictionary.save_words(state.dictionary_dir, entries)
+    quarantined = quarantined ++ Map.keys(critic_rejected)
 
     Enum.each(written, fn {name, sha} ->
       contract = Contracts.canonical(contracts[name])
@@ -239,6 +280,9 @@ defmodule LdHost.Run do
           Dictionary.tautology?(vm.colon[name]) ->
             ["host-word alias"]
 
+          Map.has_key?(critic_rejected, name) ->
+            ["critic rejected definition" | critic_rejected[name]]
+
           true ->
             [] ++
               if(not Map.has_key?(contracts, name), do: ["missing contract"], else: []) ++
@@ -259,8 +303,7 @@ defmodule LdHost.Run do
     state = %{state | promoted_words: state.promoted_words ++ Enum.map(written, &elem(&1, 0))}
 
     if written != [] do
-      {prelude, words} = Dictionary.load_prelude(state.dictionary_dir)
-      %{state | prelude: prelude, prelude_words: words}
+      %{state | prelude_words: vocab_names(state.dictionary_dir)}
     else
       state
     end
@@ -268,8 +311,49 @@ defmodule LdHost.Run do
 
   # ---- helpers ----------------------------------------------------------
 
-  defp compose("", program), do: program
-  defp compose(prelude, program), do: prelude <> "\n" <> program
+  defp vocab_names(dictionary_dir) do
+    Enum.map(Dictionary.load_vocab(dictionary_dir), &elem(&1, 0))
+  end
+
+  defp vocab_catalog(dictionary_dir) do
+    Enum.map(Dictionary.load_vocab(dictionary_dir), fn {name, _tokens, sig, _source} ->
+      catalog_row(name, sig)
+    end)
+  end
+
+  defp sibling_catalog_row(name, contracts) do
+    case catalog_row_from_inner(name, contracts[name]) do
+      nil -> []
+      row -> [row]
+    end
+  end
+
+  defp catalog_row(name, {ins, outs, effects}) when is_list(ins) do
+    {name, length(ins), length(outs), Enum.sort(effects)}
+  end
+
+  defp catalog_row_from_inner(_name, nil), do: nil
+
+  defp catalog_row_from_inner(name, inner) do
+    words =
+      inner
+      |> String.replace(",", " ")
+      |> String.split(~r/\s+/, trim: true)
+
+    case Enum.split_while(words, &(&1 != "--")) do
+      {ins, ["--" | rest]} ->
+        {outs, effects} =
+          case Enum.split_while(rest, &(&1 != "|")) do
+            {outs, ["|" | effects]} -> {outs, effects}
+            {outs, []} -> {outs, []}
+          end
+
+        catalog_row(name, {ins, outs, effects})
+
+      _ ->
+        nil
+    end
+  end
 
   @observe_file_cap 8_000
   @observe_total_cap 60_000
@@ -300,9 +384,26 @@ defmodule LdHost.Run do
       end)
 
     dictionary =
-      case state.prelude_words do
-        [] -> ""
-        words -> "\nHARNESS DICTIONARY (callable colon words):\n" <> Enum.join(words, " ") <> "\n" <> state.prelude
+      case Dictionary.load_vocab(state.dictionary_dir) do
+        [] ->
+          ""
+
+        rows ->
+          lines =
+            Enum.map(rows, fn {name, _tokens, _sig, source} ->
+              case Map.get(Contracts.extract(source), name) do
+                nil ->
+                  name
+
+                inner ->
+                  case Contracts.canonical(inner) do
+                    nil -> name
+                    contract -> "#{name} #{contract}"
+                  end
+              end
+            end)
+
+          "\nHARNESS DICTIONARY (callable colon words):\n" <> Enum.join(lines, "\n") <> "\n"
       end
 
     gates =
