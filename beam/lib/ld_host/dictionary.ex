@@ -134,7 +134,9 @@ defmodule LdHost.Dictionary do
   Catalog names that occur as Forth words in `program`, first-seen order.
 
   Port of `harness/src/livingdict/dictionary.py`. Tokenize failures are
-  no reuse: a broken program must not count as evidence.
+  no reuse: a broken program must not count as evidence. Mentions inside
+  colon bodies count, matching Python — covering uses skip_colon_bodies/1
+  separately and must not silently change this predicate.
   """
   def used_names(program, names) when is_binary(program) do
     wanted = MapSet.new(Enum.map(names, &String.upcase(to_string(&1))))

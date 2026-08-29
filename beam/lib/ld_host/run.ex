@@ -76,6 +76,7 @@ defmodule LdHost.Run do
       judge: judge_label(elem(result, 1).last_report),
       tokens: elem(result, 1).tokens,
       model_calls: elem(result, 1).model_calls,
+      # Reuse-proven this run, not first persist (candidates stay off this list).
       promoted_words: elem(result, 1).promoted_words,
       run_dir: run_dir
     }
@@ -285,16 +286,11 @@ defmodule LdHost.Run do
     end)
 
     Enum.each(quarantined, fn name ->
+      # split_with already kept canonical non-tautologies in to_save.
       reasons =
-        cond do
-          Dictionary.tautology?(vm.colon[name]) ->
-            ["host-word alias"]
-
-          true ->
-            if Map.has_key?(contracts, name) and Contracts.canonical(contracts[name]) != nil,
-              do: [],
-              else: ["missing contract"]
-        end
+        if Dictionary.tautology?(vm.colon[name]),
+          do: ["host-word alias"],
+          else: ["missing contract"]
 
       {:ok, _} =
         Ledger.commit(state.ledger, "dictionary.promotion_evidence", %{

@@ -35,7 +35,7 @@ defmodule LdHost.RunTest do
     "rationale" => "install greeting"
   }
 
-  test "end-to-end success: critic accept, execute, gates green, word promoted" do
+  test "end-to-end success: critic accept, execute, gates green, word candidated" do
     ws = workspace()
 
     planner = fn _goal, _obs, _feedback ->
@@ -273,7 +273,7 @@ defmodule LdHost.RunTest do
     assert File.read!(Path.join(shared_dict, "promoted.txt")) =~ "INSTALL"
   end
 
-  test "starved call of a promoted word rejects pre-I/O (the closed type hole)" do
+  test "starved call of a candidate word rejects pre-I/O (the closed type hole)" do
     ws = workspace()
 
     shared_dict =
@@ -319,6 +319,9 @@ defmodule LdHost.RunTest do
     events = File.read!(Path.join(r2.run_dir, "events.jsonl"))
     assert events =~ "critic.rejected"
     assert events =~ "stack underflow at INSTALL"
+    refute events =~ "dictionary.promoted"
+    refute File.exists?(Path.join(shared_dict, "promoted.txt"))
+    assert File.read!(Path.join(r2.run_dir, "trace.jsonl")) =~ "dictionary.reuse"
     # No I/O happened: workspace untouched
     assert LdHost.Policy.snapshot(ws2) == %{}
   end
@@ -657,6 +660,116 @@ defmodule LdHost.RunTest do
     kinds = Enum.map(events, & &1["kind"])
     assert "dictionary.promoted" in kinds
     refute "dictionary.reuse" in kinds
+  end
+
+  test "reuse plus trap does not promote" do
+    ws1 = workspace()
+
+    dict =
+      System.tmp_dir!()
+      |> Path.join(
+        "lddicttrap-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    planner1 = fn _g, _o, _f -> {:ok, @good_envelope, %{}} end
+
+    r1 =
+      Run.run("first",
+        workspace: ws1,
+        contract: contract(),
+        planner_fn: planner1,
+        dictionary_dir: dict,
+        max_episodes: 1
+      )
+
+    assert r1.success
+    refute File.exists?(Path.join(dict, "promoted.txt"))
+
+    ws2 = workspace()
+
+    trap_reuse = %{
+      "language" => "forth",
+      "program" => ~s{S" greet.txt" S" greet.txt" INSTALL S" missing.txt" READ-FILE},
+      "artifacts" => %{"greet.txt" => "hello from trap\n"},
+      "rationale" => "reuse then missing read"
+    }
+
+    planner2 = fn _g, _o, _f -> {:ok, trap_reuse, %{}} end
+
+    r2 =
+      Run.run("trap-reuse",
+        workspace: ws2,
+        contract: contract(),
+        planner_fn: planner2,
+        dictionary_dir: dict,
+        max_episodes: 1
+      )
+
+    refute r2.success
+    assert r2.promoted_words == []
+    refute File.exists?(Path.join(dict, "promoted.txt"))
+    refute File.read!(Path.join(r2.run_dir, "events.jsonl")) =~ "dictionary.promoted"
+    assert File.read!(Path.join(r2.run_dir, "trace.jsonl")) =~ "dictionary.reuse"
+    assert File.read!(Path.join(r2.run_dir, "trace.jsonl")) =~ "execution.trap"
+  end
+
+  test "second reuse does not re-commit dictionary.promoted" do
+    ws1 = workspace()
+
+    dict =
+      System.tmp_dir!()
+      |> Path.join(
+        "lddictidemp-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    planner1 = fn _g, _o, _f -> {:ok, @good_envelope, %{}} end
+
+    r1 =
+      Run.run("first",
+        workspace: ws1,
+        contract: contract(),
+        planner_fn: planner1,
+        dictionary_dir: dict,
+        max_episodes: 1
+      )
+
+    assert r1.success
+
+    reuse = %{
+      "language" => "forth",
+      "program" => ~s{S" greet.txt" S" greet.txt" INSTALL RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"greet.txt" => "hello again\n"},
+      "rationale" => "call INSTALL"
+    }
+
+    planner_reuse = fn _g, _o, _f -> {:ok, reuse, %{}} end
+
+    r2 =
+      Run.run("second",
+        workspace: workspace(),
+        contract: contract(),
+        planner_fn: planner_reuse,
+        dictionary_dir: dict,
+        max_episodes: 1
+      )
+
+    assert r2.success
+    assert r2.promoted_words == ["INSTALL"]
+
+    r3 =
+      Run.run("third",
+        workspace: workspace(),
+        contract: contract(),
+        planner_fn: planner_reuse,
+        dictionary_dir: dict,
+        max_episodes: 1
+      )
+
+    assert r3.success
+    assert r3.promoted_words == []
+    refute File.read!(Path.join(r3.run_dir, "events.jsonl")) =~ "dictionary.promoted"
+    assert File.read!(Path.join(r3.run_dir, "trace.jsonl")) =~ "dictionary.reuse"
+    assert File.read!(Path.join(dict, "promoted.txt")) =~ "INSTALL"
   end
 
   @explore_envelope %{
