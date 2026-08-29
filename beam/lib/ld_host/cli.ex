@@ -53,6 +53,7 @@ defmodule LdHost.CLI do
         episodes: result.episodes,
         model_calls: result.model_calls,
         tokens: result.tokens,
+        # Reuse-proven names only; first persist is a candidate and stays [].
         promoted_words: result.promoted_words,
         engine: LdHost.Critic.engine(),
         run_dir: result.run_dir
@@ -69,12 +70,16 @@ defmodule LdHost.CLI do
   `mix ld.run`; nil extras are dropped.
   """
   def run_opts(workspace, extras \\ []) do
-    Enum.reduce([:contract, :dictionary_dir, :max_episodes, :run_dir, :allow_model_checks], [workspace: Path.expand(workspace)], fn key, opts ->
-      case Keyword.get(extras, key) do
-        nil -> opts
-        value -> Keyword.put(opts, key, value)
+    Enum.reduce(
+      [:contract, :dictionary_dir, :max_episodes, :run_dir, :allow_model_checks],
+      [workspace: Path.expand(workspace)],
+      fn key, opts ->
+        case Keyword.get(extras, key) do
+          nil -> opts
+          value -> Keyword.put(opts, key, value)
+        end
       end
-    end)
+    )
   end
 
   @doc """

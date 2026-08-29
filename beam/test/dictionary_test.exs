@@ -4,13 +4,18 @@ defmodule LdHost.DictionaryTest do
   alias LdHost.{Contracts, Dictionary, Forth}
 
   defp dict_dir do
-    tmp = System.tmp_dir!() |> Path.join("lddict-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+    tmp =
+      System.tmp_dir!()
+      |> Path.join("lddict-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+
     File.mkdir_p!(Path.join(tmp, "words"))
     tmp
   end
 
   test "contract extraction finds the group after the name only" do
-    source = ~s{( plain note ) : INSTALL ( key -- | read, write ) DUP USE-ARTIFACT SWAP WRITE-FILE DROP ; : BARE DUP ;}
+    source =
+      ~s{( plain note ) : INSTALL ( key -- | read, write ) DUP USE-ARTIFACT SWAP WRITE-FILE DROP ; : BARE DUP ;}
+
     contracts = Contracts.extract(source)
     assert contracts == %{"INSTALL" => " key -- | read, write "}
   end
@@ -36,7 +41,9 @@ defmodule LdHost.DictionaryTest do
     assert is_binary(sha)
 
     file = Path.join([dir, "words", "INSTALL.fs"])
-    assert File.read!(file) == ": INSTALL ( key -- | read, write ) DUP USE-ARTIFACT SWAP WRITE-FILE DROP ;\n"
+
+    assert File.read!(file) ==
+             ": INSTALL ( key -- | read, write ) DUP USE-ARTIFACT SWAP WRITE-FILE DROP ;\n"
 
     # byte-identical resave is a no-op
     assert Dictionary.save_words(dir, [
@@ -56,7 +63,10 @@ defmodule LdHost.DictionaryTest do
   end
 
   test "empty dictionary loads empty prelude" do
-    assert Dictionary.load_prelude(System.tmp_dir!() |> Path.join("nope-#{System.unique_integer()}")) == {"", []}
+    assert Dictionary.load_prelude(
+             System.tmp_dir!()
+             |> Path.join("nope-#{System.unique_integer()}")
+           ) == {"", []}
   end
 
   test "prelude skips AppleDouble sidecars and invalid UTF-8 word files" do
@@ -94,7 +104,14 @@ defmodule LdHost.DictionaryTest do
       Dictionary.load_vocab(dir) |> Enum.find(fn {name, _, _, _} -> name == "INSTALL" end)
 
     assert install_sig == {["key", "path"], [], ["read", "write"]}
-    assert Enum.map(install_tokens, & &1.value) == ["SWAP", "USE-ARTIFACT", "SWAP", "WRITE-FILE", "DROP"]
+
+    assert Enum.map(install_tokens, & &1.value) == [
+             "SWAP",
+             "USE-ARTIFACT",
+             "SWAP",
+             "WRITE-FILE",
+             "DROP"
+           ]
   end
 
   test "load skips files whose colon name does not match the filename stem" do
@@ -108,6 +125,29 @@ defmodule LdHost.DictionaryTest do
 
     names = Enum.map(Dictionary.load_vocab(dir), &elem(&1, 0))
     assert names == ["CAT"]
+  end
+
+  test "used_names is first-seen catalog tokens, empty on tokenize failure" do
+    assert Dictionary.used_names(~s{S" a" PATCH RECEIPT}, ["PATCH"]) == ["PATCH"]
+    assert Dictionary.used_names("INSTALL DUP INSTALL", ["install", "MISSING"]) == ["INSTALL"]
+    assert Dictionary.used_names("RECEIPT", ["PATCH"]) == []
+    assert Dictionary.used_names("PATCH", []) == []
+    assert Dictionary.used_names(~s{S" unterminated}, ["PATCH"]) == []
+  end
+
+  test "mark_promoted records reuse-proven names without rewriting bodies" do
+    dir = dict_dir()
+
+    Dictionary.save_words(dir, [
+      {"INSTALL", "DUP USE-ARTIFACT SWAP WRITE-FILE DROP", "( key -- | read, write )"}
+    ])
+
+    assert Dictionary.load_promoted(dir) == []
+    assert [{"INSTALL", sha}] = Dictionary.mark_promoted(dir, ["INSTALL"])
+    assert is_binary(sha)
+    assert Dictionary.load_promoted(dir) == ["INSTALL"]
+    assert Dictionary.mark_promoted(dir, ["INSTALL"]) == []
+    assert File.read!(Path.join(dir, "promoted.txt")) == "INSTALL\n"
   end
 
   test "tautology? is stack sugar plus exactly one host primitive" do
