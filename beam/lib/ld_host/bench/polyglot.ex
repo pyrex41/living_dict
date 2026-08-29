@@ -298,7 +298,11 @@ defmodule LdHost.Bench.Polyglot do
         policy_violations: policy_violation_count(ws, baseline, task),
         run_dir: summary && summary.run_dir,
         judge: summary && summary.judge,
-        promoted_words: (summary && summary.promoted_words) || []
+        promoted_words: (summary && summary.promoted_words) || [],
+        dictionary_dir:
+          (if arm == "warm",
+             do: shared_dict,
+             else: summary && Path.join(summary.run_dir, "dictionary"))
       }
 
       Ledger.trace(ctx.ledger, "polyglot.arm_result", result)
@@ -372,9 +376,11 @@ defmodule LdHost.Bench.Polyglot do
         {lang, verdict}
       end)
 
+    orch = :sys.get_state(ledger).run_dir
+
     uniqueness =
       Map.new(langs, fn lang ->
-        {lang, Uniqueness.score(results_by_lang[lang] || %{})}
+        {lang, Uniqueness.score(Map.put(results_by_lang[lang] || %{}, :orchestrator, orch))}
       end)
 
     summary = %{langs: langs, results: results_by_lang, uniqueness: uniqueness, verdicts: verdicts}

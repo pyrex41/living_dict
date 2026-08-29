@@ -95,16 +95,32 @@ defmodule LdHost.UniquenessTest do
     assert r2.promoted_words == ["INSTALL"]
     assert r2.judge == "approved contract"
 
+    # Demo/Polyglot shape: shared dict is NOT copied onto the map.
     score =
       Uniqueness.score(%{
-        "warm" => [
-          Map.merge(r1, %{task: "t1", arm: "warm", dictionary_dir: dict}),
-          Map.merge(r2, %{task: "t2", arm: "warm", dictionary_dir: dict})
+        "warm" => [demo_row(r1, "t1"), demo_row(r2, "t2")],
+        "grok" => [
+          %{task: "t1", arm: "grok", success: true, tokens: %{input_tokens: 1, output_tokens: 1}}
         ]
       })
 
     assert score.family_transfer > 0
     assert score.contract_first == 1.0
+    assert match?(%{omitted: true}, score.replay_without_model)
+    refute score.replay_without_model == false
+    assert match?(%{omitted: true}, score.obligation_hold)
+    refute score.obligation_hold == false
+  end
+
+  defp demo_row(result, task) do
+    %{
+      task: task,
+      arm: "warm",
+      success: result.success,
+      run_dir: result.run_dir,
+      promoted_words: result.promoted_words,
+      judge: result.judge
+    }
   end
 
   test "seed-present unused prelude reports family_transfer 0" do
@@ -190,6 +206,35 @@ defmodule LdHost.UniquenessTest do
     assert score.wave_speedup.nodes_parallel >= 2
   end
 
+  test "score/1 reads wave timings from run_dir traces without a :wave key" do
+    envelope = %{
+      "language" => "forth",
+      "program" =>
+        ~s{S" a.txt" USE-ARTIFACT S" a.txt" WRITE-FILE DROP } <>
+          ~s{S" b.txt" USE-ARTIFACT S" b.txt" WRITE-FILE DROP RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"a.txt" => "A\n", "b.txt" => "B\n"},
+      "rationale" => "two files"
+    }
+
+    contract = %{
+      claims: [
+        %{"id" => "both", "kind" => "check", "command" => "test -f a.txt && test -f b.txt", "timeout_seconds" => 5}
+      ],
+      source: "hidden"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{input_tokens: 1, output_tokens: 1}} end
+    ws = tmp("lduniq-wave-run")
+    result = Run.run("pair", workspace: ws, contract: contract, planner_fn: planner, max_episodes: 1)
+    assert result.success
+
+    score = Uniqueness.score(%{"warm" => [demo_row(result, "pair")]})
+    refute match?(%{omitted: true}, score.wave_speedup)
+    assert score.wave_speedup.ok
+    assert score.wave_speedup.nodes_parallel >= 2
+    assert match?(%{omitted: true, replayable: true}, score.replay_without_model)
+  end
+
   test "obligation hold: crash expires, sibling reclaims generation+1, stale token cannot ack" do
     me = self()
     {:ok, space} = Space.start_link(record: fn kind, payload -> send(me, {:space, kind, payload}) end)
@@ -256,6 +301,11 @@ defmodule LdHost.UniquenessTest do
     assert score.obligation_hold.hold_ms == 2000
     refute score.obligation_hold.double_ack
     refute score.obligation_hold.stale_ack
+
+    from_ledger = Uniqueness.score(%{orchestrator: :sys.get_state(ledger).run_dir})
+    assert from_ledger.obligation_hold.ok
+    assert from_ledger.obligation_hold.hold_ms == 2000
+    refute match?(%{omitted: true}, from_ledger.obligation_hold)
   end
 
   test "host_words/0 is eval six plus USE-ARTIFACT, plus live-only USE-OBJECT and PATCH-FILE" do

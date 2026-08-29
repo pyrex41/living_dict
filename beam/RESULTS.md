@@ -15,8 +15,11 @@ preregistration) remains a **column**.
 | obligation_hold | dispatcher `hold_ms`, expire vs ack, no double-ack, reclaim at `generation+1` |
 
 `LdHost.Uniqueness.score/1` reads a Demo/Polyglot results map and the
-run ledgers. Mix `ld.demo` / `ld.polyglot` print these axes above the
-warm-dictionary verdict.
+run ledgers (`used_words`, `dictionary.candidate`, judges, `graph.wave.node`,
+orchestrator `hold_ms`). Replay is not re-executed inside `score/1`;
+axes this campaign did not exercise are **omitted**, not 0/false.
+Mix `ld.demo` / `ld.polyglot` print these axes above the warm-dictionary
+verdict.
 
 ---
 

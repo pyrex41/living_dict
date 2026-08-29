@@ -187,7 +187,11 @@ defmodule LdHost.Demo do
         policy_violations: policy_violation_count(ws, task),
         run_dir: summary && summary.run_dir,
         judge: summary && summary.judge,
-        promoted_words: (summary && summary.promoted_words) || []
+        promoted_words: (summary && summary.promoted_words) || [],
+        dictionary_dir:
+          (if arm == "warm",
+             do: shared_dict,
+             else: summary && Path.join(summary.run_dir, "dictionary"))
       }
 
       Ledger.trace(ctx.ledger, "demo.arm_result", result)
@@ -241,7 +245,7 @@ defmodule LdHost.Demo do
         %{measures: measures, allowed: allowed, reasons: reasons}
       end
 
-    uniqueness = Uniqueness.score(results)
+    uniqueness = Uniqueness.score(Map.put(results, :orchestrator, :sys.get_state(ledger).run_dir))
 
     summary = %{
       tasks: Enum.map(tasks, & &1.id),

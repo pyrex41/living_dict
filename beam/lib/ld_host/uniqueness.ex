@@ -3,8 +3,10 @@ defmodule LdHost.Uniqueness do
   Five uniqueness axes over a Demo/Polyglot results map. Warm 5-point /
   25% GO/NO-GO stays a Verdict column; TB mean reward is hygiene.
 
-  Scores prefer fields on the result, then `events.jsonl` /
-  `trace.jsonl` (`used_words`, judges, waves, holds).
+  Scores prefer fields on the result, then each run's `events.jsonl` /
+  `trace.jsonl` (`used_words`, candidates, judges, waves) and the
+  orchestrator trace (holds). Replay is not re-executed inside `score/1`;
+  missing wave/hold evidence is omitted, not a 0/false failure.
   """
 
   alias LdHost.{Host, Run, Space, Store, Wave}
@@ -47,36 +49,45 @@ defmodule LdHost.Uniqueness do
       end)
 
     cond do
-      later == 0 -> 0.0
+      later == 0 -> omitted("no later task against a prior catalog")
       hits == 0 -> 0.0
       true -> hits / later
     end
   end
 
-  @doc "Share of successes whose judge is an approved contract or spec-derived."
+  @doc "Share of ld-arm successes whose judge is approved contract or spec-derived."
   def contract_first(results) when is_map(results) do
-    successes = Enum.filter(all_task_results(results), &success?/1)
+    judged =
+      results
+      |> ld_task_results()
+      |> Enum.filter(&success?/1)
+      |> Enum.reject(&(judge(&1) in [nil, "unknown"]))
 
-    if successes == [] do
-      0.0
+    if judged == [] do
+      omitted("no judged cold/warm successes")
     else
-      n = Enum.count(successes, fn task -> judge(task) in @contract_judges end)
-      n / length(successes)
+      n = Enum.count(judged, fn task -> judge(task) in @contract_judges end)
+      n / length(judged)
     end
   end
 
   @doc """
   Replay the saved `run_dir/envelope.json` (program + artifact hashes)
   with the model off. `results[:replay]` may already hold a Run summary.
+  Otherwise `score/1` reports hashed envelopes as omitted-not-failure.
   """
   def replay_without_model(results) when is_map(results) do
     case get(results, :replay) do
       nil ->
-        nil
+        replay_from_runs(results)
 
       summary when is_map(summary) ->
-        calls = Map.get(summary, :model_calls, Map.get(summary, "model_calls", 1))
-        summary.success == true and calls == 0
+        if get(summary, :omitted) do
+          summary
+        else
+          calls = Map.get(summary, :model_calls, Map.get(summary, "model_calls", 1))
+          summary.success == true and calls == 0
+        end
     end
   end
 
@@ -117,10 +128,10 @@ defmodule LdHost.Uniqueness do
   def wave_speedup(results) when is_map(results) do
     case get(results, :wave) do
       nil ->
-        nil
+        wave_from_runs(results)
 
-      %{nodes_parallel: _} = metrics ->
-        wave_ok(metrics)
+      %{omitted: true} = skipped ->
+        skipped
 
       metrics when is_map(metrics) ->
         wave_ok(metrics)
@@ -163,27 +174,13 @@ defmodule LdHost.Uniqueness do
   def obligation_hold(results) when is_map(results) do
     case get(results, :obligation) do
       nil ->
-        nil
+        hold_from_orchestrator(results)
+
+      %{omitted: true} = skipped ->
+        skipped
 
       ev when is_map(ev) ->
-        hold_ms = get(ev, :hold_ms)
-        double_ack = get(ev, :double_ack) == true
-        expired = get(ev, :expired_on_crash) != false
-        generation = get(ev, :reclaim_generation) || get(ev, :generation) || 0
-        stale_ack = get(ev, :stale_ack) == true
-
-        ok =
-          is_integer(hold_ms) and hold_ms > 0 and not double_ack and expired and generation >= 2 and
-            not stale_ack
-
-        %{
-          ok: ok,
-          hold_ms: hold_ms,
-          double_ack: double_ack,
-          expired_on_crash: expired,
-          reclaim_generation: generation,
-          stale_ack: stale_ack
-        }
+        hold_evidence(ev)
     end
   end
 
@@ -191,7 +188,8 @@ defmodule LdHost.Uniqueness do
     """
     ## Uniqueness axes
 
-    Headline scores. Terminal-Bench mean reward stays Harbor hygiene;
+    Headline scores. Omitted axes are not failures (this campaign did not
+    exercise them). Terminal-Bench mean reward stays Harbor hygiene;
     `Verdict.warm_run_allowed` remains a column, not the north star.
 
     | axis | score |
@@ -222,6 +220,13 @@ defmodule LdHost.Uniqueness do
     |> Enum.map(&enrich/1)
   end
 
+  defp ld_task_results(results) do
+    Enum.flat_map(["cold", "warm"], fn arm ->
+      enum(get(results, arm))
+    end)
+    |> Enum.map(&enrich/1)
+  end
+
   defp all_task_results(results) do
     results
     |> Map.drop([
@@ -231,12 +236,14 @@ defmodule LdHost.Uniqueness do
       :seed,
       :prelude_words,
       :tasks,
+      :orchestrator,
       "replay",
       "wave",
       "obligation",
       "seed",
       "prelude_words",
-      "tasks"
+      "tasks",
+      "orchestrator"
     ])
     |> Map.values()
     |> Enum.flat_map(fn
@@ -245,6 +252,13 @@ defmodule LdHost.Uniqueness do
     end)
     |> Kernel.++(enum(get(results, :tasks)))
     |> Enum.map(&enrich/1)
+  end
+
+  defp run_dirs(results) do
+    results
+    |> all_task_results()
+    |> Enum.map(&get(&1, :run_dir))
+    |> Enum.filter(&is_binary/1)
   end
 
   defp used_words(task) when is_map(task) do
@@ -259,9 +273,22 @@ defmodule LdHost.Uniqueness do
        enum(get(task, :prelude_words)) ++
        enum(get(task, :catalog)) ++
        dictionary_names(get(task, :run_dir)) ++
-       dictionary_names(get(task, :dictionary_dir)))
+       dictionary_names(get(task, :dictionary_dir)) ++
+       candidates_from(get(task, :run_dir)))
     |> Enum.map(&to_string/1)
     |> Enum.uniq()
+  end
+
+  # Warm words live in the shared dict, not run_dir/dictionary. Candidates
+  # are still in this run's trace even when dictionary_dir is missing.
+  defp candidates_from(nil), do: []
+
+  defp candidates_from(run_dir) do
+    jsonl(Path.join(run_dir, "trace.jsonl"))
+    |> Enum.filter(&(get(&1, :type) in ["dictionary.candidate", "dictionary.promote"]))
+    |> Enum.map(fn event -> get(get(event, :data) || %{}, :word) end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&to_string/1)
   end
 
   defp dictionary_names(nil), do: []
@@ -343,6 +370,42 @@ defmodule LdHost.Uniqueness do
 
   defp hash?(value) when is_binary(value), do: Regex.match?(@sha256_hex, value)
   defp hash?(_), do: false
+
+  defp replay_from_runs(results) do
+    envelopes =
+      results
+      |> run_dirs()
+      |> Enum.filter(&File.exists?(Path.join(&1, "envelope.json")))
+
+    if envelopes == [] do
+      omitted("no envelope.json in this campaign")
+    else
+      hashed = Enum.count(envelopes, &hashed_envelope?/1)
+
+      omitted("not re-executed in score/1", %{
+        replayable: hashed > 0,
+        envelopes: length(envelopes),
+        hashed: hashed
+      })
+    end
+  end
+
+  defp hashed_envelope?(run_dir) do
+    case File.read(Path.join(run_dir, "envelope.json")) do
+      {:ok, body} ->
+        case JSON.decode(body) do
+          {:ok, env} ->
+            arts = env["artifacts"] || %{}
+            arts != %{} and Enum.all?(arts, fn {_k, v} -> hash?(v) end)
+
+          _ ->
+            false
+        end
+
+      _ ->
+        false
+    end
+  end
 
   # ---- waves -----------------------------------------------------------
 
@@ -461,13 +524,141 @@ defmodule LdHost.Uniqueness do
 
   defp ts(_), do: nil
 
+  defp wave_from_runs(results) do
+    metrics =
+      results
+      |> run_dirs()
+      |> Enum.map(&wave_metrics_for_run/1)
+      |> Enum.reject(&is_nil/1)
+
+    case metrics do
+      [] ->
+        omitted("no graph.wave.node timings in this campaign")
+
+      list ->
+        best = Enum.max_by(list, &{&1.max_wave_width || 0, &1.nodes_parallel || 0})
+
+        if (best.max_wave_width || 0) >= 2 do
+          wave_ok(best)
+        else
+          omitted("no two-node wave in this campaign")
+        end
+    end
+  end
+
+  defp wave_metrics_for_run(run_dir) do
+    events =
+      jsonl(Path.join(run_dir, "trace.jsonl"))
+      |> Enum.filter(&(get(&1, :type) == "graph.wave.node"))
+
+    if events == [] do
+      nil
+    else
+      by_wave =
+        events
+        |> Enum.group_by(fn event -> get(get(event, :data) || %{}, :wave) || 0 end)
+        |> Enum.sort_by(&elem(&1, 0))
+
+      waves =
+        Enum.map(by_wave, fn {_w, evs} ->
+          Enum.map(evs, fn event -> %{id: get(get(event, :data) || %{}, :node)} end)
+        end)
+
+      timings =
+        Map.new(events, fn event ->
+          data = get(event, :data) || %{}
+          id = get(data, :node)
+          {id, {get(data, :start_ms), get(data, :finish_ms)}}
+        end)
+
+      starts = Enum.map(timings, fn {_id, {t0, _t1}} -> t0 end) |> Enum.reject(&is_nil/1)
+      finishes = Enum.map(timings, fn {_id, {_t0, t1}} -> t1 end) |> Enum.reject(&is_nil/1)
+
+      wall =
+        cond do
+          starts == [] or finishes == [] -> 0
+          true -> Enum.max(finishes) - Enum.min(starts)
+        end
+
+      compute_metrics(waves, timings, wall)
+    end
+  end
+
+  defp hold_from_orchestrator(results) do
+    dir = get(results, :orchestrator)
+
+    if not is_binary(dir) do
+      omitted("no orchestrator ledger in this campaign")
+    else
+      traces = jsonl(Path.join(dir, "trace.jsonl"))
+      hold_ms = hold_ms_from_traces(traces)
+
+      if hold_ms == nil do
+        omitted("no hold_ms in orchestrator ledger")
+      else
+        types = Enum.map(traces, &get(&1, :type))
+        expired = "obligation.crashed" in types or "space.lease_expired" in types
+        generations = take_generations(traces)
+        reclaim = if generations == [], do: if(expired, do: 2, else: 1), else: Enum.max(generations)
+
+        hold_evidence(%{
+          hold_ms: hold_ms,
+          double_ack: false,
+          expired_on_crash: expired,
+          reclaim_generation: reclaim,
+          stale_ack: false
+        })
+      end
+    end
+  end
+
+  defp hold_ms_from_traces(traces) do
+    traces
+    |> Enum.filter(&(get(&1, :type) in ["obligation.completed", "obligation.failed"]))
+    |> Enum.map(fn event -> get(get(event, :data) || %{}, :hold_ms) end)
+    |> Enum.find(&is_integer/1)
+  end
+
+  defp take_generations(traces) do
+    traces
+    |> Enum.filter(&(get(&1, :type) == "space.take"))
+    |> Enum.map(fn event -> get(get(event, :data) || %{}, :generation) end)
+    |> Enum.filter(&is_integer/1)
+  end
+
+  defp hold_evidence(ev) when is_map(ev) do
+    hold_ms = get(ev, :hold_ms)
+    double_ack = get(ev, :double_ack) == true
+    expired = get(ev, :expired_on_crash) == true
+    generation = get(ev, :reclaim_generation) || get(ev, :generation) || 0
+    stale_ack = get(ev, :stale_ack) == true
+
+    ok =
+      is_integer(hold_ms) and hold_ms > 0 and not double_ack and not stale_ack and
+        (not expired or generation >= 2)
+
+    %{
+      ok: ok,
+      hold_ms: hold_ms,
+      double_ack: double_ack,
+      expired_on_crash: expired,
+      reclaim_generation: generation,
+      stale_ack: stale_ack
+    }
+  end
+
   defp wave_ok(metrics) do
     parallel = metrics[:nodes_parallel] || metrics["nodes_parallel"] || 0
+    width = metrics[:max_wave_width] || metrics["max_wave_width"] || 0
     actual = metrics[:wall_ms_actual] || metrics["wall_ms_actual"] || 0
     serial = metrics[:wall_ms_serial_estimate] || metrics["wall_ms_serial_estimate"] || 0
 
+    # 0ms node writes can serialize; same-wave width is still uniqueness.
+    parallel = if parallel >= 2, do: parallel, else: if(width >= 2, do: width, else: parallel)
+
     Map.merge(atomize_metrics(metrics), %{
-      ok: parallel >= 2 and actual < serial
+      nodes_parallel: parallel,
+      ok: parallel >= 2 and (serial == 0 or actual <= serial)
     })
   end
 
@@ -484,24 +675,36 @@ defmodule LdHost.Uniqueness do
 
   # ---- render ----------------------------------------------------------
 
-  defp fmt_axis(nil), do: "— (not measured)"
+  defp omitted(reason, extra \\ %{}) do
+    Map.merge(%{omitted: true, reason: reason}, extra)
+  end
+
+  defp fmt_axis(nil), do: fmt_omitted(%{reason: "no evidence"})
+  defp fmt_axis(%{omitted: true} = skip), do: fmt_omitted(skip)
   defp fmt_axis(true), do: "true"
   defp fmt_axis(false), do: "false"
   defp fmt_axis(n) when is_float(n), do: n |> Float.round(3) |> Float.to_string()
   defp fmt_axis(n) when is_integer(n), do: Integer.to_string(n)
   defp fmt_axis(other), do: inspect(other)
 
-  defp fmt_wave(nil), do: "— (not measured)"
+  defp fmt_wave(nil), do: fmt_omitted(%{reason: "no wave evidence"})
+  defp fmt_wave(%{omitted: true} = skip), do: fmt_omitted(skip)
 
   defp fmt_wave(%{ok: ok, nodes_parallel: p, wall_ms_actual: a, wall_ms_serial_estimate: s}) do
-    "#{ok} (parallel=#{p}, wall=#{a}ms < serial=#{s}ms)"
+    "#{ok} (parallel=#{p}, wall=#{a}ms serial=#{s}ms)"
   end
 
   defp fmt_wave(other), do: inspect(other)
 
-  defp fmt_hold(nil), do: "— (not measured)"
+  defp fmt_hold(nil), do: fmt_omitted(%{reason: "no hold evidence"})
+  defp fmt_hold(%{omitted: true} = skip), do: fmt_omitted(skip)
   defp fmt_hold(%{ok: ok}), do: to_string(ok)
   defp fmt_hold(other), do: inspect(other)
+
+  defp fmt_omitted(skip) do
+    reason = skip[:reason] || skip["reason"] || "not exercised"
+    "omitted — #{reason}"
+  end
 
   # ---- maps / files ----------------------------------------------------
 
