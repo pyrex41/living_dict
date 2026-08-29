@@ -26,11 +26,21 @@ defmodule LdHost.Forth do
     defstruct stack: [], colon: %{}, host: nil, artifacts: %{}
   end
 
-  @host_words ~w(READ-FILE LIST-DIR SEARCH WRITE-FILE RUN-TESTS RUN-GATES RECEIPT USE-ARTIFACT)
+  @host_words ~w(READ-FILE LIST-DIR SEARCH WRITE-FILE RUN-TESTS RUN-GATES RECEIPT USE-ARTIFACT USE-OBJECT PATCH-FILE)
   @stack_words ~w(DUP DROP SWAP OVER + - *)
 
   def host_words, do: @host_words
   def stack_words, do: @stack_words
+
+  @doc "Install persisted colon bodies onto the VM."
+  def bind_vocab(%VM{} = vm, rows) when is_list(rows) do
+    colon =
+      Enum.reduce(rows, vm.colon, fn {name, tokens, _sig, _source}, acc ->
+        Map.put(acc, String.upcase(name), tokens)
+      end)
+
+    %{vm | colon: colon}
+  end
 
   # ---- tokenizer --------------------------------------------------------
 
@@ -219,6 +229,14 @@ defmodule LdHost.Forth do
           {path, vm} = pop_str(vm, word)
           {content, vm} = pop_str(vm, word)
           {[content, path], vm}
+
+        "USE-OBJECT" ->
+          one_str(vm, word)
+
+        "PATCH-FILE" ->
+          {path, vm} = pop_str(vm, word)
+          {patch, vm} = pop_str(vm, word)
+          {[patch, path], vm}
 
         _ -> {[], vm}
       end

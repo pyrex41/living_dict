@@ -12,6 +12,9 @@
 # Requires XAI_API_KEY in the environment (except with --dry-run).
 set -euo pipefail
 
+# macOS tar/cp otherwise injects AppleDouble sidecars into words/*.fs.
+export COPYFILE_DISABLE=1
+
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Family-ordered: git family, log/regex family, certs/logging, db family,
@@ -61,22 +64,62 @@ fi
 mkdir -p "$OUT"
 echo "tb_warm: out=$OUT multiplier=$MULTIPLIER max_episodes=$MAX_EPISODES tasks=${#TASKS[@]}"
 
-# Merge the dictionary words from ALL previous jobs' trial dirs into $2/words.
+# Safe-name stems only: sidecars and junk must not enter the seed.
+safe_word_stem() {
+  echo "$1" | grep -Eq '^[A-Z][A-Z0-9-]{0,62}$'
+}
+
+# Merge previous jobs' words (candidates + promoted) and promoted.txt.
 # Jobs are visited in order 01..(N-1) so later jobs win on name clash.
+# Pack both so a candidate can still be reused (and then promoted); the
+# printed split is the Harbor-independent lifecycle, not the seed filter.
 merge_accumulator() {
   # $1 = index of the current task (1-based); $2 = accumulator dir
-  local upto="$1" acc="$2" j jj f
+  local upto="$1" acc="$2" j jj f base
   mkdir -p "$acc/words"
+  : > "$acc/promoted.txt"
   j=1
   while [ "$j" -lt "$upto" ]; do
     jj="$(printf '%02d' "$j")"
     for f in "$OUT/beam-tbwarm-$jj"/*/agent/dict/words/*.fs \
              "$OUT/beam-tbwarm-$jj"/*/agent/run/dictionary/words/*.fs; do
-      if [ -f "$f" ]; then cp -f "$f" "$acc/words/"; fi
+      [ -f "$f" ] || continue
+      base="$(basename "$f" .fs)"
+      if safe_word_stem "$base"; then
+        cp -f "$f" "$acc/words/"
+      fi
+    done
+    for f in "$OUT/beam-tbwarm-$jj"/*/agent/dict/promoted.txt \
+             "$OUT/beam-tbwarm-$jj"/*/agent/run/dictionary/promoted.txt; do
+      [ -f "$f" ] || continue
+      cat "$f" >> "$acc/promoted.txt"
     done
     j=$((j + 1))
   done
+  if [ -s "$acc/promoted.txt" ]; then
+    sort -u "$acc/promoted.txt" | grep -E '^[A-Z][A-Z0-9-]{0,62}$' > "$acc/promoted.uniq" || true
+    mv "$acc/promoted.uniq" "$acc/promoted.txt"
+  fi
   return 0
+}
+
+count_dict_split() {
+  # $1 = accumulator dir; sets WORD_COUNT CANDIDATE_COUNT PROMOTED_COUNT
+  local acc="$1" f base
+  WORD_COUNT=0
+  CANDIDATE_COUNT=0
+  PROMOTED_COUNT=0
+  for f in "$acc/words"/*.fs; do
+    [ -f "$f" ] || continue
+    base="$(basename "$f" .fs)"
+    safe_word_stem "$base" || continue
+    WORD_COUNT=$((WORD_COUNT + 1))
+    if [ -f "$acc/promoted.txt" ] && grep -qx "$base" "$acc/promoted.txt"; then
+      PROMOTED_COUNT=$((PROMOTED_COUNT + 1))
+    else
+      CANDIDATE_COUNT=$((CANDIDATE_COUNT + 1))
+    fi
+  done
 }
 
 # Pull the reward out of a job's result.json without depending on python.
@@ -102,13 +145,13 @@ for TASK in "${TASKS[@]}"; do
   merge_accumulator "$N" "$ACC"
 
   SEED=""
-  WORD_COUNT=0
-  if [ -n "$(ls -A "$ACC/words" 2>/dev/null)" ]; then
-    WORD_COUNT="$(ls "$ACC/words" | wc -l | tr -d ' ')"
+  count_dict_split "$ACC"
+  if [ "$WORD_COUNT" -gt 0 ]; then
     # gzip outside tar: bsdtar pads compressed stdout to 10240B records,
     # which both bloats the seed and leaves trailing garbage for the
     # container's gunzip; tar|gzip keeps the padding inside the stream.
-    SEED="$(tar -cf - -C "$ACC" words | gzip -cn | base64 | tr -d '\n')"
+    # Pack both trees plus promoted.txt so the next job can report the split.
+    SEED="$(tar -cf - -C "$ACC" words promoted.txt | gzip -cn | base64 | tr -d '\n')"
   fi
   SEED_BYTES=${#SEED}
   if [ "$SEED_BYTES" -gt "$SEED_MAX_BYTES" ]; then
@@ -128,8 +171,8 @@ for TASK in "${TASKS[@]}"; do
         -n 1 -o "$OUT" --job-name "$JOB")
 
   if [ "$DRY_RUN" -eq 1 ]; then
-    printf 'DRY [%s/%02d] %s: seed=%dB words=%d\n' \
-      "$NN" "${#TASKS[@]}" "$TASK" "$SEED_BYTES" "$WORD_COUNT"
+    printf 'DRY [%s/%02d] %s: seed=%dB words=%d candidates=%d promoted=%d\n' \
+      "$NN" "${#TASKS[@]}" "$TASK" "$SEED_BYTES" "$WORD_COUNT" "$CANDIDATE_COUNT" "$PROMOTED_COUNT"
     printf '  PYTHONPATH=%s' "$REPO"
     for a in "${CMD[@]}"; do
       case "$a" in
@@ -142,7 +185,7 @@ for TASK in "${TASKS[@]}"; do
     continue
   fi
 
-  echo "tb_warm: [$NN/${#TASKS[@]}] $TASK (seed=${SEED_BYTES}B, words=$WORD_COUNT)"
+  echo "tb_warm: [$NN/${#TASKS[@]}] $TASK (seed=${SEED_BYTES}B, words=$WORD_COUNT, candidates=$CANDIDATE_COUNT, promoted=$PROMOTED_COUNT)"
   # OAuth access tokens outlive neither this chain nor a long job: refresh
   # per task via the planner's own flow (persists the rotated record to
   # ~/.grok/auth.json). Falls back to the env key on failure.

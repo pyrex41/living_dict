@@ -84,4 +84,47 @@ defmodule LdHost.ForthTest do
       Forth.interpret(vm(), ": A : B ; ;")
     end
   end
+
+  test "bind_vocab installs existing colon bodies, not stubs" do
+    tokens = Forth.tokenize("DUP")
+    row = {"TWICE", tokens, {["n"], ["n", "n"], []}, ": TWICE ( n -- n n ) DUP ;"}
+    result = Forth.interpret(Forth.bind_vocab(vm(), [row]), "5 TWICE")
+    assert result.stack == [5, 5]
+    assert Forth.defined_names(result) == ["TWICE"]
+  end
+
+  test "USE-OBJECT pushes interned content; missing sha traps" do
+    ws = tmp_ws()
+    objects = Path.join(ws, "objects")
+    host = LdHost.Host.new(ws, objects_dir: objects)
+    sha = LdHost.Host.intern(host, "blob-body")
+
+    result = Forth.interpret(%VM{host: host}, ~s{S" #{sha}" USE-OBJECT})
+    assert result.stack == ["blob-body"]
+
+    assert_raise Error, ~r/no object: deadbeef/, fn ->
+      Forth.interpret(%VM{host: host}, ~s{S" deadbeef" USE-OBJECT})
+    end
+  end
+
+  test "PATCH-FILE reads then writes; >>> is first-occurrence replace" do
+    ws = tmp_ws()
+    host = LdHost.Host.new(ws, objects_dir: Path.join(ws, "objects"))
+    File.write!(Path.join(ws, "greet.txt"), "hello\n")
+
+    Forth.interpret(%VM{host: host}, ~s{S" hello world\n" S" greet.txt" PATCH-FILE DROP})
+    assert File.read!(Path.join(ws, "greet.txt")) == "hello world\n"
+
+    Forth.interpret(%VM{host: host}, ~s{S" hello world>>>hey" S" greet.txt" PATCH-FILE DROP})
+    assert File.read!(Path.join(ws, "greet.txt")) == "hey\n"
+  end
+
+  defp tmp_ws do
+    tmp =
+      System.tmp_dir!()
+      |> Path.join("ldforth-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(tmp)
+    tmp
+  end
 end

@@ -12,33 +12,229 @@ defmodule LdHost.Dictionary do
     skipped with a warning
   """
 
-  alias LdHost.Forth
+  alias LdHost.{Contracts, Forth}
 
   @safe_name ~r/^[A-Z][A-Z0-9-]{0,62}$/
   @reserved ~w(: ; IF ELSE THEN DUP DROP SWAP OVER + - *
                READ-FILE LIST-DIR SEARCH WRITE-FILE RUN-TESTS RUN-GATES
-               RECEIPT USE-ARTIFACT)
+               RECEIPT USE-ARTIFACT USE-OBJECT PATCH-FILE)
 
   def words_dir(dictionary_dir), do: Path.join(dictionary_dir, "words")
 
   @doc "Composed prelude source (topologically ordered) and its word names."
   def load_prelude(dictionary_dir) do
-    dir = words_dir(dictionary_dir)
+    sources = load_aligned_sources(dictionary_dir)
+    ordered = topo_order(sources)
+    {ordered |> Enum.map(&Map.fetch!(sources, &1)) |> Enum.join("\n"), ordered}
+  end
 
-    case File.ls(dir) do
-      {:error, _} ->
-        {"", []}
+  @doc """
+  Persisted colon rows `{name, tokens, {ins, outs, effects}, source}` in
+  def-before-use order. Bodies are the file's tokens, never invented stubs.
+  """
+  def load_vocab(dictionary_dir) do
+    sources = load_aligned_sources(dictionary_dir)
 
-      {:ok, names} ->
-        files = names |> Enum.filter(&String.ends_with?(&1, ".fs")) |> Enum.sort()
+    sources
+    |> topo_order()
+    |> Enum.flat_map(fn name ->
+      source = Map.fetch!(sources, name)
 
-        sources =
-          Map.new(files, fn file ->
-            {Path.basename(file, ".fs"), String.trim(File.read!(Path.join(dir, file)))}
+      case colon_body(source, name) do
+        {:ok, tokens} ->
+          [{name, tokens, contract_sig(source, name), source}]
+
+        :error ->
+          []
+      end
+    end)
+  end
+
+  @install_covering_error "catalog has INSTALL; use it instead of WRITE-FILE"
+
+  @doc """
+  Reject WRITE-FILE / the USE-ARTIFACT+WRITE-FILE zipper when INSTALL is
+  already in the catalog. Tokenizes envelope.program only so a carried
+  INSTALL.fs body cannot false-trigger itself.
+  """
+  def catalog_pressure(prelude_words, envelope) when is_list(prelude_words) do
+    names = MapSet.new(Enum.map(prelude_words, &String.upcase/1))
+
+    if not MapSet.member?(names, "INSTALL") do
+      :ok
+    else
+      artifacts = envelope_artifacts(envelope)
+      words = program_words(envelope)
+
+      cond do
+        # Read-only empty-artifact episodes have nothing INSTALL could cover.
+        artifacts == %{} and "WRITE-FILE" not in words ->
+          :ok
+
+        "INSTALL" in words ->
+          :ok
+
+        "WRITE-FILE" in words or zipper?(words) ->
+          {:error, @install_covering_error}
+
+        true ->
+          :ok
+      end
+    end
+  end
+
+  defp envelope_artifacts(%{artifacts: arts}) when is_map(arts), do: arts
+  defp envelope_artifacts(_), do: %{}
+
+  defp program_words(%{program: source}) when is_binary(source) do
+    source
+    |> Forth.tokenize()
+    |> skip_colon_bodies()
+    |> Enum.filter(&(&1.kind == :word))
+    |> Enum.map(&String.upcase(&1.value))
+  rescue
+    _ -> []
+  end
+
+  defp program_words(_), do: []
+
+  defp zipper?(words), do: "USE-ARTIFACT" in words and "WRITE-FILE" in words
+
+  # Covering judges calls, not tokens inside a definition the program is introducing.
+  defp skip_colon_bodies(tokens) do
+    {kept, _} =
+      Enum.reduce(tokens, {[], :top}, fn token, {acc, mode} ->
+        case {mode, token} do
+          {:top, %{kind: :word, value: value}} ->
+            if String.upcase(value) == ":" do
+              {acc, :colon}
+            else
+              {[token | acc], :top}
+            end
+
+          {:colon, %{kind: :word, value: value}} ->
+            if String.upcase(value) == ";" do
+              {acc, :top}
+            else
+              {acc, :colon}
+            end
+
+          {:colon, _} ->
+            {acc, :colon}
+
+          {:top, token} ->
+            {[token | acc], :top}
+        end
+      end)
+
+    Enum.reverse(kept)
+  end
+
+  @doc """
+  Catalog names that occur as Forth words in `program`, first-seen order.
+
+  Port of `harness/src/livingdict/dictionary.py`. Tokenize failures are
+  no reuse: a broken program must not count as evidence. Mentions inside
+  colon bodies count, matching Python — covering uses skip_colon_bodies/1
+  separately and must not silently change this predicate.
+  """
+  def used_names(program, names) when is_binary(program) do
+    wanted = MapSet.new(Enum.map(names, &String.upcase(to_string(&1))))
+
+    if MapSet.size(wanted) == 0 do
+      []
+    else
+      try do
+        {used, _seen} =
+          program
+          |> Forth.tokenize()
+          |> Enum.reduce({[], MapSet.new()}, fn
+            %{kind: :word, value: value}, {used, seen} ->
+              name = String.upcase(value)
+
+              if MapSet.member?(wanted, name) and not MapSet.member?(seen, name) do
+                {[name | used], MapSet.put(seen, name)}
+              else
+                {used, seen}
+              end
+
+            _, acc ->
+              acc
           end)
 
-        ordered = topo_order(sources)
-        {ordered |> Enum.map(&Map.fetch!(sources, &1)) |> Enum.join("\n"), ordered}
+        Enum.reverse(used)
+      rescue
+        _ -> []
+      end
+    end
+  end
+
+  def used_names(_, _), do: []
+
+  @doc "Names that have survived a clean reuse episode (not Harbor)."
+  def load_promoted(dictionary_dir) do
+    path = Path.join(dictionary_dir, "promoted.txt")
+
+    case File.read(path) do
+      {:ok, body} ->
+        body
+        |> String.split(["\n", "\r"], trim: true)
+        |> Enum.map(&String.upcase/1)
+        |> Enum.filter(&Regex.match?(@safe_name, &1))
+        |> Enum.uniq()
+
+      _ ->
+        []
+    end
+  end
+
+  @doc """
+  Record reuse-proven names in `promoted.txt`. Returns `[{name, sha256}]`
+  only for names newly marked that already have a candidate `.fs`.
+  """
+  def mark_promoted(dictionary_dir, names) when is_list(names) do
+    File.mkdir_p!(dictionary_dir)
+    already = MapSet.new(load_promoted(dictionary_dir))
+
+    newly =
+      names
+      |> Enum.map(&String.upcase/1)
+      |> Enum.filter(&(Regex.match?(@safe_name, &1) and &1 not in @reserved))
+      |> Enum.uniq()
+      |> Enum.reject(&MapSet.member?(already, &1))
+      |> Enum.flat_map(fn name ->
+        path = Path.join(words_dir(dictionary_dir), "#{name}.fs")
+
+        case File.read(path) do
+          {:ok, source} -> [{name, LdHost.Policy.sha256_hex(source)}]
+          _ -> []
+        end
+      end)
+
+    if newly != [] do
+      union = load_promoted(dictionary_dir) ++ Enum.map(newly, &elem(&1, 0))
+
+      File.write!(
+        Path.join(dictionary_dir, "promoted.txt"),
+        Enum.join(Enum.uniq(union), "\n") <> "\n"
+      )
+    end
+
+    newly
+  end
+
+  @doc "True when the colon body is stack sugar plus exactly one host primitive."
+  def tautology?(tokens) when is_list(tokens) do
+    if Enum.any?(tokens, &(&1.kind != :word)) do
+      false
+    else
+      sugar = ~w(DUP DROP SWAP OVER)
+      hosts = MapSet.new(Forth.host_words())
+
+      words = Enum.map(tokens, &String.upcase(&1.value))
+      {host_hits, rest} = Enum.split_with(words, &MapSet.member?(hosts, &1))
+
+      length(host_hits) == 1 and Enum.all?(rest, &(&1 in sugar))
     end
   end
 
@@ -75,8 +271,12 @@ defmodule LdHost.Dictionary do
 
   defp visit(name, deps, done, path, acc) do
     cond do
-      MapSet.member?(done, name) -> {done, acc}
-      MapSet.member?(path, name) -> {done, acc}
+      MapSet.member?(done, name) ->
+        {done, acc}
+
+      MapSet.member?(path, name) ->
+        {done, acc}
+
       true ->
         {done, acc} =
           Enum.reduce(Enum.sort(deps[name] || []), {done, acc}, fn dep, {d, a} ->
@@ -93,11 +293,112 @@ defmodule LdHost.Dictionary do
     _ -> []
   end
 
+  defp load_word_sources(dictionary_dir) do
+    dir = words_dir(dictionary_dir)
+
+    case File.ls(dir) do
+      {:error, _} ->
+        %{}
+
+      {:ok, names} ->
+        names
+        |> Enum.filter(&String.ends_with?(&1, ".fs"))
+        |> Enum.filter(fn file ->
+          Regex.match?(@safe_name, Path.basename(file, ".fs"))
+        end)
+        |> Enum.sort()
+        |> Enum.reduce(%{}, fn file, acc ->
+          path = Path.join(dir, file)
+          name = Path.basename(file, ".fs")
+
+          case File.read(path) do
+            {:ok, bin} when is_binary(bin) ->
+              if String.valid?(bin) do
+                Map.put(acc, name, String.trim(bin))
+              else
+                acc
+              end
+
+            _ ->
+              acc
+          end
+        end)
+    end
+  end
+
+  # Filename stem and colon name must be the same identity or the critic
+  # (prelude source) and Forth (vocab bind) would define different words.
+  defp load_aligned_sources(dictionary_dir) do
+    Enum.reduce(load_word_sources(dictionary_dir), %{}, fn {name, source}, acc ->
+      case colon_body(source, name) do
+        {:ok, _} -> Map.put(acc, name, source)
+        :error -> acc
+      end
+    end)
+  end
+
+  defp colon_body(source, expected_name) do
+    tokens = Forth.tokenize(source)
+
+    case tokens do
+      [%{kind: :word, value: colon}, %{kind: :word, value: name} | rest] ->
+        if String.upcase(colon) == ":" and String.upcase(name) == expected_name do
+          take_colon_body(rest, [])
+        else
+          :error
+        end
+
+      _ ->
+        :error
+    end
+  rescue
+    _ -> :error
+  end
+
+  defp take_colon_body([], _acc), do: :error
+
+  defp take_colon_body([%{kind: :word, value: value} = token | rest], acc) do
+    case String.upcase(value) do
+      ";" -> {:ok, Enum.reverse(acc)}
+      ":" -> :error
+      _ -> take_colon_body(rest, [token | acc])
+    end
+  end
+
+  defp take_colon_body([token | rest], acc), do: take_colon_body(rest, [token | acc])
+
+  defp contract_sig(source, name) do
+    case Map.get(Contracts.extract(source), name) do
+      nil ->
+        {[], [], []}
+
+      inner ->
+        words =
+          inner
+          |> String.replace(",", " ")
+          |> String.split(~r/\s+/, trim: true)
+
+        case Enum.split_while(words, &(&1 != "--")) do
+          {ins, ["--" | rest]} ->
+            {outs, effects} =
+              case Enum.split_while(rest, &(&1 != "|")) do
+                {outs, ["|" | effects]} -> {outs, effects}
+                {outs, []} -> {outs, []}
+              end
+
+            {ins, outs, effects}
+
+          _ ->
+            {[], [], []}
+        end
+    end
+  end
+
   @doc """
-  Persist promoted words. Each entry: `{name, body_source, contract}` with
+  Persist candidate words. Each entry: `{name, body_source, contract}` with
   contract the canonical `( ... )` string. Returns `[{name, sha256}]` for
   words actually written (byte-identical files are skipped, like the
-  reference).
+  reference). Promotion is a later reuse mark, not this write.
   """
   def save_words(dictionary_dir, entries) do
     dir = words_dir(dictionary_dir)

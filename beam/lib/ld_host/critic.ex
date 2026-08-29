@@ -69,12 +69,141 @@ defmodule LdHost.Critic do
   def validate(program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys) do
     GenServer.call(
       __MODULE__,
-      {:validate, program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys},
+      {:validate, overlay_live_words(program), allowed_effects, allowed_globs, forbidden_globs,
+       artifact_keys},
       30_000
     )
   end
 
+  # Shen host-word table is the frozen eval ABI. Live BEAM words are
+  # rewritten in place so the critic can Accept without a preflight.py
+  # or validate.shen edit. Forth.tokenize/1 drops `( contract )` groups;
+  # this scanner copies them through and only substitutes calls.
+  def overlay_live_words(program) when is_binary(program) do
+    program
+    |> String.graphemes()
+    |> overlay_scan(true, :normal, [], nil)
+    |> Enum.reverse()
+    |> Enum.join()
+  rescue
+    _ -> program
+  end
+
+  defp overlay_scan([], _prev_space, _mode, acc, _last_str), do: acc
+
+  defp overlay_scan([c | rest] = src, prev_space, mode, acc, last_str) do
+    cond do
+      ws?(c) ->
+        overlay_scan(rest, true, mode, [c | acc], last_str)
+
+      c == "\\" and prev_space ->
+        {chunk, remaining} = take_line(src)
+        overlay_scan(remaining, true, mode, [chunk | acc], last_str)
+
+      c == "(" and (rest == [] or ws?(hd(rest))) ->
+        {chunk, remaining} = take_paren(src)
+        overlay_scan(remaining, true, mode, [chunk | acc], last_str)
+
+      (c == "S" or c == "s") and match?(["\"" | _], rest) ->
+        case take_s_string(src) do
+          {:ok, chunk, inner, remaining} ->
+            overlay_scan(remaining, false, mode, [chunk | acc], inner)
+
+          :unterminated ->
+            [Enum.join(src) | acc]
+        end
+
+      true ->
+        {word, remaining} = take_word(src)
+        {piece, mode, last_str} = rewrite_word(word, mode, last_str)
+        overlay_scan(remaining, false, mode, [piece | acc], last_str)
+    end
+  end
+
+  defp rewrite_word(word, mode, last_str) do
+    key = String.upcase(word)
+
+    cond do
+      mode == :normal and key == ":" ->
+        {word, :name, nil}
+
+      mode == :name ->
+        {word, :body, nil}
+
+      mode == :body and key == ";" ->
+        {word, :normal, nil}
+
+      key == "USE-OBJECT" ->
+        {"READ-FILE", mode, nil}
+
+      key == "PATCH-FILE" ->
+        piece =
+          if is_binary(last_str) do
+            # Keep the path literal immediately before WRITE-FILE so Shen
+            # write-check still gates forbidden globs.
+            ~s{READ-FILE DROP S" #{last_str}" WRITE-FILE}
+          else
+            "DUP READ-FILE DROP WRITE-FILE"
+          end
+
+        {piece, mode, nil}
+
+      true ->
+        {word, mode, nil}
+    end
+  end
+
+  defp ws?(c), do: c in [" ", "\t", "\n", "\r", "\f", "\v"]
+
+  defp take_line(src) do
+    {chunk, rest} = Enum.split_while(src, &(&1 != "\n"))
+
+    case rest do
+      ["\n" | more] -> {Enum.join(chunk ++ ["\n"]), more}
+      [] -> {Enum.join(chunk), []}
+    end
+  end
+
+  defp take_paren(["(" | rest]) do
+    {inner, rest} = Enum.split_while(rest, &(&1 != ")"))
+
+    case rest do
+      [")" | more] -> {"(" <> Enum.join(inner) <> ")", more}
+      [] -> {"(" <> Enum.join(inner), []}
+    end
+  end
+
+  defp take_s_string([s, "\"" | rest]) do
+    {rest, prefix} =
+      case rest do
+        [" " | more] -> {more, s <> "\" "}
+        _ -> {rest, s <> "\""}
+      end
+
+    case Enum.split_while(rest, &(&1 != "\"")) do
+      {_inner, []} ->
+        :unterminated
+
+      {inner, ["\"" | more]} ->
+        text = Enum.join(inner)
+        {:ok, prefix <> text <> "\"", text, more}
+    end
+  end
+
+  defp take_word(src) do
+    {chars, rest} = Enum.split_while(src, &(not ws?(&1)))
+    {Enum.join(chars), rest}
+  end
+
   def engine, do: GenServer.call(__MODULE__, :engine)
+
+  @doc """
+  Register additional shaken modules in the critic process (it owns the
+  shen-erl ETS stores). Used by Spec to load `kl_spec` beside `kl_validate`.
+  """
+  def boot_modules(modules) when is_list(modules) do
+    GenServer.call(__MODULE__, {:boot_modules, modules}, 30_000)
+  end
 
   def repo_root, do: Path.expand(Path.join([__DIR__, "..", "..", ".."]))
 
@@ -206,6 +335,24 @@ defmodule LdHost.Critic do
 
   @impl true
   def handle_call(:engine, _from, state), do: {:reply, state.engine, state}
+
+  def handle_call({:boot_modules, _modules}, _from, %{engine: :none} = state) do
+    {:reply, {:error, state.error}, state}
+  end
+
+  def handle_call({:boot_modules, modules}, _from, %{engine: :beam} = state) do
+    :ok = :shen_erl_kl_compiler.boot_shaken(modules)
+    :ok = :shen_erl_kl_compiler.run_shaken(modules)
+    {:reply, :ok, state}
+  rescue
+    e -> {:reply, {:error, Exception.message(e)}, state}
+  catch
+    kind, val -> {:reply, {:error, "#{kind}: #{inspect(val, limit: 3)}"}, state}
+  end
+
+  def handle_call({:boot_modules, _modules}, _from, state) do
+    {:reply, {:error, "critic engine #{state.engine} cannot load shen-erl modules"}, state}
+  end
 
   def handle_call({:validate, _p, _e, _g, _f, _a}, _from, %{engine: :none} = state) do
     {:reply, {:error, state.error}, state}

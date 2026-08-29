@@ -11,7 +11,7 @@ ifneq ($(wildcard $(SHENSCRIPT)),)
 YGGDRASIL_HOST ?= node $(SHENSCRIPT)
 endif
 
-.PHONY: eval-test eval-oracle harness-test openresty-test eval-resty-config-01 openresty-serve think-config-01 client-test livingdict client-web test browser-test browser-shake browser-serve compare compare-dry scudcheck pack-critic critic-suite beam-deps beam-test beam-run
+.PHONY: eval-test eval-oracle harness-test openresty-test eval-resty-config-01 openresty-serve think-config-01 client-test livingdict client-web test browser-test browser-shake browser-serve compare compare-dry scudcheck pack-critic critic-suite beam-deps beam-test beam-run spec-erl
 
 eval-test:
 	cd eval && python3 -m unittest discover -s tests -v
@@ -111,8 +111,14 @@ browser-serve:
 beam-deps:
 	cd beam && mix deps.get
 
+SPEC_ERL_BEAM := beam/priv/spec-erl/app-erlang/ebin/kl_spec.beam
+
 beam-test:
 	@if ! command -v mix >/dev/null 2>&1; then echo "skip beam: elixir not found"; exit 0; fi
+	@if [ -x "$(YGGDRASIL)" ]; then $(MAKE) spec-erl; \
+	else \
+	  if [ ! -f "$(SPEC_ERL_BEAM)" ]; then echo "spec-erl artifact missing and yggdrasil not found; SpecTest will skip"; fi; \
+	fi
 	cd beam && mix test
 
 beam-run:
@@ -122,6 +128,12 @@ beam-run:
 # Native BEAM critic: typed Shen -> shen-erl BEAM modules (loads into beam/).
 critic-erl:
 	$(YGGDRASIL) build shen/critic/validate.shen openresty/dist/critic-erl --target erlang --typecheck $(if $(YGGDRASIL_HOST),--host "$(YGGDRASIL_HOST)")
+
+# Product spec (beam-only shake; not the critic). Rebuild when spec.shen is newer.
+spec-erl: $(SPEC_ERL_BEAM)
+
+$(SPEC_ERL_BEAM): shen/product/spec.shen
+	$(YGGDRASIL) build shen/product/spec.shen beam/priv/spec-erl --target erlang --typecheck $(if $(YGGDRASIL_HOST),--host "$(YGGDRASIL_HOST)")
 
 # ---- Terminal-Bench / Harbor packaging (bench/) ----
 BENCH_CRITIC := bench/artifacts/critic

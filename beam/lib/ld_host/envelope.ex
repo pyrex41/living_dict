@@ -60,11 +60,7 @@ defmodule LdHost.Envelope do
   defp normalize_nodes(_), do: nil
 
   def fingerprint(%__MODULE__{} = env) do
-    tokens =
-      env.program
-      |> Forth.tokenize()
-      |> Enum.map(fn t -> "#{t.kind}:#{t.value}" end)
-      |> Enum.join(<<0>>)
+    tokens = token_fingerprint(env.program)
 
     artifacts =
       env.artifacts
@@ -72,10 +68,34 @@ defmodule LdHost.Envelope do
       |> Enum.map(fn {k, v} -> "#{k}:#{Policy.sha256_hex(v)}" end)
       |> Enum.join(<<0>>)
 
-    Policy.sha256_hex(tokens <> "" <> artifacts)
+    nodes = nodes_fingerprint(env.nodes)
+
+    Policy.sha256_hex(tokens <> <<1>> <> artifacts <> <<1>> <> nodes)
   rescue
     # An untokenizable program still needs a stable fingerprint so the
     # duplicate guard can block a byte-identical resubmission.
     _ -> Policy.sha256_hex(env.program)
+  end
+
+  defp token_fingerprint(program) do
+    program
+    |> Forth.tokenize()
+    |> Enum.map(fn t -> "#{t.kind}:#{t.value}" end)
+    |> Enum.join(<<0>>)
+  rescue
+    _ -> program
+  end
+
+  defp nodes_fingerprint(nil), do: ""
+
+  defp nodes_fingerprint(nodes) when is_list(nodes) do
+    nodes
+    |> Enum.sort_by(& &1.id)
+    |> Enum.map(fn node ->
+      writes = node.writes |> List.wrap() |> Enum.join(",")
+      deps = node.depends_on |> List.wrap() |> Enum.join(",")
+      "#{node.id}:#{writes}:#{deps}:#{token_fingerprint(node.program || "")}"
+    end)
+    |> Enum.join(<<0>>)
   end
 end
