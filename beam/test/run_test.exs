@@ -215,4 +215,104 @@ defmodule LdHost.RunTest do
     # No I/O happened: workspace untouched
     assert LdHost.Policy.snapshot(ws2) == %{}
   end
+
+  test "seeded INSTALL is bound, not composed into the running program" do
+    ws = workspace()
+    dict = System.tmp_dir!() |> Path.join("lddictseed-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(Path.join(dict, "words"))
+
+    File.write!(
+      Path.join([dict, "words", "INSTALL.fs"]),
+      ": INSTALL ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ;\n"
+    )
+
+    program = ~s{S" greet.txt" S" greet.txt" INSTALL RUN-GATES DROP RECEIPT DROP}
+
+    envelope = %{
+      "language" => "forth",
+      "program" => program,
+      "artifacts" => %{"greet.txt" => "hello from bound vocab\n"},
+      "rationale" => "call seeded INSTALL"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
+    result = Run.run("greet", workspace: ws, contract: contract(), planner_fn: planner, dictionary_dir: dict, max_episodes: 1)
+
+    assert result.success
+    assert File.read!(Path.join(ws, "greet.txt")) =~ "hello from bound vocab"
+
+    ran =
+      result.run_dir
+      |> Path.join("trace.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+      |> Enum.find(&(&1["type"] == "execution.program"))
+      |> get_in(["data", "program"])
+
+    assert ran == program
+    refute ran =~ "USE-ARTIFACT"
+    refute ran =~ "DUP"
+  end
+
+  test "starved seeded INSTALL still rejects pre-I/O via composed critic" do
+    ws = workspace()
+    dict = System.tmp_dir!() |> Path.join("lddictstarve-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(Path.join(dict, "words"))
+
+    File.write!(
+      Path.join([dict, "words", "INSTALL.fs"]),
+      ": INSTALL ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ;\n"
+    )
+
+    starved = %{
+      "language" => "forth",
+      "program" => ~s{INSTALL RECEIPT DROP},
+      "artifacts" => %{},
+      "rationale" => "starved seeded call"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, starved, %{}} end
+    result = Run.run("starve", workspace: ws, contract: contract(), planner_fn: planner, dictionary_dir: dict, max_episodes: 1)
+
+    refute result.success
+    events = File.read!(Path.join(result.run_dir, "events.jsonl"))
+    assert events =~ "critic.rejected"
+    assert events =~ "stack underflow at INSTALL"
+    assert LdHost.Policy.snapshot(ws) == %{}
+  end
+
+  test "CAT host-word alias is not written to the dictionary" do
+    ws = workspace()
+
+    envelope = %{
+      "language" => "forth",
+      "program" =>
+        ~s{: CAT ( path -- | read ) READ-FILE DROP ; } <>
+          ~s{S" greet.txt" USE-ARTIFACT S" greet.txt" WRITE-FILE DROP } <>
+          ~s{S" greet.txt" CAT RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"greet.txt" => "hello\n"},
+      "rationale" => "alias READ-FILE"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
+    result = Run.run("goal", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 1)
+
+    assert result.success
+    refute File.exists?(Path.join([result.run_dir, "dictionary", "words", "CAT.fs"]))
+    refute "CAT" in result.promoted_words
+
+    events =
+      result.run_dir
+      |> Path.join("events.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+
+    evidence = Enum.filter(events, &(&1["kind"] == "dictionary.promotion_evidence"))
+    assert Enum.any?(evidence, fn event ->
+             event["payload"]["word"] == "CAT" and event["payload"]["eligible"] == false and
+               event["payload"]["reasons"] == ["host-word alias"]
+           end)
+  end
 end

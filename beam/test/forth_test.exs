@@ -84,4 +84,12 @@ defmodule LdHost.ForthTest do
       Forth.interpret(vm(), ": A : B ; ;")
     end
   end
+
+  test "bind_vocab installs existing colon bodies, not stubs" do
+    tokens = Forth.tokenize("DUP")
+    row = {"TWICE", tokens, {["n"], ["n", "n"], []}, ": TWICE ( n -- n n ) DUP ;"}
+    result = Forth.interpret(Forth.bind_vocab(vm(), [row]), "5 TWICE")
+    assert result.stack == [5, 5]
+    assert Forth.defined_names(result) == ["TWICE"]
+  end
 end

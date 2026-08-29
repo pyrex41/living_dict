@@ -12,7 +12,7 @@ defmodule LdHost.Dictionary do
     skipped with a warning
   """
 
-  alias LdHost.Forth
+  alias LdHost.{Contracts, Forth}
 
   @safe_name ~r/^[A-Z][A-Z0-9-]{0,62}$/
   @reserved ~w(: ; IF ELSE THEN DUP DROP SWAP OVER + - *
@@ -23,22 +23,45 @@ defmodule LdHost.Dictionary do
 
   @doc "Composed prelude source (topologically ordered) and its word names."
   def load_prelude(dictionary_dir) do
-    dir = words_dir(dictionary_dir)
+    sources = load_aligned_sources(dictionary_dir)
+    ordered = topo_order(sources)
+    {ordered |> Enum.map(&Map.fetch!(sources, &1)) |> Enum.join("\n"), ordered}
+  end
 
-    case File.ls(dir) do
-      {:error, _} ->
-        {"", []}
+  @doc """
+  Persisted colon rows `{name, tokens, {ins, outs, effects}, source}` in
+  def-before-use order. Bodies are the file's tokens, never invented stubs.
+  """
+  def load_vocab(dictionary_dir) do
+    sources = load_aligned_sources(dictionary_dir)
 
-      {:ok, names} ->
-        files = names |> Enum.filter(&String.ends_with?(&1, ".fs")) |> Enum.sort()
+    sources
+    |> topo_order()
+    |> Enum.flat_map(fn name ->
+      source = Map.fetch!(sources, name)
 
-        sources =
-          Map.new(files, fn file ->
-            {Path.basename(file, ".fs"), String.trim(File.read!(Path.join(dir, file)))}
-          end)
+      case colon_body(source, name) do
+        {:ok, tokens} ->
+          [{name, tokens, contract_sig(source, name), source}]
 
-        ordered = topo_order(sources)
-        {ordered |> Enum.map(&Map.fetch!(sources, &1)) |> Enum.join("\n"), ordered}
+        :error ->
+          []
+      end
+    end)
+  end
+
+  @doc "True when the colon body is stack sugar plus exactly one host primitive."
+  def tautology?(tokens) when is_list(tokens) do
+    if Enum.any?(tokens, &(&1.kind != :word)) do
+      false
+    else
+      sugar = ~w(DUP DROP SWAP OVER)
+      hosts = MapSet.new(Forth.host_words())
+
+      words = Enum.map(tokens, &String.upcase(&1.value))
+      {host_hits, rest} = Enum.split_with(words, &MapSet.member?(hosts, &1))
+
+      length(host_hits) == 1 and Enum.all?(rest, &(&1 in sugar))
     end
   end
 
@@ -91,6 +114,107 @@ defmodule LdHost.Dictionary do
     Forth.tokenize(source)
   rescue
     _ -> []
+  end
+
+  defp load_word_sources(dictionary_dir) do
+    dir = words_dir(dictionary_dir)
+
+    case File.ls(dir) do
+      {:error, _} ->
+        %{}
+
+      {:ok, names} ->
+        names
+        |> Enum.filter(&String.ends_with?(&1, ".fs"))
+        |> Enum.filter(fn file ->
+          Regex.match?(@safe_name, Path.basename(file, ".fs"))
+        end)
+        |> Enum.sort()
+        |> Enum.reduce(%{}, fn file, acc ->
+          path = Path.join(dir, file)
+          name = Path.basename(file, ".fs")
+
+          case File.read(path) do
+            {:ok, bin} when is_binary(bin) ->
+              if String.valid?(bin) do
+                Map.put(acc, name, String.trim(bin))
+              else
+                acc
+              end
+
+            _ ->
+              acc
+          end
+        end)
+    end
+  end
+
+  # Filename stem and colon name must be the same identity or the critic
+  # (prelude source) and Forth (vocab bind) would define different words.
+  defp load_aligned_sources(dictionary_dir) do
+    Enum.reduce(load_word_sources(dictionary_dir), %{}, fn {name, source}, acc ->
+      case colon_body(source, name) do
+        {:ok, _} -> Map.put(acc, name, source)
+        :error -> acc
+      end
+    end)
+  end
+
+  defp colon_body(source, expected_name) do
+    tokens = Forth.tokenize(source)
+
+    case tokens do
+      [%{kind: :word, value: colon}, %{kind: :word, value: name} | rest] ->
+        if String.upcase(colon) == ":" and String.upcase(name) == expected_name do
+          take_colon_body(rest, [])
+        else
+          :error
+        end
+
+      _ ->
+        :error
+    end
+  rescue
+    _ -> :error
+  end
+
+  defp take_colon_body([], _acc), do: :error
+
+  defp take_colon_body([%{kind: :word, value: value} = token | rest], acc) do
+    case String.upcase(value) do
+      ";" -> {:ok, Enum.reverse(acc)}
+      ":" -> :error
+      _ -> take_colon_body(rest, [token | acc])
+    end
+  end
+
+  defp take_colon_body([token | rest], acc), do: take_colon_body(rest, [token | acc])
+
+  defp contract_sig(source, name) do
+    case Map.get(Contracts.extract(source), name) do
+      nil ->
+        {[], [], []}
+
+      inner ->
+        words =
+          inner
+          |> String.replace(",", " ")
+          |> String.split(~r/\s+/, trim: true)
+
+        case Enum.split_while(words, &(&1 != "--")) do
+          {ins, ["--" | rest]} ->
+            {outs, effects} =
+              case Enum.split_while(rest, &(&1 != "|")) do
+                {outs, ["|" | effects]} -> {outs, effects}
+                {outs, []} -> {outs, []}
+              end
+
+            {ins, outs, effects}
+
+          _ ->
+            {[], [], []}
+        end
+    end
   end
 
   @doc """

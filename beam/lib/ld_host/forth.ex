@@ -32,6 +32,16 @@ defmodule LdHost.Forth do
   def host_words, do: @host_words
   def stack_words, do: @stack_words
 
+  @doc "Install persisted colon bodies onto the VM."
+  def bind_vocab(%VM{} = vm, rows) when is_list(rows) do
+    colon =
+      Enum.reduce(rows, vm.colon, fn {name, tokens, _sig, _source}, acc ->
+        Map.put(acc, String.upcase(name), tokens)
+      end)
+
+    %{vm | colon: colon}
+  end
+
   # ---- tokenizer --------------------------------------------------------
 
   @spec tokenize(String.t()) :: [Token.t()]
