@@ -1,4 +1,27 @@
-# Arms race results
+# Uniqueness axes
+
+The scored dashboard is **family-transfer**, **contract-first**,
+**replay-without-model**, **wave-speedup**, and **obligation-hold**.
+Terminal-Bench mean reward (including the v5 **0.533** campaign) stays
+Harbor hygiene, not go/no-go. `Verdict.warm_run_allowed` (5-point / 25%
+preregistration) remains a **column**.
+
+| axis | what it scores |
+|---|---|
+| family_transfer | later tasks whose `used_words` intersect prior catalog names; seed-present unused prelude is 0 (TB-warm-5) |
+| contract_first | share of successes with `judge` `approved contract` or `spec-derived` |
+| replay_without_model | `Run.run` of saved `envelope.json` (program + artifact hashes), `model_calls == 0`, gates green |
+| wave_speedup | port of `wave.compute_metrics`; two-node envelope via `node_view` + Space has `nodes_parallel >= 2` |
+| obligation_hold | dispatcher `hold_ms`, expire vs ack, no double-ack, reclaim at `generation+1` |
+
+`LdHost.Uniqueness.score/1` reads a Demo/Polyglot results map and the
+run ledgers. Mix `ld.demo` / `ld.polyglot` print these axes above the
+warm-dictionary verdict.
+
+---
+
+# Arms race results (hygiene / history)
+
 
 ## Aider Polyglot (rust + go + cpp full tracks), 2026-08-27
 

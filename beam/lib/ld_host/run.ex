@@ -189,6 +189,8 @@ defmodule LdHost.Run do
                feedback(state, "critic rejected the plan:\n" <> Enum.join(errors, "\n"))}
 
             {:accept, depth, effects} ->
+              persist_envelope(state, envelope)
+
               {:ok, _} =
                 Ledger.commit(state.ledger, "critic.accepted", %{
                   episode: episode,
@@ -663,19 +665,66 @@ defmodule LdHost.Run do
   defp feedback(state, text), do: %{state | feedback: text}
 
   defp record_model_call(state, telemetry) do
+    added = Map.get(telemetry, :model_calls, Map.get(telemetry, "model_calls", 1))
     Ledger.trace(state.ledger, "llm.response", telemetry)
 
-    {:ok, _} =
-      Ledger.commit(state.ledger, "budget.consumed", Map.put(telemetry, :episode, state.episode))
+    if added > 0 do
+      {:ok, _} =
+        Ledger.commit(state.ledger, "budget.consumed", Map.put(telemetry, :episode, state.episode))
 
-    %{
+      %{
+        state
+        | model_calls: state.model_calls + added,
+          tokens: %{
+            input_tokens: state.tokens.input_tokens + (telemetry[:input_tokens] || 0),
+            output_tokens: state.tokens.output_tokens + (telemetry[:output_tokens] || 0)
+          }
+      }
+    else
+      # Replay planner_fn returns the saved envelope with the model off.
       state
-      | model_calls: state.model_calls + 1,
-        tokens: %{
-          input_tokens: state.tokens.input_tokens + (telemetry[:input_tokens] || 0),
-          output_tokens: state.tokens.output_tokens + (telemetry[:output_tokens] || 0)
-        }
-    }
+    end
+  end
+
+  # First accepted plan only: hashes, not bodies, so replay is content-addressed.
+  defp persist_envelope(state, envelope) do
+    path = Path.join(state.run_dir, "envelope.json")
+
+    unless File.exists?(path) do
+      objects = Store.objects_root(state.run_dir)
+
+      Enum.each(envelope.artifacts, fn
+        {_key, body} when is_binary(body) -> Store.intern(objects, body)
+        _ -> :ok
+      end)
+
+      payload = %{
+        "language" => "forth",
+        "program" => envelope.program,
+        "artifacts" => artifact_digests(envelope.artifacts),
+        "rationale" => envelope.rationale
+      }
+
+      payload =
+        if envelope.nodes do
+          Map.put(payload, "nodes", encode_envelope_nodes(envelope.nodes))
+        else
+          payload
+        end
+
+      File.write!(path, JSON.encode!(payload))
+    end
+  end
+
+  defp encode_envelope_nodes(nodes) do
+    Enum.map(nodes, fn node ->
+      %{
+        "id" => node.id,
+        "writes" => node.writes,
+        "depends_on" => node.depends_on,
+        "program" => node.program
+      }
+    end)
   end
 
   # Transient transport failures (timeouts, resets) must not kill a run:
