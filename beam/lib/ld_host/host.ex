@@ -352,12 +352,32 @@ defmodule LdHost.Host do
   def intern_blob(%{objects_dir: dir}, content, digest) when is_binary(dir) and is_binary(digest) do
     path = blob_path(dir, digest)
 
-    unless path == nil or File.exists?(path) do
-      File.mkdir_p!(Path.dirname(path))
-      File.write!(path, content)
-    end
+    cond do
+      path == nil ->
+        :ok
 
-    :ok
+      File.exists?(path) ->
+        :ok
+
+      true ->
+        File.mkdir_p!(Path.dirname(path))
+        tmp = Path.join(Path.dirname(path), ".tmp-#{digest}-#{System.unique_integer([:positive])}")
+
+        try do
+          File.write!(tmp, content)
+
+          case File.rename(tmp, path) do
+            :ok ->
+              :ok
+
+            {:error, _} ->
+              unless File.exists?(path), do: File.write!(path, content)
+              :ok
+          end
+        after
+          File.rm(tmp)
+        end
+    end
   end
 
   def intern_blob(_host, _content, _digest), do: :ok
@@ -371,8 +391,15 @@ defmodule LdHost.Host do
 
       path ->
         case File.read(path) do
-          {:ok, data} -> {:ok, data}
-          {:error, _} -> {:error, "missing"}
+          {:ok, data} ->
+            if Policy.sha256_hex(data) == sha do
+              {:ok, data}
+            else
+              {:error, "corrupt"}
+            end
+
+          {:error, _} ->
+            {:error, "missing"}
         end
     end
   end
@@ -387,9 +414,10 @@ defmodule LdHost.Host do
 
   # First-occurrence find/replace when the patch has a >>> separator;
   # otherwise the patch is the whole new body (file must already exist).
-  defp apply_patch(current, patch) do
-    case String.split(patch, ">>>", parts: 2) do
-      [find, replace] -> String.replace(current, find, replace, global: false)
+  # Binary ops so a non-UTF-8 file cannot raise past Forth.Error.
+  defp apply_patch(current, patch) when is_binary(current) and is_binary(patch) do
+    case :binary.split(patch, ">>>") do
+      [find, replace] -> :binary.replace(current, find, replace, [])
       _ -> patch
     end
   end

@@ -369,6 +369,7 @@ defmodule LdHost.RunTest do
     assert length(outs) == 2
     assert length(takes) == 2
     assert Enum.map(outs, &get_in(&1, ["data", "pattern_or_tuple", "wave"])) |> Enum.uniq() == [0]
+    assert Enum.any?(trace, &(&1["type"] == "graph.wave.gates"))
   end
 
   test "overlapping writes in a wave are refused before I/O" do
@@ -392,6 +393,73 @@ defmodule LdHost.RunTest do
     refute File.exists?(Path.join(ws, "greet.txt"))
     events = File.read!(Path.join(result.run_dir, "events.jsonl"))
     refute events =~ "artifacts.applied"
+    assert events =~ "critic.rejected"
+  end
+
+  test "overlay keeps in-band contracts and node programs are critic-checked" do
+    src = ~s{: INSTALL ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ;}
+    overlaid = LdHost.Critic.overlay_live_words(src)
+    assert overlaid =~ "( key path -- | read, write )"
+    assert overlaid =~ "USE-ARTIFACT"
+
+    patched = LdHost.Critic.overlay_live_words(~s{S" p" S" greet.txt" PATCH-FILE})
+    assert patched =~ ~s{S" greet.txt" WRITE-FILE}
+    refute patched =~ "PATCH-FILE"
+
+    ws = workspace()
+
+    bad_contract = %{
+      "language" => "forth",
+      "program" =>
+        ~s{: INSTALL ( key -- | write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ; } <>
+          ~s{S" greet.txt" S" greet.txt" INSTALL RECEIPT DROP},
+      "artifacts" => %{"greet.txt" => "hello\n"},
+      "rationale" => "mismatched contract"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, bad_contract, %{}} end
+    result = Run.run("goal", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 1)
+    refute result.success
+    events = File.read!(Path.join(result.run_dir, "events.jsonl"))
+    assert events =~ "critic.rejected"
+
+    ws2 = workspace()
+
+    mystery = %{
+      "language" => "forth",
+      "program" => "RECEIPT DROP",
+      "artifacts" => %{"a.txt" => "A\n"},
+      "nodes" => [
+        %{"id" => "a", "writes" => ["a.txt"], "depends_on" => [], "program" => "MYSTERY"}
+      ],
+      "rationale" => "node unknown word"
+    }
+
+    planner2 = fn _g, _o, _f -> {:ok, mystery, %{}} end
+    r2 = Run.run("goal", workspace: ws2, contract: contract(), planner_fn: planner2, max_episodes: 1)
+    refute r2.success
+    refute File.exists?(Path.join(ws2, "a.txt"))
+    events2 = File.read!(Path.join(r2.run_dir, "events.jsonl"))
+    assert events2 =~ "critic.rejected"
+    assert events2 =~ "MYSTERY"
+
+    ws3 = workspace()
+
+    dangling = %{
+      "language" => "forth",
+      "program" => "RECEIPT DROP",
+      "artifacts" => %{"a.txt" => "A\n"},
+      "nodes" => [
+        %{"id" => "a", "writes" => ["a.txt"], "depends_on" => ["missing"], "program" => ""}
+      ],
+      "rationale" => "unknown dep"
+    }
+
+    planner3 = fn _g, _o, _f -> {:ok, dangling, %{}} end
+    r3 = Run.run("goal", workspace: ws3, contract: contract(), planner_fn: planner3, max_episodes: 1)
+    refute r3.success
+    events3 = File.read!(Path.join(r3.run_dir, "events.jsonl"))
+    assert events3 =~ "unknown depends_on"
   end
 
   test "CAT host-word alias is not written to the dictionary" do

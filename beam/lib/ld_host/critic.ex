@@ -76,68 +76,123 @@ defmodule LdHost.Critic do
   end
 
   # Shen host-word table is the frozen eval ABI. Live BEAM words are
-  # rewritten to stack-and-effect equivalents so the critic can Accept
-  # without a preflight.py or validate.shen edit.
+  # rewritten in place so the critic can Accept without a preflight.py
+  # or validate.shen edit. Forth.tokenize/1 drops `( contract )` groups;
+  # this scanner copies them through and only substitutes calls.
   def overlay_live_words(program) when is_binary(program) do
     program
-    |> LdHost.Forth.tokenize()
-    |> overlay_tokens(:normal, [])
-    |> render_overlay()
+    |> String.graphemes()
+    |> overlay_scan(true, :normal, [], nil)
+    |> Enum.reverse()
+    |> Enum.join()
   rescue
     _ -> program
   end
 
-  defp overlay_tokens([], _mode, acc), do: Enum.reverse(acc)
+  defp overlay_scan([], _prev_space, _mode, acc, _last_str), do: acc
 
-  defp overlay_tokens([token | rest], :normal, acc) do
+  defp overlay_scan([c | rest] = src, prev_space, mode, acc, last_str) do
     cond do
-      word?(token, ":") ->
-        overlay_tokens(rest, :name, [token | acc])
+      ws?(c) ->
+        overlay_scan(rest, true, mode, [c | acc], last_str)
 
-      live_call?(token, "USE-OBJECT") ->
-        overlay_tokens(rest, :normal, [%{token | value: "READ-FILE"} | acc])
+      c == "\\" and prev_space ->
+        {chunk, remaining} = take_line(src)
+        overlay_scan(remaining, true, mode, [chunk | acc], last_str)
 
-      live_call?(token, "PATCH-FILE") ->
-        extra = Enum.reverse(LdHost.Forth.tokenize("DUP READ-FILE DROP WRITE-FILE"))
-        overlay_tokens(rest, :normal, extra ++ acc)
+      c == "(" and (rest == [] or ws?(hd(rest))) ->
+        {chunk, remaining} = take_paren(src)
+        overlay_scan(remaining, true, mode, [chunk | acc], last_str)
+
+      (c == "S" or c == "s") and match?(["\"" | _], rest) ->
+        case take_s_string(src) do
+          {:ok, chunk, inner, remaining} ->
+            overlay_scan(remaining, false, mode, [chunk | acc], inner)
+
+          :unterminated ->
+            [Enum.join(src) | acc]
+        end
 
       true ->
-        overlay_tokens(rest, :normal, [token | acc])
+        {word, remaining} = take_word(src)
+        {piece, mode, last_str} = rewrite_word(word, mode, last_str)
+        overlay_scan(remaining, false, mode, [piece | acc], last_str)
     end
   end
 
-  defp overlay_tokens([token | rest], :name, acc) do
-    overlay_tokens(rest, :body, [token | acc])
-  end
+  defp rewrite_word(word, mode, last_str) do
+    key = String.upcase(word)
 
-  defp overlay_tokens([token | rest], :body, acc) do
     cond do
-      word?(token, ";") ->
-        overlay_tokens(rest, :normal, [token | acc])
+      mode == :normal and key == ":" ->
+        {word, :name, last_str}
 
-      live_call?(token, "USE-OBJECT") ->
-        overlay_tokens(rest, :body, [%{token | value: "READ-FILE"} | acc])
+      mode == :name ->
+        {word, :body, last_str}
 
-      live_call?(token, "PATCH-FILE") ->
-        extra = Enum.reverse(LdHost.Forth.tokenize("DUP READ-FILE DROP WRITE-FILE"))
-        overlay_tokens(rest, :body, extra ++ acc)
+      mode == :body and key == ";" ->
+        {word, :normal, last_str}
+
+      key == "USE-OBJECT" ->
+        {"READ-FILE", mode, last_str}
+
+      key == "PATCH-FILE" ->
+        piece =
+          if is_binary(last_str) do
+            # Keep the path literal immediately before WRITE-FILE so Shen
+            # write-check still gates forbidden globs.
+            ~s{READ-FILE DROP S" #{last_str}" WRITE-FILE}
+          else
+            "DUP READ-FILE DROP WRITE-FILE"
+          end
+
+        {piece, mode, last_str}
 
       true ->
-        overlay_tokens(rest, :body, [token | acc])
+        {word, mode, last_str}
     end
   end
 
-  defp word?(%{kind: :word, value: value}, name), do: String.upcase(value) == name
-  defp word?(_, _), do: false
+  defp ws?(c), do: c in [" ", "\t", "\n", "\r", "\f", "\v"]
 
-  defp live_call?(token, name), do: word?(token, name)
+  defp take_line(src) do
+    {chunk, rest} = Enum.split_while(src, &(&1 != "\n"))
 
-  defp render_overlay(tokens) do
-    Enum.map_join(tokens, " ", fn
-      %{kind: :string, value: v} -> ~s(S" #{v}")
-      %{kind: :number, value: v} -> Integer.to_string(v)
-      %{kind: :word, value: v} -> v
-    end)
+    case rest do
+      ["\n" | more] -> {Enum.join(chunk ++ ["\n"]), more}
+      [] -> {Enum.join(chunk), []}
+    end
+  end
+
+  defp take_paren(["(" | rest]) do
+    {inner, rest} = Enum.split_while(rest, &(&1 != ")"))
+
+    case rest do
+      [")" | more] -> {"(" <> Enum.join(inner) <> ")", more}
+      [] -> {"(" <> Enum.join(inner), []}
+    end
+  end
+
+  defp take_s_string([s, "\"" | rest]) do
+    {rest, prefix} =
+      case rest do
+        [" " | more] -> {more, s <> "\" "}
+        _ -> {rest, s <> "\""}
+      end
+
+    case Enum.split_while(rest, &(&1 != "\"")) do
+      {_inner, []} ->
+        :unterminated
+
+      {inner, ["\"" | more]} ->
+        text = Enum.join(inner)
+        {:ok, prefix <> text <> "\"", text, more}
+    end
+  end
+
+  defp take_word(src) do
+    {chars, rest} = Enum.split_while(src, &(not ws?(&1)))
+    {Enum.join(chars), rest}
   end
 
   def engine, do: GenServer.call(__MODULE__, :engine)

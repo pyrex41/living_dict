@@ -44,10 +44,21 @@ defmodule LdHost.Wave do
       end)
 
     dupes = seen |> Enum.filter(fn {_id, n} -> n > 1 end) |> Enum.map(&elem(&1, 0)) |> Enum.sort()
+    ids = MapSet.new(Map.keys(seen))
+
+    unknown =
+      for node <- nodes,
+          dep <- List.wrap(node.depends_on),
+          dep not in ids do
+        "unknown depends_on: #{node.id} -> #{dep}"
+      end
 
     cond do
       dupes != [] ->
         {:error, "duplicate node id: " <> Enum.join(dupes, ", ")}
+
+      unknown != [] ->
+        {:error, Enum.join(unknown, "\n")}
 
       true ->
         remaining = MapSet.new(Enum.map(nodes, & &1.id))
@@ -105,7 +116,7 @@ defmodule LdHost.Wave do
             {:ok, space} = Space.start_link(record: record)
 
             try do
-              run_waves(host, space, waves, artifacts, vocab, run_id, episode, 0)
+              run_waves(host, space, waves, artifacts, vocab, run_id, episode, 0, %{})
             after
               if Process.alive?(space), do: GenServer.stop(space, :normal, 5_000)
             end
@@ -113,9 +124,10 @@ defmodule LdHost.Wave do
     end
   end
 
-  defp run_waves(host, _space, [], _artifacts, _vocab, _run_id, _episode, _wave), do: {:ok, host}
+  defp run_waves(host, _space, [], _artifacts, _vocab, _run_id, _episode, _wave, colon),
+    do: {:ok, host, colon}
 
-  defp run_waves(host, space, [ready | rest], artifacts, vocab, run_id, episode, wave_index) do
+  defp run_waves(host, space, [ready | rest], artifacts, vocab, run_id, episode, wave_index, colon) do
     Enum.each(ready, fn node ->
       Space.out(space, %{
         "kind" => "node.ready",
@@ -135,22 +147,34 @@ defmodule LdHost.Wave do
 
     results = Task.await_many(tasks, 60_000)
 
-    case Enum.find(results, &match?({:trap, _, _}, &1)) do
-      {:trap, code, message} ->
-        {:trap, code, message}
+    cond do
+      match?({:trap, _, _}, Enum.find(results, &match?({:trap, _, _}, &1))) ->
+        Enum.find(results, &match?({:trap, _, _}, &1))
 
-      nil ->
-        host =
-          Enum.reduce(results, host, fn
-            {:ok, view}, acc -> Host.absorb(acc, view)
-            _, acc -> acc
+      length(Enum.filter(results, &match?({:ok, _, _}, &1))) != length(ready) ->
+        {:error, :graph, "wave did not resolve all ready nodes"}
+
+      true ->
+        {host, colon} =
+          Enum.reduce(results, {host, colon}, fn {:ok, view, node_colon}, {h, c} ->
+            {Host.absorb(h, view), Map.merge(c, node_colon)}
           end)
 
-        if "exec" in host.allowed_effects do
-          _ = LdHost.Gates.run(host, persist?: false)
-        end
+        host =
+          if "exec" in host.allowed_effects do
+            report = LdHost.Gates.run(host, persist?: false)
+            host.emit.("graph.wave.gates", %{
+              wave: wave_index,
+              passed: report.ok == true,
+              nodes: Enum.map(ready, & &1.id)
+            })
 
-        run_waves(host, space, rest, artifacts, vocab, run_id, episode, wave_index + 1)
+            %{host | last_check: report}
+          else
+            host
+          end
+
+        run_waves(host, space, rest, artifacts, vocab, run_id, episode, wave_index + 1, colon)
     end
   end
 
@@ -166,14 +190,21 @@ defmodule LdHost.Wave do
       claim ->
         node_id = claim.tuple["node"]
         node = Enum.find(ready, &(&1.id == node_id))
-        siblings = ready |> Enum.reject(&(&1.id == node_id)) |> Enum.flat_map(&write_globs/1)
-        view = Host.node_view(host, write_globs(node), siblings, host.emit)
 
         result =
-          try do
-            {:ok, run_node(view, node, artifacts, vocab)}
-          rescue
-            e in Forth.Error -> {:trap, e.code, e.message}
+          if node == nil do
+            {:error, :unknown_node}
+          else
+            siblings = ready |> Enum.reject(&(&1.id == node_id)) |> Enum.flat_map(&write_globs/1)
+            view = Host.node_view(host, write_globs(node), siblings, host.emit)
+
+            try do
+              {:ok, view, colon} = run_node(view, node, artifacts, vocab)
+              {:ok, view, colon}
+            rescue
+              e in Forth.Error -> {:trap, e.code, e.message}
+              e -> {:trap, "error", Exception.message(e)}
+            end
           end
 
         Space.ack(space, claim.token)
@@ -199,13 +230,14 @@ defmodule LdHost.Wave do
     program = node.program || ""
 
     if String.trim(program) == "" do
-      view
+      {:ok, view, %{}}
     else
       vm =
         %Forth.VM{host: view, artifacts: artifacts}
         |> Forth.bind_vocab(vocab)
 
-      Forth.interpret(vm, program).host
+      vm = Forth.interpret(vm, program)
+      {:ok, vm.host, vm.colon}
     end
   end
 

@@ -59,6 +59,10 @@ defmodule LdHost.HostTest do
 
     Host.intern_blob(host, "payload", sha)
     assert sha in File.ls!(Path.dirname(path))
+    refute Enum.any?(File.ls!(Path.dirname(path)), &String.starts_with?(&1, ".tmp-"))
+
+    File.write!(path, "garbage")
+    assert {:trap, "missing_object", _} = Host.fetch_object(host, sha)
   end
 
   test "write_file interns into objects_dir" do

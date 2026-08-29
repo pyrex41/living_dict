@@ -125,8 +125,8 @@ defmodule LdHost.Run do
       composed = compose(state.prelude, envelope.program)
       artifact_keys = envelope.artifacts |> Map.keys() |> Enum.sort()
 
-      case Critic.validate(composed, state.allowed_effects, state.allowed_globs, state.forbidden_globs, artifact_keys) do
-        {:reject, errors, _depth, _effects} ->
+      case critic_plan(state, envelope, composed, artifact_keys) do
+        {:reject, errors} ->
           {:ok, _} = Ledger.commit(state.ledger, "critic.rejected", %{episode: episode, errors: errors})
           Ledger.trace(state.ledger, "preflight.rejected", %{errors: errors})
           {:continue, feedback(state, "critic rejected the plan:\n" <> Enum.join(errors, "\n"))}
@@ -178,8 +178,13 @@ defmodule LdHost.Run do
         Ledger.trace(state.ledger, "execution.trap", %{code: code, message: message})
         {:continue, feedback(state, "execution trap [#{code}]: #{message}")}
 
-      {:ok, host} ->
-        vm = %Forth.VM{host: host, artifacts: envelope.artifacts} |> Forth.bind_vocab(vocab)
+      {:ok, host, colon} ->
+        vm =
+          %Forth.VM{host: host, artifacts: envelope.artifacts}
+          |> Forth.bind_vocab(vocab)
+
+        vm = %{vm | colon: Map.merge(vm.colon, colon)}
+        composed = promote_source(composed, envelope)
 
         if envelope.nodes do
           finish_episode(state, episode, envelope, composed, vm)
@@ -198,7 +203,64 @@ defmodule LdHost.Run do
     end
   end
 
-  defp dispatch_waves(_state, host, [], _artifacts, _vocab, _episode), do: {:ok, host}
+  defp critic_plan(state, envelope, composed, artifact_keys) do
+    case Critic.validate(
+           composed,
+           state.allowed_effects,
+           state.allowed_globs,
+           state.forbidden_globs,
+           artifact_keys
+         ) do
+      {:error, reason} ->
+        {:error, reason}
+
+      {:reject, errors, _depth, _effects} ->
+        {:reject, errors}
+
+      {:accept, depth, effects} ->
+        case node_preflight(state, envelope, artifact_keys) do
+          [] -> {:accept, depth, effects}
+          errors -> {:reject, errors}
+        end
+    end
+  end
+
+  defp node_preflight(_state, %{nodes: nil}, _keys), do: []
+
+  defp node_preflight(state, %{nodes: nodes}, artifact_keys) when is_list(nodes) do
+    graph =
+      case Wave.plan_waves(nodes) do
+        {:error, reason} -> [reason]
+        {:ok, waves} -> Enum.flat_map(waves, &Wave.overlap_errors/1)
+      end
+
+    critics =
+      Enum.flat_map(nodes, fn node ->
+        program = node.program || ""
+
+        if String.trim(program) == "" do
+          []
+        else
+          composed = compose(state.prelude, program)
+
+          case Critic.validate(
+                 composed,
+                 state.allowed_effects,
+                 state.allowed_globs,
+                 state.forbidden_globs,
+                 artifact_keys
+               ) do
+            {:accept, _, _} -> []
+            {:reject, errors, _, _} -> Enum.map(errors, &"node #{node.id}: #{&1}")
+            {:error, reason} -> ["node #{node.id}: critic unavailable: #{reason}"]
+          end
+        end
+      end)
+
+    graph ++ critics
+  end
+
+  defp dispatch_waves(_state, host, [], _artifacts, _vocab, _episode), do: {:ok, host, %{}}
 
   defp dispatch_waves(state, host, nodes, artifacts, vocab, episode) do
     Wave.execute(host, nodes, artifacts,
@@ -309,6 +371,13 @@ defmodule LdHost.Run do
 
   defp compose("", program), do: program
   defp compose(prelude, program), do: prelude <> "\n" <> program
+
+  defp promote_source(composed, %{nodes: nil}), do: composed
+
+  defp promote_source(composed, %{nodes: nodes}) when is_list(nodes) do
+    extra = Enum.map_join(nodes, "\n", &(&1.program || ""))
+    compose(composed, extra)
+  end
 
   @observe_file_cap 8_000
   @observe_total_cap 60_000
