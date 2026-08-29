@@ -95,6 +95,7 @@ defmodule LdHost.Space do
     {:ok,
      %{
        record: Keyword.get(opts, :record, fn _kind, _payload -> :ok end),
+       allowed_kinds: subset_kinds(Keyword.get(opts, :allowed_kinds, @allowed_kinds)),
        bag: :gb_trees.empty(),
        seq: 0,
        next_id: 1,
@@ -102,6 +103,13 @@ defmodule LdHost.Space do
        waiters: [],
        waiter_seq: 0
      }}
+  end
+
+  # Compiled obligation_kinds may only narrow @allowed_kinds, never widen.
+  defp subset_kinds(kinds) do
+    kinds
+    |> Enum.map(&to_string/1)
+    |> Enum.filter(&(&1 in @allowed_kinds))
   end
 
   @impl true
@@ -112,7 +120,7 @@ defmodule LdHost.Space do
       not is_map(tuple) ->
         {:reply, {:error, "tuple must be a map"}, state}
 
-      kind != nil and to_string(kind) not in @allowed_kinds ->
+      kind != nil and to_string(kind) not in state.allowed_kinds ->
         {:reply, {:error, "unknown tuple kind: #{kind}"}, state}
 
       true ->

@@ -19,6 +19,16 @@ defmodule LdHost.Obligation do
       ]
 
     def run(%{obligation: ob, run_opts: extra}, _context) do
+      case LdHost.Dispatcher.deny_reason(ob, extra[:obligation_kinds]) do
+        reason when is_binary(reason) ->
+          {:error, reason}
+
+        nil ->
+          run_goal(ob, extra)
+      end
+    end
+
+    defp run_goal(ob, extra) do
       goal = ob["goal"] || ""
       workspace = ob["workspace"]
 
@@ -36,7 +46,7 @@ defmodule LdHost.Obligation do
       {:ok, %{status: if(summary.success, do: :completed, else: :failed), summary: summary}}
     end
 
-    defp contract_of(%{"contract" => %{"claims" => claims}}), do: %{claims: claims, source: "obligation"}
+    defp contract_of(%{"contract" => %{"claims" => claims}}), do: %{claims: claims, source: "approved"}
     defp contract_of(_), do: nil
 
     # Task forbiddens compose with the host's bookkeeping defaults.

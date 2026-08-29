@@ -71,7 +71,7 @@ defmodule LdHost.CLI do
   """
   def run_opts(workspace, extras \\ []) do
     Enum.reduce(
-      [:contract, :dictionary_dir, :max_episodes, :run_dir, :allow_model_checks],
+      [:contract, :dictionary_dir, :max_episodes, :run_dir, :allow_model_checks, :allowed_globs, :allowed_effects],
       [workspace: Path.expand(workspace)],
       fn key, opts ->
         case Keyword.get(extras, key) do

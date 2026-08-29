@@ -197,6 +197,14 @@ defmodule LdHost.Critic do
 
   def engine, do: GenServer.call(__MODULE__, :engine)
 
+  @doc """
+  Register additional shaken modules in the critic process (it owns the
+  shen-erl ETS stores). Used by Spec to load `kl_spec` beside `kl_validate`.
+  """
+  def boot_modules(modules) when is_list(modules) do
+    GenServer.call(__MODULE__, {:boot_modules, modules}, 30_000)
+  end
+
   def repo_root, do: Path.expand(Path.join([__DIR__, "..", "..", ".."]))
 
   def lua_artifact, do: Path.join([repo_root(), "openresty", "dist", "critic", "app.lua"])
@@ -327,6 +335,24 @@ defmodule LdHost.Critic do
 
   @impl true
   def handle_call(:engine, _from, state), do: {:reply, state.engine, state}
+
+  def handle_call({:boot_modules, _modules}, _from, %{engine: :none} = state) do
+    {:reply, {:error, state.error}, state}
+  end
+
+  def handle_call({:boot_modules, modules}, _from, %{engine: :beam} = state) do
+    :ok = :shen_erl_kl_compiler.boot_shaken(modules)
+    :ok = :shen_erl_kl_compiler.run_shaken(modules)
+    {:reply, :ok, state}
+  rescue
+    e -> {:reply, {:error, Exception.message(e)}, state}
+  catch
+    kind, val -> {:reply, {:error, "#{kind}: #{inspect(val, limit: 3)}"}, state}
+  end
+
+  def handle_call({:boot_modules, _modules}, _from, state) do
+    {:reply, {:error, "critic engine #{state.engine} cannot load shen-erl modules"}, state}
+  end
 
   def handle_call({:validate, _p, _e, _g, _f, _a}, _from, %{engine: :none} = state) do
     {:reply, {:error, state.error}, state}
