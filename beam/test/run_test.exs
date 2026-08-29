@@ -1091,4 +1091,77 @@ defmodule LdHost.RunTest do
 
     assert "dictionary.promoted" in kinds
   end
+
+  @tag :observation
+  test "observation is catalog, critic, gates, hashes, unused — not file bodies" do
+    ws = workspace()
+    body = "hello from the beam\n"
+
+    contract = %{
+      claims: [
+        %{
+          "id" => "greeting",
+          "kind" => "check",
+          "command" => "grep -q hello greet.txt",
+          "timeout_seconds" => 5
+        },
+        %{
+          "id" => "farewell",
+          "kind" => "check",
+          "command" => "grep -q goodbye greet.txt",
+          "timeout_seconds" => 5
+        }
+      ],
+      source: "hidden"
+    }
+
+    episode1 = %{
+      "language" => "forth",
+      "program" =>
+        ~s{: INSTALL ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ; } <>
+          ~s{S" greet.txt" S" greet.txt" INSTALL RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"greet.txt" => body},
+      "rationale" => "install greeting without calling a catalog INSTALL"
+    }
+
+    {:ok, n} = Agent.start_link(fn -> 0 end)
+    {:ok, observations} = Agent.start_link(fn -> [] end)
+
+    planner = fn _g, obs, _f ->
+      Agent.update(observations, &[obs | &1])
+      i = Agent.get_and_update(n, fn i -> {i, i + 1} end)
+
+      if i == 0 do
+        {:ok, episode1, %{}}
+      else
+        assert obs =~ "UNUSED"
+        assert obs =~ "GATES"
+        assert obs =~ "CRITIC"
+        assert obs =~ "UNUSED: INSTALL"
+        refute obs =~ body
+        refute obs =~ "```"
+        {:ok, episode1, %{}}
+      end
+    end
+
+    result =
+      Run.run("greet", workspace: ws, contract: contract, planner_fn: planner, max_episodes: 2)
+
+    refute result.success
+    obs2 = Agent.get(observations, &Enum.reverse/1) |> Enum.at(1)
+    assert obs2 =~ "UNUSED: INSTALL"
+    refute obs2 =~ body
+
+    events =
+      result.run_dir
+      |> Path.join("events.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+
+    last_seq = events |> Enum.map(& &1["sequence"]) |> Enum.max()
+    tree = LdHost.Store.as_of(events, last_seq)
+    assert tree == LdHost.Policy.snapshot(ws)
+    assert tree["greet.txt"] == LdHost.Policy.sha256_hex(body)
+  end
 end

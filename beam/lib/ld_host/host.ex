@@ -17,7 +17,7 @@ defmodule LdHost.Host do
 
   @behaviour LdHost.Capability
 
-  alias LdHost.{Policy, Cmd}
+  alias LdHost.{Policy, Cmd, Store}
 
   defstruct workspace: nil,
             allowed_effects: ["read", "write", "exec"],
@@ -257,6 +257,9 @@ defmodule LdHost.Host do
   def receipt(host, extra \\ %{}) do
     after_snap = Policy.snapshot(host.workspace)
     changed = Policy.changed_files(host.before, after_snap)
+    # Receipts name trees, not bodies — intern so as_of can reload the hash map.
+    tree_before = Store.intern_tree(host.objects_dir, host.before)
+    tree_after = Store.intern_snapshot(host.objects_dir, host.workspace, after_snap)
 
     violations =
       Enum.filter(changed, fn rel -> Policy.write_allowed(host.policy, rel) != nil end)
@@ -271,7 +274,9 @@ defmodule LdHost.Host do
         changed_files: changed,
         effects_used: host.effects_used |> MapSet.to_list() |> Enum.sort(),
         policy_violations:
-          Enum.map(violations, &"path outside policy after the fact: #{&1}")
+          Enum.map(violations, &"path outside policy after the fact: #{&1}"),
+        tree_before: tree_before,
+        tree_after: tree_after
       }
       |> maybe_put(:check, host.last_check)
       |> Map.merge(extra)
@@ -347,40 +352,7 @@ defmodule LdHost.Host do
   defp empty_dot(""), do: "."
   defp empty_dot(rel), do: rel
 
-  def intern_blob(%{objects_dir: nil}, _content, _digest), do: :ok
-
-  def intern_blob(%{objects_dir: dir}, content, digest) when is_binary(dir) and is_binary(digest) do
-    path = blob_path(dir, digest)
-
-    cond do
-      path == nil ->
-        :ok
-
-      File.exists?(path) ->
-        :ok
-
-      true ->
-        File.mkdir_p!(Path.dirname(path))
-        tmp = Path.join(Path.dirname(path), ".tmp-#{digest}-#{System.unique_integer([:positive])}")
-
-        try do
-          File.write!(tmp, content)
-
-          case File.rename(tmp, path) do
-            :ok ->
-              :ok
-
-            {:error, _} ->
-              unless File.exists?(path), do: File.write!(path, content)
-              :ok
-          end
-        after
-          File.rm(tmp)
-        end
-    end
-  end
-
-  def intern_blob(_host, _content, _digest), do: :ok
+  def intern_blob(%{objects_dir: dir}, content, digest), do: Store.put_blob(dir, digest, content)
 
   defp read_blob(nil, _sha), do: {:error, "no objects_dir"}
 

@@ -11,7 +11,19 @@ defmodule LdHost.Run do
   "model-authored claims" loudly.
   """
 
-  alias LdHost.{Critic, Contracts, Dictionary, Envelope, Forth, Gates, Host, Ledger, Wave}
+  alias LdHost.{
+    Critic,
+    Contracts,
+    Dictionary,
+    Envelope,
+    Forth,
+    Gates,
+    Host,
+    Ledger,
+    Policy,
+    Store,
+    Wave
+  }
 
   @default_max_episodes 6
 
@@ -141,12 +153,15 @@ defmodule LdHost.Run do
       end)
 
       state = %{state | seen: MapSet.put(state.seen, fingerprint), reused_names: reused}
+      hashes = artifact_digests(envelope.artifacts)
 
       {:ok, _} =
         Ledger.commit(state.ledger, "episode.planned", %{
           episode: episode,
           fingerprint: fingerprint,
-          rationale: envelope.rationale
+          rationale: envelope.rationale,
+          used_words: reused,
+          artifact_sha256: hashes
         })
 
       case Dictionary.catalog_pressure(state.prelude_words, envelope) do
@@ -178,7 +193,9 @@ defmodule LdHost.Run do
                 Ledger.commit(state.ledger, "critic.accepted", %{
                   episode: episode,
                   depth: depth,
-                  effects: effects
+                  effects: effects,
+                  used_words: reused,
+                  artifact_sha256: hashes
                 })
 
               execute_episode(state, episode, envelope, composed)
@@ -203,7 +220,7 @@ defmodule LdHost.Run do
         allow_model_checks: state.allow_model_checks,
         emit: Ledger.emitter(state.ledger),
         receipt_path: Path.join(state.run_dir, "receipt.json"),
-        objects_dir: Path.join(state.run_dir, "objects")
+        objects_dir: Store.objects_root(state.run_dir)
       )
 
     Enum.each(envelope.artifacts, fn
@@ -336,7 +353,9 @@ defmodule LdHost.Run do
     {:ok, _} =
       Ledger.commit(state.ledger, "artifacts.applied", %{
         episode: episode,
-        count: map_size(envelope.artifacts)
+        count: map_size(envelope.artifacts),
+        keys: envelope.artifacts |> Map.keys() |> Enum.sort(),
+        artifact_sha256: artifact_digests(envelope.artifacts)
       })
 
     report =
@@ -349,7 +368,17 @@ defmodule LdHost.Run do
           existing
       end
 
-    {:ok, _} = Ledger.commit(state.ledger, "gates.measured", %{episode: episode, ok: report.ok == true, reason: report[:reason]})
+    files = Policy.snapshot(state.workspace)
+    tree_after = Store.intern_snapshot(vm.host.objects_dir, state.workspace, files)
+
+    {:ok, _} =
+      Ledger.commit(state.ledger, "gates.measured", %{
+        episode: episode,
+        ok: report.ok == true,
+        reason: report[:reason],
+        tree_after: tree_after,
+        files: files
+      })
 
     state = %{state | last_report: report}
     state = promote(state, episode, vm, composed, report)
@@ -493,68 +522,115 @@ defmodule LdHost.Run do
     compose(composed, extra)
   end
 
-  @observe_file_cap 8_000
-  @observe_total_cap 60_000
-
   defp observe(state) do
-    snap = LdHost.Policy.snapshot(state.workspace)
+    events = Ledger.events(state.ledger)
+    revision = Ledger.revision(state.ledger)
 
-    names =
-      snap
-      |> Map.keys()
-      |> Enum.sort()
-      |> Enum.take(200)
-
-    files =
-      if state.episode > 1 do
-        Enum.map(names, fn rel -> "#{rel} #{snap[rel]}" end)
+    tree =
+      if state.episode <= 1 do
+        Policy.snapshot(state.workspace)
       else
-        {rows, _budget} =
-          Enum.map_reduce(names, @observe_total_cap, fn rel, budget ->
-            content =
-              case File.read(Path.join(state.workspace, rel)) do
-                {:ok, text} when byte_size(text) <= @observe_file_cap ->
-                  if String.valid?(text) and budget - byte_size(text) > 0, do: text, else: nil
-
-                _ ->
-                  nil
-              end
-
-            case content do
-              nil -> {"#{rel} (contents omitted)", budget}
-              text -> {"#{rel}:\n```\n#{text}```", budget - byte_size(text)}
-            end
-          end)
-
-        rows
+        Store.as_of(events, revision)
       end
 
-    dictionary =
-      case state.prelude_words do
-        [] ->
-          ""
+    used = last_used_words(events)
+    used_set = MapSet.new(used)
+    unused = Enum.reject(state.prelude_words, &MapSet.member?(used_set, &1))
 
-        words ->
-          "\nHARNESS DICTIONARY (callable colon words):\n" <>
-            Enum.join(words, " ") <> "\n" <> state.prelude
-      end
-
-    gates =
-      case state.last_report do
-        nil -> ""
-        report -> "\nLAST GATES: " <> JSON.encode!(scrub(report))
-      end
-
-    feedback =
-      case state.feedback do
-        "" -> ""
-        text -> "\nFEEDBACK:\n" <> text
-      end
-
-    "WORKSPACE FILES:\n" <> Enum.join(files, "\n") <> dictionary <> gates <> feedback
+    [
+      "DICTIONARY:",
+      catalog_lines(state),
+      "",
+      "UNUSED: " <> Enum.join(unused, " "),
+      "",
+      "TREE:",
+      tree_lines(tree),
+      "",
+      gates_section(state.last_report),
+      "",
+      critic_section(events),
+      feedback_section(state.feedback)
+    ]
+    |> Enum.reject(&(&1 == nil))
+    |> Enum.join("\n")
   end
 
-  defp scrub(report), do: Map.take(report, [:ok, :reason, :judge, :name])
+  defp catalog_lines(state) do
+    lines =
+      state.dictionary_dir
+      |> Dictionary.load_vocab()
+      |> Enum.map(fn {name, _tokens, _sig, source} ->
+        case Contracts.extract(source)[name] do
+          inner when is_binary(inner) ->
+            case Contracts.canonical(inner) do
+              nil -> name
+              contract -> "#{name} #{contract}"
+            end
+
+          _ ->
+            name
+        end
+      end)
+
+    if lines == [], do: "", else: Enum.join(lines, "\n")
+  end
+
+  defp tree_lines(tree) when map_size(tree) == 0, do: ""
+
+  defp tree_lines(tree) do
+    tree
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.map_join("\n", fn {path, hash} -> "#{path} #{hash}" end)
+  end
+
+  defp last_used_words(events) do
+    events
+    |> Enum.reverse()
+    |> Enum.find_value([], fn event ->
+      kind = event[:kind] || event["kind"]
+
+      if kind in ["episode.planned", "critic.accepted"] do
+        payload = event[:payload] || event["payload"] || %{}
+        list = payload[:used_words] || payload["used_words"] || []
+        Enum.map(List.wrap(list), &to_string/1)
+      end
+    end)
+  end
+
+  defp gates_section(nil), do: "GATES:"
+
+  defp gates_section(report) do
+    ids =
+      case report[:claims] do
+        claims when is_list(claims) -> Enum.map_join(claims, ",", &to_string(&1.id))
+        _ -> ""
+      end
+
+    "GATES:\nok=#{report[:ok] == true} ids=#{ids}"
+  end
+
+  defp critic_section(events) do
+    errors =
+      Store.facts(events)
+      |> Enum.filter(fn {_e, attr, _v, _tx} -> attr == ":critic/error" end)
+      |> Enum.group_by(fn {_e, _a, _v, tx} -> tx end)
+      |> Enum.max_by(fn {tx, _} -> tx end, fn -> {0, []} end)
+      |> elem(1)
+      |> Enum.map(fn {_e, _a, value, _tx} -> to_string(value) end)
+
+    ["CRITIC:" | errors] |> Enum.join("\n")
+  end
+
+  defp feedback_section(""), do: nil
+  defp feedback_section(text), do: "\nFEEDBACK:\n" <> text
+
+  defp artifact_digests(artifacts) when is_map(artifacts) do
+    artifacts
+    |> Enum.filter(fn {key, body} -> is_binary(key) and is_binary(body) end)
+    |> Map.new(fn {key, body} -> {key, Policy.sha256_hex(body)} end)
+  end
+
+  defp artifact_digests(_), do: %{}
 
   defp gate_feedback(report) do
     failing =
