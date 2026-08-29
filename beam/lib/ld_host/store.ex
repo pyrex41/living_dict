@@ -186,7 +186,12 @@ defmodule LdHost.Store do
             {rows, episode, last_sha}
 
           "gates.measured" ->
-            files = measured_files(payload, store)
+            files =
+              case measured_tree(payload, store) do
+                {:replace, files} -> files
+                :keep -> %{}
+              end
+
             rows = [{"run", ":gates/passed", gates_passed(payload), seq} | rows]
 
             rows =
@@ -259,12 +264,15 @@ defmodule LdHost.Store do
               {current, have_tree, last_hash, last_sha}
 
             "gates.measured" ->
-              files = measured_files(payload, store)
               tree_hash = field(payload, :tree_after) || field(payload, :tree_before)
-              current = if files == %{}, do: current, else: files
-              have_tree = have_tree or files != %{}
               last_hash = if is_binary(tree_hash) and tree_hash != "", do: tree_hash, else: last_hash
-              {current, have_tree, last_hash, last_sha}
+
+              # Explicit files (including %{}) replaces the view so deletions
+              # to an empty tree are visible; missing files keep the overlay.
+              case measured_tree(payload, store) do
+                {:replace, files} -> {files, true, last_hash, last_sha}
+                :keep -> {current, have_tree, last_hash, last_sha}
+              end
 
             _ ->
               {current, have_tree, last_hash, last_sha}
@@ -273,7 +281,10 @@ defmodule LdHost.Store do
       end)
 
     cond do
-      have_tree or current != %{} ->
+      have_tree ->
+        current
+
+      current != %{} ->
         current
 
       is_binary(last_hash) and store != nil ->
@@ -297,21 +308,23 @@ defmodule LdHost.Store do
     end
   end
 
-  defp measured_files(payload, store) do
+  # {:replace, files} even when files is %{} — a measured empty tree is a
+  # deletion, not "no snapshot". :keep means the payload had no tree.
+  defp measured_tree(payload, store) do
     case field(payload, :files) do
-      files when is_map(files) and files != %{} ->
-        Map.new(files, fn {k, v} -> {to_string(k), to_string(v)} end)
+      files when is_map(files) ->
+        {:replace, Map.new(files, fn {k, v} -> {to_string(k), to_string(v)} end)}
 
       _ ->
         tree_hash = field(payload, :tree_after) || field(payload, :tree_before)
 
         if is_binary(store) and is_binary(tree_hash) and has?(store, tree_hash) do
           case get_tree(store, tree_hash) do
-            {:ok, files} -> files
-            _ -> %{}
+            {:ok, files} -> {:replace, files}
+            _ -> :keep
           end
         else
-          %{}
+          :keep
         end
     end
   end

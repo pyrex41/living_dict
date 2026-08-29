@@ -240,6 +240,7 @@ defmodule LdHost.Run do
 
       {:trap, code, message} ->
         Ledger.trace(state.ledger, "execution.trap", %{code: code, message: message})
+        record_workspace_tree(state, host, %{ok: false, reason: "execution trap [#{code}]"})
         {:continue, feedback(state, "execution trap [#{code}]: #{message}")}
 
       {:ok, host, colon} ->
@@ -258,6 +259,7 @@ defmodule LdHost.Run do
           case interpret(vm, envelope.program) do
             {:trap, code, message} ->
               Ledger.trace(state.ledger, "execution.trap", %{code: code, message: message})
+              record_workspace_tree(state, vm.host, %{ok: false, reason: "execution trap [#{code}]"})
               {:continue, feedback(state, "execution trap [#{code}]: #{message}")}
 
             {:ok, vm} ->
@@ -368,17 +370,7 @@ defmodule LdHost.Run do
           existing
       end
 
-    files = Policy.snapshot(state.workspace)
-    tree_after = Store.intern_snapshot(vm.host.objects_dir, state.workspace, files)
-
-    {:ok, _} =
-      Ledger.commit(state.ledger, "gates.measured", %{
-        episode: episode,
-        ok: report.ok == true,
-        reason: report[:reason],
-        tree_after: tree_after,
-        files: files
-      })
+    record_workspace_tree(state, vm.host, %{ok: report.ok == true, reason: report[:reason]})
 
     state = %{state | last_report: report}
     state = promote(state, episode, vm, composed, report)
@@ -506,6 +498,22 @@ defmodule LdHost.Run do
 
   # ---- helpers ----------------------------------------------------------
 
+  # Traps skip finish_episode; still intern a tree so as_of/TREE does not
+  # lag the workspace the planner is about to see.
+  defp record_workspace_tree(state, host, extra) when is_map(extra) do
+    files = Policy.snapshot(state.workspace)
+    tree_after = Store.intern_snapshot(host.objects_dir, state.workspace, files)
+
+    payload =
+      Map.merge(
+        %{episode: state.episode, tree_after: tree_after, files: files},
+        extra
+      )
+
+    {:ok, _} = Ledger.commit(state.ledger, "gates.measured", payload)
+    :ok
+  end
+
   defp persist_discharge(host, report) do
     dir = Path.join(host.workspace, ".sb")
     File.mkdir_p!(dir)
@@ -530,7 +538,7 @@ defmodule LdHost.Run do
       if state.episode <= 1 do
         Policy.snapshot(state.workspace)
       else
-        Store.as_of(events, revision)
+        Store.as_of(events, revision, Store.objects_root(state.run_dir))
       end
 
     used = last_used_words(events)
@@ -639,11 +647,9 @@ defmodule LdHost.Run do
           claims
           |> Enum.reject(& &1.passed)
           |> Enum.map(fn claim ->
-            # Never echo check COMMANDS back to the model: a hidden
-            # verifier's location must not leak. The id and the check's
-            # output tail are the backpressure.
-            "- #{claim.id} (#{claim[:kind]}): #{claim[:reason] || claim[:path] || "check failed"}" <>
-              if(claim[:output], do: "\n  output: #{claim[:output]}", else: "")
+            # Ids + reason only: check stdout can contain product file
+            # bodies and must not leak into observe/FEEDBACK.
+            "- #{claim.id} (#{claim[:kind]}): #{claim[:reason] || claim[:path] || "check failed"}"
           end)
           |> Enum.join("\n")
 
@@ -699,10 +705,8 @@ defmodule LdHost.Run do
     end
   end
 
-  defp default_planner(goal, observation, feedback) do
-    observation =
-      if feedback == "", do: observation, else: observation <> "\nFEEDBACK:\n" <> feedback
-
+  defp default_planner(goal, observation, _feedback) do
+    # observe/1 already includes the FEEDBACK section; do not prepend it again.
     LdHost.Planner.plan(goal, observation)
   end
 

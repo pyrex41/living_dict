@@ -1160,8 +1160,30 @@ defmodule LdHost.RunTest do
       |> Enum.map(&JSON.decode!/1)
 
     last_seq = events |> Enum.map(& &1["sequence"]) |> Enum.max()
-    tree = LdHost.Store.as_of(events, last_seq)
+    store = Path.join(result.run_dir, "objects")
+    tree = LdHost.Store.as_of(events, last_seq, store)
     assert tree == LdHost.Policy.snapshot(ws)
     assert tree["greet.txt"] == LdHost.Policy.sha256_hex(body)
+  end
+
+  @tag :observation
+  test "as_of treats empty measured files as a deletion, not a missing snapshot" do
+    sha = LdHost.Policy.sha256_hex("x")
+
+    events = [
+      %{
+        "kind" => "artifacts.applied",
+        "sequence" => 1,
+        "payload" => %{"keys" => ["a.txt"], "artifact_sha256" => %{"a.txt" => sha}}
+      },
+      %{
+        "kind" => "gates.measured",
+        "sequence" => 2,
+        "payload" => %{"ok" => true, "files" => %{}, "tree_after" => LdHost.Store.tree_digest(%{})}
+      }
+    ]
+
+    assert LdHost.Store.as_of(events, 1) == %{"a.txt" => sha}
+    assert LdHost.Store.as_of(events, 2) == %{}
   end
 end
