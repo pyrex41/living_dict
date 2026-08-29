@@ -406,6 +406,9 @@ defmodule LdHost.RunTest do
     assert patched =~ ~s{S" greet.txt" WRITE-FILE}
     refute patched =~ "PATCH-FILE"
 
+    leaked = LdHost.Critic.overlay_live_words(~s{: FOO S" secret.txt" DROP ; PATCH-FILE})
+    refute leaked =~ ~s{S" secret.txt" WRITE-FILE}
+
     ws = workspace()
 
     bad_contract = %{
@@ -460,6 +463,72 @@ defmodule LdHost.RunTest do
     refute r3.success
     events3 = File.read!(Path.join(r3.run_dir, "events.jsonl"))
     assert events3 =~ "unknown depends_on"
+
+    ws4 = workspace()
+
+    glob_overlap = %{
+      "language" => "forth",
+      "program" => ~s{S" a.txt" USE-ARTIFACT S" a.txt" WRITE-FILE DROP RECEIPT DROP},
+      "artifacts" => %{"a.txt" => "A\n", "*.txt" => "star\n"},
+      "rationale" => "synthesized glob overlap"
+    }
+
+    planner4 = fn _g, _o, _f -> {:ok, glob_overlap, %{}} end
+    r4 = Run.run("goal", workspace: ws4, contract: contract(), planner_fn: planner4, max_episodes: 1)
+    refute r4.success
+    refute File.exists?(Path.join(ws4, "a.txt"))
+    events4 = File.read!(Path.join(r4.run_dir, "events.jsonl"))
+    assert events4 =~ "critic.rejected"
+    refute events4 =~ "artifacts.applied"
+
+    ws5 = workspace()
+
+    node_write = %{
+      "language" => "forth",
+      "program" => "RECEIPT DROP",
+      "artifacts" => %{"a.txt" => "A\n"},
+      "nodes" => [
+        %{
+          "id" => "a",
+          "writes" => ["a.txt"],
+          "depends_on" => [],
+          "program" => ~s{S" leaked" S" other.txt" WRITE-FILE DROP}
+        }
+      ],
+      "rationale" => "node write set"
+    }
+
+    planner5 = fn _g, _o, _f -> {:ok, node_write, %{}} end
+    r5 = Run.run("goal", workspace: ws5, contract: contract(), planner_fn: planner5, max_episodes: 1)
+    refute r5.success
+    refute File.exists?(Path.join(ws5, "other.txt"))
+    events5 = File.read!(Path.join(r5.run_dir, "events.jsonl"))
+    assert events5 =~ "critic.rejected"
+
+    ws6 = workspace()
+
+    nodes_ok = %{
+      "language" => "forth",
+      "program" => "RECEIPT DROP",
+      "artifacts" => %{"a.txt" => "A\n", "b.txt" => "B\n"},
+      "nodes" => [
+        %{"id" => "a", "writes" => ["a.txt"], "depends_on" => [], "program" => ""},
+        %{"id" => "b", "writes" => ["b.txt"], "depends_on" => [], "program" => ""}
+      ],
+      "rationale" => "nodes persist gates"
+    }
+
+    pair_contract = %{
+      claims: [
+        %{"id" => "both", "kind" => "check", "command" => "test -f a.txt && test -f b.txt", "timeout_seconds" => 5}
+      ],
+      source: "hidden"
+    }
+
+    planner6 = fn _g, _o, _f -> {:ok, nodes_ok, %{}} end
+    r6 = Run.run("pair", workspace: ws6, contract: pair_contract, planner_fn: planner6, max_episodes: 1)
+    assert r6.success
+    assert File.exists?(Path.join([ws6, ".sb", "discharge_report.json"]))
   end
 
   test "CAT host-word alias is not written to the dictionary" do

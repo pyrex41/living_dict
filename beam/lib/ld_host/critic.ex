@@ -125,16 +125,16 @@ defmodule LdHost.Critic do
 
     cond do
       mode == :normal and key == ":" ->
-        {word, :name, last_str}
+        {word, :name, nil}
 
       mode == :name ->
-        {word, :body, last_str}
+        {word, :body, nil}
 
       mode == :body and key == ";" ->
-        {word, :normal, last_str}
+        {word, :normal, nil}
 
       key == "USE-OBJECT" ->
-        {"READ-FILE", mode, last_str}
+        {"READ-FILE", mode, nil}
 
       key == "PATCH-FILE" ->
         piece =
@@ -146,10 +146,10 @@ defmodule LdHost.Critic do
             "DUP READ-FILE DROP WRITE-FILE"
           end
 
-        {piece, mode, last_str}
+        {piece, mode, nil}
 
       true ->
-        {word, mode, last_str}
+        {word, mode, nil}
     end
   end
 

@@ -225,13 +225,19 @@ defmodule LdHost.Run do
     end
   end
 
-  defp node_preflight(_state, %{nodes: nil}, _keys), do: []
+  defp node_preflight(state, envelope, artifact_keys) do
+    nodes = envelope.nodes || Wave.synthesize(envelope.artifacts)
 
-  defp node_preflight(state, %{nodes: nodes}, artifact_keys) when is_list(nodes) do
     graph =
-      case Wave.plan_waves(nodes) do
-        {:error, reason} -> [reason]
-        {:ok, waves} -> Enum.flat_map(waves, &Wave.overlap_errors/1)
+      case nodes do
+        [] ->
+          []
+
+        _ ->
+          case Wave.plan_waves(nodes) do
+            {:error, reason} -> [reason]
+            {:ok, waves} -> Enum.flat_map(waves, &Wave.overlap_errors/1)
+          end
       end
 
     critics =
@@ -242,11 +248,12 @@ defmodule LdHost.Run do
           []
         else
           composed = compose(state.prelude, program)
+          allowed = node_allowed_globs(node, state.allowed_globs)
 
           case Critic.validate(
                  composed,
                  state.allowed_effects,
-                 state.allowed_globs,
+                 allowed,
                  state.forbidden_globs,
                  artifact_keys
                ) do
@@ -258,6 +265,13 @@ defmodule LdHost.Run do
       end)
 
     graph ++ critics
+  end
+
+  defp node_allowed_globs(node, fallback) do
+    case Wave.write_globs(node) do
+      [] -> fallback
+      globs -> globs
+    end
   end
 
   defp dispatch_waves(_state, host, [], _artifacts, _vocab, _episode), do: {:ok, host, %{}}
@@ -278,7 +292,16 @@ defmodule LdHost.Run do
         count: map_size(envelope.artifacts)
       })
 
-    report = vm.host.last_check || Gates.run(vm.host)
+    report =
+      case vm.host.last_check do
+        nil ->
+          Gates.run(vm.host)
+
+        existing ->
+          persist_discharge(vm.host, existing)
+          existing
+      end
+
     {:ok, _} = Ledger.commit(state.ledger, "gates.measured", %{episode: episode, ok: report.ok == true, reason: report[:reason]})
 
     state = %{state | last_report: report}
@@ -368,6 +391,12 @@ defmodule LdHost.Run do
   end
 
   # ---- helpers ----------------------------------------------------------
+
+  defp persist_discharge(host, report) do
+    dir = Path.join(host.workspace, ".sb")
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "discharge_report.json"), JSON.encode!(report))
+  end
 
   defp compose("", program), do: program
   defp compose(prelude, program), do: prelude <> "\n" <> program

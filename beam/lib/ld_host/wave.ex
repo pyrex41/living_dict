@@ -95,7 +95,7 @@ defmodule LdHost.Wave do
 
   @doc """
   Out ready nodes, workers take + node_view. Rejects overlapping writes
-  before the first `out`. Returns `{:ok, host}` or an error tuple.
+  before the first `out`. Returns `{:ok, host, colon}` or an error tuple.
   """
   def execute(host, nodes, artifacts, opts) do
     record = Keyword.fetch!(opts, :record)
