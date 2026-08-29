@@ -118,6 +118,20 @@ defmodule LdHost.GatesTest do
     refute Map.has_key?(claim, :advisory)
   end
 
+  test "unknown contract source does not execute checks" do
+    ws = workspace()
+
+    contract = %{
+      claims: [Gates.atomize_claim(%{"id" => "t", "kind" => "check", "command" => "exit 0"})],
+      source: "spec_derived"
+    }
+
+    report = Gates.run(host(ws, contract: contract), persist?: false)
+    assert report.judge == "unsigned spec"
+    refute report.ok
+    assert [%{reason: "check claims execute only under an approved or hidden contract"}] = report.claims
+  end
+
   test "no claims at all fails with reference reason" do
     report = Gates.run(host(workspace()), persist?: false)
     assert report.reason =~ "no claims.json"

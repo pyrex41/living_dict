@@ -39,6 +39,17 @@ defmodule LdHost.CLITest do
       refute Keyword.has_key?(opts, :dictionary_dir)
     end
 
+    test "threads allowed_globs and allowed_effects from a signed spec" do
+      opts =
+        CLI.run_opts(System.tmp_dir!(),
+          allowed_globs: ["greet.txt"],
+          allowed_effects: ["read", "write", "exec"]
+        )
+
+      assert opts[:allowed_globs] == ["greet.txt"]
+      assert opts[:allowed_effects] == ["read", "write", "exec"]
+    end
+
     test "env-shaped composition: truthy env turns the mode on, unset leaves it off" do
       on = CLI.run_opts(System.tmp_dir!(), allow_model_checks: CLI.parse_truthy("1"))
       off = CLI.run_opts(System.tmp_dir!(), allow_model_checks: CLI.parse_truthy(nil))
