@@ -1,0 +1,4 @@
+{"type":"tool.call","data":{"tool":"WRITE-FILE","path":"claims.json","bytes":20}}
+{"type":"mutation.applied","data":{"path":"claims.json","sha256":"aa"}}
+{"type":"tool.call","data":{"tool":"WRITE-FILE","path":"src/records.py","bytes":40}}
+{"type":"mutation.applied","data":{"path":"src/records.py","sha256":"cc"}}

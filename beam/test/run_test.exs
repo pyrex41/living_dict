@@ -58,6 +58,60 @@ defmodule LdHost.RunTest do
     assert "gates.measured" in kinds
     assert "dictionary.promoted" in kinds
     assert Enum.map(events, & &1["sequence"]) == Enum.to_list(1..length(events))
+
+    promo = Enum.find(events, &(&1["kind"] == "dictionary.promoted"))
+    assert promo["payload"]["word"] == "INSTALL"
+    assert promo["payload"]["contract"] == "( key path -- | read, write )"
+    assert promo["payload"]["effects"] == ["read", "write"]
+    # INSTALL's WRITE-FILE path is a stack argument, not a literal.
+    assert promo["payload"]["path_region"] == ["**"]
+    assert promo["payload"]["task_families"] == []
+    assert promo["payload"]["primitive_contract"] == LdHost.Forth.primitive_contract()
+    assert is_binary(promo["payload"]["parent_dict"])
+    assert String.length(promo["payload"]["parent_dict"]) == 64
+    refute String.starts_with?(promo["payload"]["parent_dict"], "sha256:")
+
+    objects = Path.join(result.run_dir, "objects")
+    assert File.dir?(objects)
+    # parent_dict is D_n before this promote; interned D* lives under objects/
+    blobs = Path.wildcard(Path.join(objects, "*/*"))
+    assert blobs != []
+
+    identity = LdHost.Dictionary.load_identity(Path.join(result.run_dir, "dictionary"), "INSTALL")
+    assert identity["effects"] == ["read", "write"]
+    assert identity["path_region"] == ["**"]
+    assert identity["task_families"] == []
+  end
+
+  test "promoted word with literal WRITE-FILE persists that path as path_region" do
+    ws = workspace()
+
+    envelope = %{
+      "language" => "forth",
+      "program" =>
+        ~s{: GREET ( -- | write ) S" hello from the beam\n" S" greet.txt" WRITE-FILE DROP ; } <>
+          ~s{GREET RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{},
+      "rationale" => "literal write"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
+    result = Run.run("greet", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 1)
+
+    assert result.success
+    assert result.promoted_words == ["GREET"]
+
+    events =
+      result.run_dir
+      |> Path.join("events.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+
+    promo = Enum.find(events, &(&1["kind"] == "dictionary.promoted"))
+    assert promo["payload"]["effects"] == ["write"]
+    assert promo["payload"]["path_region"] == ["greet.txt"]
+    assert promo["payload"]["task_families"] == []
   end
 
   test "advisory round trip: failed model check feeds back, next episode self-judges green" do
@@ -214,5 +268,163 @@ defmodule LdHost.RunTest do
     assert events =~ "stack underflow at INSTALL"
     # No I/O happened: workspace untouched
     assert LdHost.Policy.snapshot(ws2) == %{}
+  end
+
+  test "LD_CARTRIDGE=0 ignores stub cartridge execute; program still runs" do
+    ws = workspace()
+    prev = System.get_env("LD_CARTRIDGE")
+    System.put_env("LD_CARTRIDGE", "0")
+
+    envelope = %{
+      "language" => "forth",
+      "program" => @good_envelope["program"],
+      "artifacts" => @good_envelope["artifacts"],
+      "rationale" => "cartridge ignored",
+      "cartridge" => %{
+        "parent" => nil,
+        "memory_view" => "workspace-head",
+        "action_topology" => "sequential",
+        "capabilities" => ["read", "write", "exec"],
+        "budget" => %{"writes" => 8, "execs" => 2},
+        "definitions" => %{"INSTALL" => ": INSTALL ( -- ) ;"},
+        "entrypoint" => "UNKNOWN-WORD-MUST-NOT-RUN"
+      }
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
+
+    result =
+      try do
+        Run.run("greet", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 1)
+      after
+        if prev, do: System.put_env("LD_CARTRIDGE", prev), else: System.delete_env("LD_CARTRIDGE")
+      end
+
+    assert result.success
+    refute Run.cartridge_enabled?()
+    kinds =
+      result.run_dir
+      |> Path.join("events.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+      |> Enum.map(& &1["kind"])
+
+    refute "dictionary.overlay.proposed" in kinds
+    refute "dictionary.overlay.admitted" in kinds
+    refute "dictionary.overlay.rejected" in kinds
+    assert "critic.accepted" in kinds
+    assert File.read!(Path.join(ws, "greet.txt")) =~ "hello"
+  end
+
+  test "retrieved mode subsets observe/prelude; load-all keeps mixed-family words" do
+    shared =
+      System.tmp_dir!()
+      |> Path.join("ldretrun-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+
+    LdHost.Dictionary.save_words(shared, [
+      {"CONFIG", ~s{S" x" S" app/config.py" WRITE-FILE DROP}, "( -- | write )"},
+      {"PARSER", ~s{S" x" S" src/records.py" WRITE-FILE DROP}, "( -- | write )"}
+    ])
+
+    envelope = %{
+      "language" => "forth",
+      "program" =>
+        ~s{S" hello from the beam\n" S" greet.txt" WRITE-FILE DROP RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{},
+      "rationale" => "no colon reuse"
+    }
+
+    {:ok, seen} = Agent.start_link(fn -> nil end)
+
+    planner = fn _g, obs, _f ->
+      Agent.update(seen, fn _ -> obs end)
+      {:ok, envelope, %{input_tokens: 2, output_tokens: 1}}
+    end
+
+    ws = workspace()
+
+    retrieved =
+      Run.run("greet",
+        workspace: ws,
+        contract: contract(),
+        planner_fn: planner,
+        dictionary_dir: shared,
+        dict_mode: :retrieved,
+        allowed_effects: ["read", "write", "exec"],
+        allowed_globs: ["app/config.py", "greet.txt"],
+        forbidden_globs: ["tests/**", "TASK.md"],
+        max_episodes: 1
+      )
+
+    assert retrieved.success
+    assert retrieved.dict_mode == :retrieved
+    assert retrieved.prelude_words == ["CONFIG"]
+    refute retrieved.retrieve_query == "*"
+    refute Map.has_key?(retrieved.retrieve_query, "family")
+    obs = Agent.get(seen, & &1)
+    assert obs =~ "CONFIG"
+    refute obs =~ "PARSER"
+
+    trace = File.read!(Path.join(retrieved.run_dir, "trace.jsonl"))
+    assert trace =~ "dictionary.retrieve"
+    assert trace =~ "app/config.py"
+
+    ws2 = workspace()
+
+    load_all =
+      Run.run("greet",
+        workspace: ws2,
+        contract: contract(),
+        planner_fn: planner,
+        dictionary_dir: shared,
+        dict_mode: :load_all,
+        allowed_globs: ["app/config.py", "greet.txt"],
+        forbidden_globs: ["tests/**"],
+        max_episodes: 1
+      )
+
+    assert load_all.dict_mode == :load_all
+    assert load_all.retrieve_query == "*"
+    assert "CONFIG" in load_all.prelude_words
+    assert "PARSER" in load_all.prelude_words
+    assert load_all.prelude_bytes > retrieved.prelude_bytes
+  end
+
+  test "Exp 0 hidden-verifier contract is the Run gates judge on an oracle workspace" do
+    task =
+      LdHost.Bench.Exp0.load_task(
+        Path.join([LdHost.Critic.repo_root(), "eval", "tasks", "config-08"])
+      )
+
+    ws = workspace()
+    File.rm_rf!(ws)
+    File.cp_r!(Path.join(task.dir, "repo"), ws)
+    File.cp_r!(Path.join([task.dir, "protected", "oracle", "files"]), ws)
+
+    envelope = %{
+      "language" => "forth",
+      "program" => ~s{RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{},
+      "rationale" => "measure hidden verifier only"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{input_tokens: 1, output_tokens: 1}} end
+
+    result =
+      Run.run(task.goal,
+        workspace: ws,
+        contract: task.contract,
+        planner_fn: planner,
+        dict_mode: :retrieved,
+        allowed_effects: task.allowed_effects,
+        allowed_globs: task.allowed_globs ++ ["claims.json", ".sb/*"],
+        forbidden_globs: task.forbidden_globs,
+        max_episodes: 1
+      )
+
+    assert result.success
+    assert result.judge == "approved contract"
+    assert result.report.ok == true
   end
 end

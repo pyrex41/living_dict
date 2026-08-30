@@ -14,6 +14,11 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 
+# macOS otherwise writes AppleDouble `._*.fs` next to copied word files.
+# Those match `*.fs`, get packed into the seed, and the in-container critic
+# rejects every episode with `invalid encoding` (byte 0xA3 / ATTR fork).
+export COPYFILE_DISABLE=1
+
 # Family-ordered: git family, log/regex family, certs/logging, db family,
 # then the singletons.
 TASKS=(
@@ -72,7 +77,20 @@ merge_accumulator() {
     jj="$(printf '%02d' "$j")"
     for f in "$OUT/beam-tbwarm-$jj"/*/agent/dict/words/*.fs \
              "$OUT/beam-tbwarm-$jj"/*/agent/run/dictionary/words/*.fs; do
-      if [ -f "$f" ]; then cp -f "$f" "$acc/words/"; fi
+      [ -f "$f" ] || continue
+      base="$(basename "$f")"
+      # Skip AppleDouble / hidden files; word names match Dictionary.@safe_name.
+      case "$base" in
+        .*) continue ;;
+      esac
+      case "$base" in
+        [A-Z]*.fs) ;;
+        *) continue ;;
+      esac
+      if ! printf '%s' "$base" | grep -Eq '^[A-Z][A-Z0-9-]{0,62}\.fs$'; then
+        continue
+      fi
+      cp -f "$f" "$acc/words/"
     done
     j=$((j + 1))
   done
@@ -104,7 +122,7 @@ for TASK in "${TASKS[@]}"; do
   SEED=""
   WORD_COUNT=0
   if [ -n "$(ls -A "$ACC/words" 2>/dev/null)" ]; then
-    WORD_COUNT="$(ls "$ACC/words" | wc -l | tr -d ' ')"
+    WORD_COUNT="$(find "$ACC/words" -maxdepth 1 -type f -name '*.fs' ! -name '.*' | wc -l | tr -d ' ')"
     # gzip outside tar: bsdtar pads compressed stdout to 10240B records,
     # which both bloats the seed and leaves trailing garbage for the
     # container's gunzip; tar|gzip keeps the padding inside the stream.

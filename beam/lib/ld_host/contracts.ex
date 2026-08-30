@@ -109,4 +109,28 @@ defmodule LdHost.Contracts do
   defp pad(s), do: s <> " "
   defp pre(""), do: ""
   defp pre(s), do: " " <> s
+
+  @doc """
+  Sorted unique effect names from an in-band contract (inner or canonical).
+  Missing `|` or unparseable text yields `[]`.
+  """
+  def effects(nil), do: []
+
+  def effects(inner) when is_binary(inner) do
+    words =
+      inner
+      |> String.replace(",", " ")
+      |> String.split(~r/\s+/, trim: true)
+
+    case Enum.split_while(words, &(&1 != "|")) do
+      {_left, ["|" | effs]} ->
+        effs
+        |> Enum.reject(&(&1 in ["(", ")"]))
+        |> Enum.uniq()
+        |> Enum.sort()
+
+      _ ->
+        []
+    end
+  end
 end

@@ -4,14 +4,18 @@ ENVELOPE_CONFIG_01 := $(REPO)/openresty/examples/config-01.envelope.json
 # Ratatoskr was renamed Yggdrasil (repo may still sit at ../ratatoskr).
 YGGDRASIL ?= $(shell command -v yggdrasil 2>/dev/null || echo $(HOME)/go/bin/yggdrasil)
 BIFROST ?= $(shell command -v bifrost 2>/dev/null || echo $(HOME)/.local/bin/bifrost)
-SHENSCRIPT ?= $(REPO)/../ShenScript/bin/shen.js
-SHEN_CL ?= $(REPO)/../shen-cl/bin/sbcl/shen
+SHENSCRIPT ?= $(firstword $(wildcard \
+  $(REPO)/../ShenScript/bin/shen.js \
+  $(HOME)/projects/shen/ShenScript/bin/shen.js))
+SHEN_CL ?= $(firstword $(wildcard \
+  $(REPO)/../shen-cl/bin/sbcl/shen \
+  $(HOME)/projects/shen/shen-cl/bin/sbcl/shen))
 # shen-cl's default 1GB heap OOMs on this shake; ShenScript is the stage-1 host.
 ifneq ($(wildcard $(SHENSCRIPT)),)
 YGGDRASIL_HOST ?= node $(SHENSCRIPT)
 endif
 
-.PHONY: eval-test eval-oracle harness-test openresty-test eval-resty-config-01 openresty-serve think-config-01 client-test livingdict client-web test browser-test browser-shake browser-serve compare compare-dry scudcheck pack-critic critic-suite beam-deps beam-test beam-run
+.PHONY: eval-test eval-oracle harness-test openresty-test eval-resty-config-01 openresty-serve think-config-01 client-test livingdict client-web test browser-test browser-shake browser-serve compare compare-dry scudcheck pack-critic critic-suite primitives beam-deps beam-test beam-run
 
 eval-test:
 	cd eval && python3 -m unittest discover -s tests -v
@@ -94,15 +98,28 @@ pack-critic:
 	@echo "packed -> shen/critic/suite.shen"
 
 # Run the packed critic suite on a local Shen host; ALL PASS or fail.
+# Always invoked from the repository root (this Makefile). beam/ has no
+# critic-suite target — do not `cd beam` first.
 critic-suite: pack-critic
 	@if [ -x "$(SHEN_CL)" ]; then \
 	   "$(SHEN_CL)" eval -q -l shen/critic/suite.shen 2>&1 | tee /tmp/critic-suite.out | grep -q 'ALL PASS' \
 	     || { tail -30 /tmp/critic-suite.out; echo "critic-suite: FAIL"; exit 1; }; \
-	 elif [ -f "$(SHENSCRIPT)" ]; then \
+	   echo "critic-suite: ALL PASS"; \
+	 elif [ -n "$(SHENSCRIPT)" ] && [ -f "$(SHENSCRIPT)" ]; then \
 	   node "$(SHENSCRIPT)" eval -q -l shen/critic/suite.shen 2>&1 | tee /tmp/critic-suite.out | grep -q 'ALL PASS' \
 	     || { tail -30 /tmp/critic-suite.out; echo "critic-suite: FAIL"; exit 1; }; \
+	   echo "critic-suite: ALL PASS"; \
 	 else echo "skip critic-suite: no Shen host (build ../shen-cl or ../ShenScript)"; exit 0; fi
-	@echo "critic-suite: ALL PASS"
+
+# PR 1: primitive spec tables + packed Shen suite + shaken BEAM critic + mix test.
+# Run from the repository root only.
+primitives:
+	python3 tools/gen_primitives.py spec/primitives.v1.json
+	python3 tools/gen_primitives.py spec/primitives.v1.json --check
+	$(MAKE) pack-critic
+	$(MAKE) critic-erl
+	$(MAKE) critic-suite
+	$(MAKE) beam-test
 
 browser-serve:
 	python3 -m http.server --directory browser

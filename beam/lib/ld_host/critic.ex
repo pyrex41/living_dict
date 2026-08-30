@@ -21,6 +21,17 @@ defmodule LdHost.Critic do
 
   use GenServer
 
+  # shen-erl / kl_validate are loaded at runtime from the yggdrasil erlang
+  # artifact ebin (make critic-erl), not a mix dep.
+  @compile {:no_warn_undefined,
+            [
+              :shen_erl_global_stores,
+              :shen_erl_kl_primitives,
+              :shen_erl_kl_compiler,
+              :kl_validate,
+              :kl_kernel
+            ]}
+
   @luerl_glue """
   local P = require("prims")
   local R = require("runtime")
