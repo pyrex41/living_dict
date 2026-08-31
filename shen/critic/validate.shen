@@ -1003,12 +1003,18 @@
             [accept Depth (sort-strings Effects)]
             [reject AllErr Depth (sort-strings Effects)]))))
 
+(define validate-catalog
+  { (list token) --> (list wordrow) --> (list string) --> (list string)
+    --> (list string) --> (list string) --> verdict }
+  Tokens Catalog AllowedEffects AllowedGlobs ForbiddenGlobs ArtifactKeys ->
+    (let R (walk Tokens 0 0 Catalog [] AllowedGlobs ForbiddenGlobs ArtifactKeys [])
+      (finish (wres-errors R) (wres-depth R) (wres-effs R) AllowedEffects)))
+
 (define validate-tokens
   { (list token) --> (list string) --> (list string) --> (list string)
     --> (list string) --> verdict }
   Tokens AllowedEffects AllowedGlobs ForbiddenGlobs ArtifactKeys ->
-    (let R (walk Tokens 0 0 [] [] AllowedGlobs ForbiddenGlobs ArtifactKeys [])
-      (finish (wres-errors R) (wres-depth R) (wres-effs R) AllowedEffects)))
+    (validate-catalog Tokens [] AllowedEffects AllowedGlobs ForbiddenGlobs ArtifactKeys))
 
 (define validate
   { string --> (list string) --> (list string) --> (list string)

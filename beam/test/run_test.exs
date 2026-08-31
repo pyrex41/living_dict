@@ -345,9 +345,80 @@ defmodule LdHost.RunTest do
     assert ran == program
     refute ran =~ "USE-ARTIFACT"
     refute ran =~ "DUP"
+
+    critic_program =
+      result.run_dir
+      |> Path.join("trace.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+      |> Enum.find(&(&1["type"] == "critic.program"))
+      |> get_in(["data", "program"])
+
+    assert critic_program == program
+    refute critic_program =~ "USE-ARTIFACT"
+    refute critic_program =~ "SWAP"
   end
 
-  test "starved seeded INSTALL still rejects pre-I/O via composed critic" do
+  test "catalog critic input has no INSTALL body tokens" do
+    ws = workspace()
+
+    dict =
+      System.tmp_dir!()
+      |> Path.join("ldcat-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(dict, "words"))
+
+    File.write!(
+      Path.join([dict, "words", "INSTALL.fs"]),
+      ": INSTALL ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ;\n"
+    )
+
+    File.write!(
+      Path.join([dict, "words", "._JUNK.fs"]),
+      ": EVIL ( -- | write ) S\" pwned.txt\" S\" pwned.txt\" WRITE-FILE DROP ;\n"
+    )
+
+    envelope = %{
+      "language" => "forth",
+      "program" => ~s{S" greet.txt" S" greet.txt" INSTALL RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"greet.txt" => "hello from catalog\n"},
+      "rationale" => "call INSTALL"
+    }
+
+    result =
+      Run.run("greet",
+        workspace: ws,
+        contract: contract(),
+        planner_fn: fn _g, obs, _f ->
+          assert obs =~ "INSTALL"
+          refute obs =~ "USE-ARTIFACT"
+          refute obs =~ "EVIL"
+          {:ok, envelope, %{}}
+        end,
+        dictionary_dir: dict,
+        max_episodes: 1
+      )
+
+    assert result.success
+    refute File.exists?(Path.join(ws, "pwned.txt"))
+
+    programs =
+      result.run_dir
+      |> Path.join("trace.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+      |> Enum.filter(&(&1["type"] in ["critic.program", "execution.program"]))
+      |> Enum.map(&get_in(&1, ["data", "program"]))
+
+    assert programs != []
+    refute Enum.any?(programs, &String.contains?(&1, "USE-ARTIFACT"))
+    refute Enum.any?(programs, &String.contains?(&1, "SWAP"))
+    refute Enum.any?(programs, &String.contains?(&1, "EVIL"))
+  end
+
+  test "starved seeded INSTALL still rejects pre-I/O" do
     ws = workspace()
 
     dict =

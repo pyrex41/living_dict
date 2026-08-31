@@ -140,15 +140,18 @@ defmodule LdHost.Run do
           rationale: envelope.rationale
         })
 
-      composed = compose(state.prelude, envelope.program)
+      catalog = Dictionary.load_vocab(state.dictionary_dir)
       artifact_keys = envelope.artifacts |> Map.keys() |> Enum.sort()
 
+      Ledger.trace(state.ledger, "critic.program", %{program: envelope.program})
+
       case Critic.validate(
-             composed,
+             envelope.program,
              state.allowed_effects,
              state.allowed_globs,
              state.forbidden_globs,
-             artifact_keys
+             artifact_keys,
+             catalog
            ) do
         {:reject, errors, _depth, _effects} ->
           {:ok, _} =
@@ -165,7 +168,7 @@ defmodule LdHost.Run do
               effects: effects
             })
 
-          execute_episode(state, episode, envelope, composed)
+          execute_episode(state, episode, envelope)
 
         {:error, reason} ->
           Ledger.trace(state.ledger, "critic.unavailable", %{reason: reason})
@@ -174,7 +177,7 @@ defmodule LdHost.Run do
     end
   end
 
-  defp execute_episode(state, episode, envelope, composed) do
+  defp execute_episode(state, episode, envelope) do
     host =
       Host.new(state.workspace,
         allowed_effects: state.allowed_effects,
@@ -216,7 +219,7 @@ defmodule LdHost.Run do
           })
 
         state = %{state | last_report: report}
-        state = promote(state, episode, vm, composed, report)
+        state = promote(state, episode, vm, envelope.program, report)
 
         if report.ok == true do
           {_reply, _payload, _host} = Host.receipt(vm.host)
@@ -235,8 +238,8 @@ defmodule LdHost.Run do
 
   # ---- typed promotion --------------------------------------------------
 
-  defp promote(state, episode, vm, composed, report) do
-    contracts = Contracts.extract(composed)
+  defp promote(state, episode, vm, program, report) do
+    contracts = Contracts.extract(program)
     candidates = Forth.defined_names(vm) -- state.prelude_words
 
     eligible? = report.ok == true
@@ -252,12 +255,31 @@ defmodule LdHost.Run do
     quarantined = quarantined ++ dependent
     dependent_set = MapSet.new(dependent)
 
-    entries =
-      Enum.map(promotable, fn name ->
-        {name, Dictionary.body_source(vm.colon[name]), Contracts.canonical(contracts[name])}
+    {entries, refused} =
+      Enum.reduce(promotable, {[], []}, fn name, {keep, skip} ->
+        body = Dictionary.body_source(vm.colon[name])
+        contract = Contracts.canonical(contracts[name])
+        source = ": #{name} #{contract} #{body} ;\n"
+
+        case Critic.validate(
+               source,
+               state.allowed_effects,
+               state.allowed_globs,
+               state.forbidden_globs,
+               []
+             ) do
+          {:accept, _, _} ->
+            {[{name, body, contract} | keep], skip}
+
+          {:reject, errors, _, _} ->
+            {keep, [{name, errors} | skip]}
+
+          {:error, reason} ->
+            {keep, [{name, [to_string(reason)]} | skip]}
+        end
       end)
 
-    written = Dictionary.save_words(state.dictionary_dir, entries)
+    written = Dictionary.save_words(state.dictionary_dir, Enum.reverse(entries))
 
     Enum.each(written, fn {name, sha} ->
       contract = Contracts.canonical(contracts[name])
@@ -275,6 +297,18 @@ defmodule LdHost.Run do
         sha256: sha,
         contract: contract
       })
+    end)
+
+    Enum.each(refused, fn {name, reasons} ->
+      {:ok, _} =
+        Ledger.commit(state.ledger, "dictionary.promotion_evidence", %{
+          word: name,
+          episode: episode,
+          eligible: false,
+          reasons: reasons
+        })
+
+      Ledger.trace(state.ledger, "dictionary.quarantined", %{word: name, reasons: reasons})
     end)
 
     Enum.each(quarantined, fn name ->
@@ -341,8 +375,6 @@ defmodule LdHost.Run do
 
   defp refers_to_banned?(_, _), do: false
 
-  defp compose("", program), do: program
-  defp compose(prelude, program), do: prelude <> "\n" <> program
 
   @observe_file_cap 8_000
   @observe_total_cap 60_000
@@ -373,13 +405,23 @@ defmodule LdHost.Run do
       end)
 
     dictionary =
-      case state.prelude_words do
+      case Dictionary.load_vocab(state.dictionary_dir) do
         [] ->
           ""
 
-        words ->
-          "\nHARNESS DICTIONARY (callable colon words):\n" <>
-            Enum.join(words, " ") <> "\n" <> state.prelude
+        rows ->
+          lines =
+            Enum.map(rows, fn {name, _tokens, _sig, source} ->
+              contract =
+                case Contracts.extract(source)[name] do
+                  inner when is_binary(inner) -> Contracts.canonical(inner) || ""
+                  _ -> ""
+                end
+
+              String.trim("#{name} #{contract}")
+            end)
+
+          "\nHARNESS DICTIONARY (callable colon words):\n" <> Enum.join(lines, "\n")
       end
 
     gates =
