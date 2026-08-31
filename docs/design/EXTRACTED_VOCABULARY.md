@@ -60,6 +60,16 @@ Runner: `mix ld.extract` or `mix test` fixtures under `beam/test/extract_test.ex
 
 Default on for extract-after-success (`LD_EXTRACT=1` default **1** — this is the dictionary's reason to exist; disable with `0` for A/B). Retrieval still defaults `LD_DICT_MODE=load-all`.
 
+`LD_POLICY_DICT=0` (default): policy facts persist on success but are **not** injected into later jobs' observation (seq-8 false friends share `app/config.py`). Same-job facts still appear after a green episode. Set `1` to observe path-scoped policy from the dictionary.
+
+## Policy facts (not Forth)
+
+After `gates.ok`, the host records non-Forth facts from product files (DEFAULTS keys, ALIASES emptiness, KeyError, one-key renames) under `dictionary/policy/*.json`. `INSTALL-*` remains plumbing: observation says those words copy artifact bytes and do not encode aliases.
+
+## Fail observation
+
+When the last gates failed, the next planner observation lists file *names*, **FAILED CHECKS** (ids/reasons/verifier JSON if present; never check commands), and a **PRODUCT DIFF** of this episode's product writes. Identical artifact bodies with a tweaked Forth program are `episode.blocked_duplicate` (`reason: identical artifacts`).
+
 ## Tests (`mix test` in `beam/`)
 
 - Idiom with `app/config.py` + `claims.json` → one word, path_region is only `app/config.py`.

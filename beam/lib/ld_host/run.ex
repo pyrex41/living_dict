@@ -11,7 +11,7 @@ defmodule LdHost.Run do
   "model-authored claims" loudly.
   """
 
-  alias LdHost.{Critic, Contracts, Dictionary, Envelope, Extract, Forth, Gates, Host, Ledger, Policy, Retrieve, Store}
+  alias LdHost.{Critic, Contracts, Dictionary, Envelope, Extract, Forth, Gates, Host, Ledger, Policy, PolicyFacts, Retrieve, Store}
 
   @default_max_episodes 6
 
@@ -81,9 +81,15 @@ defmodule LdHost.Run do
       allowed_globs: allowed_globs,
       forbidden_globs: forbidden_globs,
       extract?: Extract.enabled?(opts),
+      policy_dict?: PolicyFacts.dict_observe_enabled?(opts),
       seen: MapSet.new(),
+      seen_artifacts: MapSet.new(),
       feedback: "",
       last_report: nil,
+      last_before: %{},
+      last_after: %{},
+      last_writes: [],
+      job_policy: [],
       promoted_words: [],
       tokens: %{input_tokens: 0, output_tokens: 0},
       model_calls: 0
@@ -147,45 +153,75 @@ defmodule LdHost.Run do
 
   defp plan_episode(state, episode, envelope) do
     fingerprint = Envelope.fingerprint(envelope)
+    art_digest = Envelope.artifacts_digest(envelope)
 
-    if MapSet.member?(state.seen, fingerprint) do
-      {:ok, _} =
-        Ledger.commit(state.ledger, "episode.blocked_duplicate", %{episode: episode, fingerprint: fingerprint})
+    cond do
+      art_digest && MapSet.member?(state.seen_artifacts, art_digest) ->
+        {:ok, _} =
+          Ledger.commit(state.ledger, "episode.blocked_duplicate", %{
+            episode: episode,
+            fingerprint: fingerprint,
+            reason: "identical artifacts"
+          })
 
-      {:continue,
-       feedback(state, "identical plan resubmitted and blocked — change the plan, the errors stand")}
-    else
-      state = %{state | seen: MapSet.put(state.seen, fingerprint)}
+        {:continue,
+         feedback(
+           state,
+           "identical artifacts resubmitted and blocked — change the file contents, the errors stand"
+         )}
 
-      {:ok, _} =
-        Ledger.commit(state.ledger, "episode.planned", %{
-          episode: episode,
-          fingerprint: fingerprint,
-          rationale: envelope.rationale
-        })
+      MapSet.member?(state.seen, fingerprint) ->
+        {:ok, _} =
+          Ledger.commit(state.ledger, "episode.blocked_duplicate", %{episode: episode, fingerprint: fingerprint})
 
-      # Nested cartridge is parse/fingerprint material. Overlay execute is
-      # PR 6 (`LD_CARTRIDGE=1`); default 0 interprets envelope.program.
-      composed = compose(state.prelude, envelope.program)
-      artifact_keys = envelope.artifacts |> Map.keys() |> Enum.sort()
+        {:continue,
+         feedback(state, "identical plan resubmitted and blocked — change the plan, the errors stand")}
 
-      case Critic.validate(composed, state.allowed_effects, state.allowed_globs, state.forbidden_globs, artifact_keys) do
-        {:reject, errors, _depth, _effects} ->
-          {:ok, _} = Ledger.commit(state.ledger, "critic.rejected", %{episode: episode, errors: errors})
-          Ledger.trace(state.ledger, "preflight.rejected", %{errors: errors})
-          {:continue, feedback(state, "critic rejected the plan:\n" <> Enum.join(errors, "\n"))}
+      true ->
+        state = %{
+          state
+          | seen: MapSet.put(state.seen, fingerprint),
+            seen_artifacts:
+              if(art_digest, do: MapSet.put(state.seen_artifacts, art_digest), else: state.seen_artifacts)
+        }
 
-        {:accept, depth, effects} ->
-          {:ok, _} =
-            Ledger.commit(state.ledger, "critic.accepted", %{episode: episode, depth: depth, effects: effects})
+        {:ok, _} =
+          Ledger.commit(state.ledger, "episode.planned", %{
+            episode: episode,
+            fingerprint: fingerprint,
+            rationale: envelope.rationale
+          })
 
-          state = record_reuse(state, envelope.program)
-          execute_episode(state, episode, envelope, composed)
+        composed = compose(state.prelude, envelope.program)
+        artifact_keys = envelope.artifacts |> Map.keys() |> Enum.sort()
 
-        {:error, reason} ->
-          Ledger.trace(state.ledger, "critic.unavailable", %{reason: reason})
-          {:halt, state}
-      end
+        case Critic.validate(
+               composed,
+               state.allowed_effects,
+               state.allowed_globs,
+               state.forbidden_globs,
+               artifact_keys
+             ) do
+          {:reject, errors, _depth, _effects} ->
+            {:ok, _} = Ledger.commit(state.ledger, "critic.rejected", %{episode: episode, errors: errors})
+            Ledger.trace(state.ledger, "preflight.rejected", %{errors: errors})
+            {:continue, feedback(state, "critic rejected the plan:\n" <> Enum.join(errors, "\n"))}
+
+          {:accept, depth, effects} ->
+            {:ok, _} =
+              Ledger.commit(state.ledger, "critic.accepted", %{
+                episode: episode,
+                depth: depth,
+                effects: effects
+              })
+
+            state = record_reuse(state, envelope.program)
+            execute_episode(state, episode, envelope, composed)
+
+          {:error, reason} ->
+            Ledger.trace(state.ledger, "critic.unavailable", %{reason: reason})
+            {:halt, state}
+        end
     end
   end
 
@@ -203,6 +239,8 @@ defmodule LdHost.Run do
         receipt_path: Path.join(state.run_dir, "receipt.json")
       )
 
+    writes = Extract.product_writes(envelope.program, Map.keys(envelope.artifacts))
+    before = PolicyFacts.snapshot_texts(state.workspace, writes)
     vm = %Forth.VM{host: host, artifacts: envelope.artifacts}
 
     case interpret(vm, composed) do
@@ -220,8 +258,18 @@ defmodule LdHost.Run do
         report = vm.host.last_check || Gates.run(vm.host)
         {:ok, _} = Ledger.commit(state.ledger, "gates.measured", %{episode: episode, ok: report.ok == true, reason: report[:reason]})
 
-        state = %{state | last_report: report}
+        afters = PolicyFacts.snapshot_texts(state.workspace, writes)
+
+        state = %{
+          state
+          | last_report: report,
+            last_before: before,
+            last_after: afters,
+            last_writes: writes
+        }
+
         state = promote(state, episode, vm, composed, report, envelope.program)
+        state = record_policy(state, report, writes, before)
 
         if report.ok == true do
           {_reply, _payload, _host} = Host.receipt(vm.host)
@@ -500,73 +548,112 @@ defmodule LdHost.Run do
       mode: Atom.to_string(state.dict_mode)
     })
 
-    names =
-      state.workspace
-      |> LdHost.Policy.snapshot()
-      |> Map.keys()
-      |> Enum.sort()
-      |> Enum.take(200)
+    dictionary = dictionary_block(state)
+    plumbing = PolicyFacts.plumbing_note(state.prelude_words)
+    policy = PolicyFacts.format_observe(observe_policy(state))
+    feedback = feedback_block(state)
 
-    {files, _budget} =
-      Enum.map_reduce(names, @observe_total_cap, fn rel, budget ->
-        content =
-          case File.read(Path.join(state.workspace, rel)) do
-            {:ok, text} when byte_size(text) <= @observe_file_cap ->
-              if String.valid?(text) and budget - byte_size(text) > 0, do: text, else: nil
+    if failed_gates?(state) do
+      names =
+        state.workspace
+        |> LdHost.Policy.snapshot()
+        |> Map.keys()
+        |> Enum.sort()
+        |> Enum.take(200)
+        |> Enum.join("\n")
 
-            _ ->
-              nil
+      "WORKSPACE FILES:\n" <>
+        names <>
+        PolicyFacts.format_failed_checks(state.last_report) <>
+        PolicyFacts.format_diffs(state.last_before, state.last_after, state.last_writes) <>
+        plumbing <> dictionary <> policy <> feedback
+    else
+      names =
+        state.workspace
+        |> LdHost.Policy.snapshot()
+        |> Map.keys()
+        |> Enum.sort()
+        |> Enum.take(200)
+
+      {files, _budget} =
+        Enum.map_reduce(names, @observe_total_cap, fn rel, budget ->
+          content =
+            case File.read(Path.join(state.workspace, rel)) do
+              {:ok, text} when byte_size(text) <= @observe_file_cap ->
+                if String.valid?(text) and budget - byte_size(text) > 0, do: text, else: nil
+
+              _ ->
+                nil
+            end
+
+          case content do
+            nil -> {"#{rel} (contents omitted)", budget}
+            text -> {"#{rel}:\n```\n#{text}```", budget - byte_size(text)}
           end
+        end)
 
-        case content do
-          nil -> {"#{rel} (contents omitted)", budget}
-          text -> {"#{rel}:\n```\n#{text}```", budget - byte_size(text)}
+      gates =
+        case state.last_report do
+          nil -> ""
+          report -> "\nLAST GATES: " <> JSON.encode!(scrub(report))
         end
-      end)
 
-    dictionary =
-      case state.prelude_words do
-        [] -> ""
-        words -> "\nHARNESS DICTIONARY (callable colon words):\n" <> Enum.join(words, " ") <> "\n" <> state.prelude
+      "WORKSPACE FILES:\n" <> Enum.join(files, "\n") <> plumbing <> dictionary <> policy <> gates <> feedback
+    end
+  end
+
+  defp dictionary_block(state) do
+    case state.prelude_words do
+      [] -> ""
+      words -> "\nHARNESS DICTIONARY (callable colon words):\n" <> Enum.join(words, " ") <> "\n" <> state.prelude
+    end
+  end
+
+  defp feedback_block(state) do
+    case state.feedback do
+      "" -> ""
+      text -> "\nFEEDBACK:\n" <> text
+    end
+  end
+
+  defp failed_gates?(state) do
+    is_map(state.last_report) and state.last_report[:ok] == false
+  end
+
+  defp observe_policy(state) do
+    job = state.job_policy || []
+
+    dict =
+      if state.policy_dict? do
+        PolicyFacts.matching(PolicyFacts.load(state.dictionary_dir), state.allowed_globs)
+      else
+        []
       end
 
-    gates =
-      case state.last_report do
-        nil -> ""
-        report -> "\nLAST GATES: " <> JSON.encode!(scrub(report))
-      end
+    job ++ dict
+  end
 
-    feedback =
-      case state.feedback do
-        "" -> ""
-        text -> "\nFEEDBACK:\n" <> text
-      end
+  defp record_policy(state, report, writes, before) do
+    if report.ok == true do
+      fact = PolicyFacts.extract(state.workspace, writes, before)
 
-    "WORKSPACE FILES:\n" <> Enum.join(files, "\n") <> dictionary <> gates <> feedback
+      if fact do
+        PolicyFacts.persist(state.dictionary_dir, fact)
+        Ledger.trace(state.ledger, "dictionary.policy", fact)
+        rest = Enum.reject(state.job_policy, &(&1["path_region"] == fact["path_region"]))
+        %{state | job_policy: [fact | rest]}
+      else
+        state
+      end
+    else
+      state
+    end
   end
 
   defp scrub(report), do: Map.take(report, [:ok, :reason, :judge, :name])
 
   defp gate_feedback(report) do
-    failing =
-      case report[:claims] do
-        claims when is_list(claims) ->
-          claims
-          |> Enum.reject(& &1.passed)
-          |> Enum.map(fn claim ->
-            # Never echo check COMMANDS back to the model: a hidden
-            # verifier's location must not leak. The id and the check's
-            # output tail are the backpressure.
-            "- #{claim.id} (#{claim[:kind]}): #{claim[:reason] || claim[:path] || "check failed"}" <>
-              if(claim[:output], do: "\n  output: #{claim[:output]}", else: "")
-          end)
-          |> Enum.join("\n")
-
-        _ ->
-          ""
-      end
-
-    "gates failed: #{report[:reason]}\n#{failing}"
+    "gates failed: #{report[:reason]}\n" <> PolicyFacts.format_failed_checks(report)
   end
 
   defp feedback(state, text), do: %{state | feedback: text}

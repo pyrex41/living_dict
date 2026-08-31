@@ -92,6 +92,24 @@ defmodule LdHost.Envelope do
   end
 
   @doc """
+  Digest of artifact *contents* only. Used to block resubmitting the same
+  files under a tweaked program/rationale.
+  """
+  def artifacts_digest(%__MODULE__{} = env), do: artifacts_digest(env.artifacts)
+
+  def artifacts_digest(arts) when is_map(arts) and map_size(arts) == 0, do: nil
+
+  def artifacts_digest(arts) when is_map(arts) do
+    arts
+    |> Enum.sort()
+    |> Enum.map(fn {k, v} -> "#{k}:#{Policy.sha256_hex(to_string(v))}" end)
+    |> Enum.join(<<0>>)
+    |> Policy.sha256_hex()
+  end
+
+  def artifacts_digest(_), do: nil
+
+  @doc """
   Canonical overlay object: sorted keys, interned definition bodies as
   64-hex with no `sha256:` prefix. Same bytes interned as the overlay blob.
   """

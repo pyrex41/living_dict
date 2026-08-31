@@ -20,7 +20,7 @@ defmodule LdHost.Gates do
     absent.
   """
 
-  alias LdHost.{Host, Cmd, Policy}
+  alias LdHost.{Host, Cmd, Policy, PolicyFacts}
 
   def run(%Host{} = host, opts \\ []) do
     persist? = Keyword.get(opts, :persist?, true)
@@ -185,7 +185,17 @@ defmodule LdHost.Gates do
         entry = if advisory?, do: Map.put(entry, :advisory, true), else: entry
 
         tail = String.trim(outcome.output)
-        if tail == "", do: entry, else: Map.put(entry, :output, String.slice(tail, -400, 400))
+
+        entry =
+          if tail == "" do
+            entry
+          else
+            entry
+            |> Map.put(:output, String.slice(tail, 0, 2000))
+            |> maybe_verifier_checks(tail)
+          end
+
+        entry
     end
   end
 
@@ -250,6 +260,13 @@ defmodule LdHost.Gates do
     case File.stat(path) do
       {:ok, %{size: size}} -> size
       _ -> 0
+    end
+  end
+
+  defp maybe_verifier_checks(entry, output) do
+    case PolicyFacts.parse_verifier_checks(output) do
+      [] -> entry
+      checks -> Map.put(entry, :verifier_checks, checks)
     end
   end
 

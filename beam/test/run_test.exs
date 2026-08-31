@@ -427,4 +427,147 @@ defmodule LdHost.RunTest do
     assert result.judge == "approved contract"
     assert result.report.ok == true
   end
+
+  test "identical artifacts with a tweaked program are blocked" do
+    ws = workspace()
+    {:ok, log} = Agent.start_link(fn -> [] end)
+
+    planner = fn _g, _o, feedback ->
+      Agent.update(log, &[feedback | &1])
+      n = Agent.get(log, &length/1)
+
+      env = %{
+        "language" => "forth",
+        "program" =>
+          ~s{S" greet.txt" USE-ARTIFACT S" greet.txt" WRITE-FILE DROP RUN-GATES DROP RECEIPT DROP} <>
+            String.duplicate(" DROP", rem(n, 2)),
+        "artifacts" => %{"greet.txt" => "not hello\n"},
+        "rationale" => "attempt #{n}"
+      }
+
+      {:ok, env, %{}}
+    end
+
+    result = Run.run("goal", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 3)
+    refute result.success
+    feedbacks = Agent.get(log, &Enum.reverse/1)
+    assert Enum.any?(feedbacks, &(&1 =~ "identical artifacts resubmitted"))
+  end
+
+  test "gate failure observation is diffs and failed checks, not a full tree dump" do
+    ws = workspace()
+    File.write!(Path.join(ws, "greet.txt"), "start\n")
+    {:ok, obs_log} = Agent.start_link(fn -> [] end)
+    {:ok, n} = Agent.start_link(fn -> 0 end)
+
+    planner = fn _g, obs, _f ->
+      Agent.update(n, &(&1 + 1))
+      i = Agent.get(n, & &1)
+      if i > 1, do: Agent.update(obs_log, &[obs | &1])
+
+      body = if i == 1, do: "wrong\n", else: "hello from the beam\n"
+
+      env = %{
+        "language" => "forth",
+        "program" =>
+          ~s{S" greet.txt" USE-ARTIFACT S" greet.txt" WRITE-FILE DROP RUN-GATES DROP RECEIPT DROP},
+        "artifacts" => %{"greet.txt" => body},
+        "rationale" => "ep#{i}"
+      }
+
+      {:ok, env, %{}}
+    end
+
+    result = Run.run("goal", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 2)
+    assert result.success
+
+    obs = Agent.get(obs_log, &hd/1)
+    assert obs =~ "FAILED CHECKS"
+    assert obs =~ "PRODUCT DIFF"
+    assert obs =~ "greet.txt"
+    # fail-view lists names, not the full ``` dump of every file
+    refute obs =~ "WORKSPACE FILES:\ngreet.txt:\n```"
+  end
+
+  test "INSTALL plumbing note appears when retrieved prelude has INSTALL-*" do
+    ws = workspace()
+    dict = Path.join(workspace(), "dict")
+    File.mkdir_p!(Path.join(dict, "words"))
+
+    File.write!(
+      Path.join(dict, "words/INSTALL-GREET.fs"),
+      ": INSTALL-GREET ( key -- | read, write ) DUP USE-ARTIFACT SWAP WRITE-FILE DROP ;\n"
+    )
+
+    File.write!(
+      Path.join(dict, "words/INSTALL-GREET.identity.json"),
+      JSON.encode!(%{"effects" => ["read", "write"], "path_region" => ["greet.txt"], "task_families" => []})
+    )
+
+    {:ok, obs_log} = Agent.start_link(fn -> [] end)
+
+    planner = fn _g, obs, _f ->
+      Agent.update(obs_log, &[obs | &1])
+
+      {:ok,
+       %{
+         "language" => "forth",
+         "program" => ~s{S" greet.txt" INSTALL-GREET RUN-GATES DROP RECEIPT DROP},
+         "artifacts" => %{"greet.txt" => "hello from the beam\n"},
+         "rationale" => "call plumbing"
+       }, %{}}
+    end
+
+    result =
+      Run.run("goal",
+        workspace: ws,
+        contract: contract(),
+        planner_fn: planner,
+        dictionary_dir: dict,
+        dict_mode: :retrieved,
+        allowed_globs: ["greet.txt"],
+        max_episodes: 1
+      )
+
+    assert result.success
+    obs = Agent.get(obs_log, &hd/1)
+    assert obs =~ "PLUMBING"
+    assert obs =~ "INSTALL-GREET"
+  end
+
+  test "successful product write persists a policy fact sidecar" do
+    ws = workspace()
+    File.mkdir_p!(Path.join(ws, "app"))
+
+    py = """
+    DEFAULTS = {'compatibility_mode': False, "retries": 2}
+    ALIASES = {}
+    def normalize(user):
+        raise KeyError(k)
+    """
+
+    envelope = %{
+      "language" => "forth",
+      "program" =>
+        ~s{S" app/config.py" USE-ARTIFACT S" app/config.py" WRITE-FILE DROP RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"app/config.py" => py},
+      "rationale" => "config"
+    }
+
+    contract = %{
+      claims: [%{"id" => "py", "kind" => "file", "path" => "app/config.py", "min_bytes" => 10}],
+      source: "hidden"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
+    result = Run.run("goal", workspace: ws, contract: contract, planner_fn: planner, max_episodes: 1)
+    assert result.success
+
+    policies = Path.wildcard(Path.join([result.run_dir, "dictionary", "policy", "*.json"]))
+    assert policies != []
+    fact = JSON.decode!(File.read!(hd(policies)))
+    assert fact["forbids_aliases"] == true
+    assert fact["must_raise_keyerror"] == true
+    assert "app/config.py" in fact["path_region"]
+  end
 end
