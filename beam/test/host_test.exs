@@ -42,4 +42,19 @@ defmodule LdHost.HostTest do
     assert %Host{allow_model_checks: false} = Host.new(ws)
     assert %Host{allow_model_checks: true} = Host.new(ws, allow_model_checks: true)
   end
+
+  test "intern_blob is idempotent" do
+    ws = workspace()
+    objects = Path.join(ws, "objects")
+    File.mkdir_p!(objects)
+    host = Host.new(ws, objects_dir: objects, emit: fn _, _ -> :ok end)
+    {:ok, receipt, _} = Host.write_file(host, "hello", "a.txt")
+    path = Host.object_path(objects, receipt.sha256)
+    assert File.exists?(path)
+    mtime = File.stat!(path).mtime
+    {:ok, receipt2, _} = Host.write_file(host, "hello", "b.txt")
+    assert receipt.sha256 == receipt2.sha256
+    assert File.stat!(path).mtime == mtime
+    {:ok, "hello", _} = Host.fetch_object(host, receipt.sha256)
+  end
 end

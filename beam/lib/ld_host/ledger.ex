@@ -30,15 +30,46 @@ defmodule LdHost.Ledger do
 
   def revision(ledger), do: GenServer.call(ledger, :revision)
 
+  @doc "Committed kernel events in sequence order."
+  def events(ledger) when is_pid(ledger), do: GenServer.call(ledger, :events)
+
+  def events(run_dir) when is_binary(run_dir) do
+    path = Path.join(run_dir, "events.jsonl")
+
+    case File.read(path) do
+      {:ok, bin} ->
+        bin
+        |> String.split("\n", trim: true)
+        |> Enum.flat_map(fn line ->
+          case JSON.decode(line) do
+            {:ok, event} -> [event]
+            _ -> []
+          end
+        end)
+
+      _ ->
+        []
+    end
+  end
+
   @doc "An emit closure for LdHost.Host wiring."
   def emitter(ledger), do: fn type, data -> trace(ledger, type, data) end
 
   @impl true
   def init(run_dir) do
     File.mkdir_p!(run_dir)
-    events = File.open!(Path.join(run_dir, "events.jsonl"), [:append, :utf8])
-    trace = File.open!(Path.join(run_dir, "trace.jsonl"), [:append, :utf8])
-    {:ok, %{events: events, trace: trace, revision: 0, run_dir: run_dir}}
+    committed = events(run_dir)
+    events_io = File.open!(Path.join(run_dir, "events.jsonl"), [:append, :utf8])
+    trace_io = File.open!(Path.join(run_dir, "trace.jsonl"), [:append, :utf8])
+
+    {:ok,
+     %{
+       events: events_io,
+       trace: trace_io,
+       revision: length(committed),
+       run_dir: run_dir,
+       committed: committed
+     }}
   end
 
   @impl true
@@ -47,13 +78,16 @@ defmodule LdHost.Ledger do
       seq = state.revision + 1
       line = JSON.encode!(%{kind: kind, payload: payload, sequence: seq})
       IO.write(state.events, line <> "\n")
-      {:reply, {:ok, seq}, %{state | revision: seq}}
+      event = JSON.decode!(line)
+      {:reply, {:ok, seq}, %{state | revision: seq, committed: state.committed ++ [event]}}
     else
       {:reply, {:error, "unknown event kind: #{kind}"}, state}
     end
   end
 
   def handle_call(:revision, _from, state), do: {:reply, state.revision, state}
+
+  def handle_call(:events, _from, state), do: {:reply, state.committed, state}
 
   @impl true
   def handle_cast({:trace, type, data}, state) do

@@ -102,4 +102,25 @@ defmodule LdHost.ForthTest do
     assert result.stack == [5, 5]
     assert Forth.defined_names(result) == ["TWICE"]
   end
+
+  test "USE-OBJECT and PATCH-FILE are live host words" do
+    ws =
+      System.tmp_dir!()
+      |> Path.join("ldforth-#{System.os_time(:nanosecond)}")
+
+    File.mkdir_p!(ws)
+    objects = Path.join(ws, "objects")
+    File.mkdir_p!(objects)
+    host = LdHost.Host.new(ws, objects_dir: objects, emit: fn _, _ -> :ok end)
+    {:ok, receipt, host} = LdHost.Host.write_file(host, "hello\n", "greet.txt")
+    vm = %VM{host: host}
+    vm = Forth.interpret(vm, ~s{S" #{receipt.sha256}" USE-OBJECT})
+    assert hd(vm.stack) == "hello\n"
+
+    _vm = Forth.interpret(vm, ~s{S" patched\n" S" greet.txt" PATCH-FILE DROP})
+    assert File.read!(Path.join(ws, "greet.txt")) == "patched\n"
+    assert "USE-OBJECT" in Forth.live_host_words()
+    assert "PATCH-FILE" in Forth.live_host_words()
+    refute "USE-OBJECT" in Forth.eval_host_words()
+  end
 end

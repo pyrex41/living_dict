@@ -733,4 +733,128 @@ defmodule LdHost.RunTest do
 
     assert "dictionary.promoted" in kinds
   end
+
+  @tag :observation
+  test "observation lists hashes and UNUSED, not file bodies" do
+    ws = workspace()
+
+    dict =
+      System.tmp_dir!()
+      |> Path.join("ldobs-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(dict, "words"))
+
+    File.write!(
+      Path.join([dict, "words", "INSTALL.fs"]),
+      ": INSTALL ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ;\n"
+    )
+
+    {:ok, log} = Agent.start_link(fn -> [] end)
+
+    write = %{
+      "language" => "forth",
+      "program" =>
+        ~s{S" greet.txt" USE-ARTIFACT S" greet.txt" WRITE-FILE DROP RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"greet.txt" => "hello from the beam\n"},
+      "rationale" => "write greeting"
+    }
+
+    planner1 = fn _g, obs, feedback ->
+      Agent.update(log, &[{obs, feedback} | &1])
+      {:ok, write, %{}}
+    end
+
+    r1 =
+      Run.run("obs-write",
+        workspace: ws,
+        contract: contract(),
+        planner_fn: planner1,
+        dictionary_dir: dict,
+        max_episodes: 1
+      )
+
+    assert r1.success
+
+    planner2 = fn _g, obs, feedback ->
+      Agent.update(log, &[{obs, feedback} | &1])
+      {:ok, write, %{}}
+    end
+
+    r2 =
+      Run.run("obs-hashes",
+        workspace: ws,
+        contract: contract(),
+        planner_fn: planner2,
+        dictionary_dir: dict,
+        max_episodes: 1
+      )
+
+    assert r2.success
+    observations = Agent.get(log, &Enum.reverse/1) |> Enum.map(&elem(&1, 0))
+    second = Enum.at(observations, 1)
+    assert second =~ "UNUSED"
+    assert second =~ "INSTALL"
+    refute second =~ "hello from the beam"
+    assert second =~ "WORKSPACE TREE"
+    sha = LdHost.Policy.sha256_hex("hello from the beam\n")
+    assert second =~ sha
+
+    events = LdHost.Ledger.events(r1.run_dir)
+    last = List.last(events)
+    tree = LdHost.Store.as_of(events, last["sequence"])
+    assert tree["greet.txt"] == LdHost.Policy.snapshot(ws)["greet.txt"]
+  end
+
+  test "canned episode 1 writes+interns; episode 2 USE-OBJECT with empty artifacts" do
+    body = "hello from intern\n"
+    ws1 = workspace()
+
+    episode1 = %{
+      "language" => "forth",
+      "program" =>
+        ~s{S" greet.txt" USE-ARTIFACT S" greet.txt" WRITE-FILE DROP RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"greet.txt" => body},
+      "rationale" => "intern"
+    }
+
+    r1 =
+      Run.run("intern",
+        workspace: ws1,
+        contract: contract(),
+        planner_fn: fn _g, _o, _f -> {:ok, episode1, %{}} end,
+        max_episodes: 1
+      )
+
+    assert r1.success
+    sha = LdHost.Policy.sha256_hex(body)
+    obj = Path.join([r1.run_dir, "objects", String.slice(sha, 0, 2), sha])
+    assert File.exists?(obj)
+
+    ws2 = workspace()
+    run2 = Path.join(System.tmp_dir!(), "ldobj2-#{System.os_time(:nanosecond)}")
+    File.mkdir_p!(run2)
+    File.cp_r!(Path.join(r1.run_dir, "objects"), Path.join(run2, "objects"))
+
+    episode2 = %{
+      "language" => "forth",
+      "program" =>
+        ~s{S" #{sha}" USE-OBJECT S" greet.txt" WRITE-FILE DROP RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{},
+      "rationale" => "by hash"
+    }
+
+    r2 =
+      Run.run("by-hash",
+        workspace: ws2,
+        contract: contract(),
+        planner_fn: fn _g, _o, _f -> {:ok, episode2, %{}} end,
+        max_episodes: 1,
+        run_dir: run2
+      )
+
+    assert r2.success
+    assert File.read!(Path.join(ws2, "greet.txt")) == body
+    env = run2 |> Path.join("envelope.json") |> File.read!() |> JSON.decode!()
+    assert env["artifacts"] == %{}
+  end
 end

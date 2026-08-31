@@ -17,7 +17,7 @@ defmodule LdHost.Host do
 
   @behaviour LdHost.Capability
 
-  alias LdHost.{Policy, Cmd}
+  alias LdHost.{Policy, Cmd, Store}
 
   defstruct workspace: nil,
             allowed_effects: ["read", "write", "exec"],
@@ -105,6 +105,8 @@ defmodule LdHost.Host do
   def call(host, "LIST-DIR", [path]), do: list_dir(host, path)
   def call(host, "SEARCH", [query]), do: search(host, query)
   def call(host, "WRITE-FILE", [content, path]), do: write_file(host, content, path)
+  def call(host, "USE-OBJECT", [sha]), do: fetch_object(host, sha)
+  def call(host, "PATCH-FILE", [patch, path]), do: patch_file(host, patch, path)
   def call(host, "RUN-TESTS", []), do: run_checks(host, "RUN-TESTS", false)
   def call(host, "RUN-GATES", []), do: run_checks(host, "RUN-GATES", true)
   def call(host, "RECEIPT", []), do: receipt(host)
@@ -316,18 +318,64 @@ defmodule LdHost.Host do
   defp empty_dot(""), do: "."
   defp empty_dot(rel), do: rel
 
-  defp intern_blob(%{objects_dir: nil}, _content, _digest), do: :ok
+  @doc "Idempotent CAS intern. No-op when objects_dir is unset."
+  def intern_blob(%{objects_dir: nil}, _content, _digest), do: :ok
 
-  defp intern_blob(%{objects_dir: dir}, content, digest) do
-    <<aa::binary-size(2), _::binary>> = digest
-    path = Path.join([dir, aa, digest])
-
-    unless File.exists?(path) do
-      File.mkdir_p!(Path.dirname(path))
-      File.write!(path, content)
-    end
-
+  def intern_blob(%{objects_dir: dir}, content, _digest) when is_binary(dir) do
+    _ = Store.intern(Store.open(dir), content)
     :ok
+  end
+
+  def object_path(dir, digest) when is_binary(dir) and is_binary(digest) do
+    Store.blob_path(dir, digest)
+  end
+
+  @doc "Fetch interned bytes by sha256. Requires the read effect."
+  def fetch_object(host, sha) do
+    with {:ok, host} <- require_effect(host, "read") do
+      case load_object(host.objects_dir, sha) do
+        {:ok, bytes} ->
+          tool(host, "USE-OBJECT", %{sha256: sha, bytes: byte_size(bytes)})
+          {:ok, bytes, host}
+
+        {:error, reason} ->
+          trap_event(host, %{reason: "object", detail: reason, sha256: sha})
+          {:trap, "missing_object", reason}
+      end
+    end
+  end
+
+  def load_object(nil, _sha), do: {:error, "no objects_dir"}
+
+  def load_object(dir, sha) when is_binary(sha) do
+    case Store.get(Store.open(dir), sha) do
+      {:ok, bytes} -> {:ok, bytes}
+      {:error, {:missing, digest}} -> {:error, "no object: #{digest}"}
+      {:error, {:corrupt, digest, _actual}} -> {:error, "corrupt object: #{digest}"}
+      {:error, {:malformed, _}} -> {:error, "malformed object sha: #{sha}"}
+    end
+  end
+
+  def load_object(_, _), do: {:error, "malformed object sha"}
+
+  @doc """
+  Live-only: patch an existing file (read + write).
+
+  Whole-file replace: the patch body becomes the new contents. Unified
+  diffs are not applied.
+  """
+  def patch_file(host, patch, path) when is_binary(patch) and is_binary(path) do
+    with {:ok, host} <- require_effect(host, "read"),
+         {:ok, rel} <- rel(host, path) do
+      target = Path.join(host.workspace, rel)
+
+      if not File.regular?(target) do
+        trap_event(host, %{reason: "missing", path: rel})
+        {:trap, "missing", "file not found: #{rel}"}
+      else
+        write_file(host, patch, path)
+      end
+    end
   end
 
   # Summary value for a non-UTF-8 read: size, first 4 bytes as hex, and

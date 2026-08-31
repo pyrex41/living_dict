@@ -17,6 +17,10 @@ defmodule LdHost.Critic do
 
   Elixir callers see `{:accept, depth, effects}` /
   `{:reject, errors, depth, effects}` regardless of engine.
+
+  Live BEAM overlays `USE-OBJECT` / `PATCH-FILE` as colon stubs so the
+  frozen Shen HOST_DICTIONARY (eval 1.0 ABI) never grows. Eval adapters
+  never see those names.
   """
 
   use GenServer
@@ -69,9 +73,19 @@ defmodule LdHost.Critic do
   def validate(program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys) do
     GenServer.call(
       __MODULE__,
-      {:validate, program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys},
+      {:validate, overlay(program), allowed_effects, allowed_globs, forbidden_globs,
+       artifact_keys},
       30_000
     )
+  end
+
+  # Live-only host words: fenced to this BEAM critic. Bodies exist only so
+  # validate/5 can bind stack+effects; Forth executes the real host words.
+  defp overlay(program) do
+    """
+    : USE-OBJECT ( sha -- content | read ) READ-FILE ;
+    : PATCH-FILE ( patch path -- receipt | read, write ) SWAP OVER READ-FILE DROP SWAP WRITE-FILE ;
+    """ <> program
   end
 
   def engine, do: GenServer.call(__MODULE__, :engine)

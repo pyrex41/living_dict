@@ -31,10 +31,14 @@ defmodule LdHost.Forth do
     defstruct stack: [], colon: %{}, host: nil, artifacts: %{}
   end
 
-  @host_words ~w(READ-FILE LIST-DIR SEARCH WRITE-FILE RUN-TESTS RUN-GATES RECEIPT USE-ARTIFACT)
+  @eval_host_words ~w(READ-FILE LIST-DIR SEARCH WRITE-FILE RUN-TESTS RUN-GATES RECEIPT USE-ARTIFACT)
+  @live_host_words ~w(USE-OBJECT PATCH-FILE)
+  @host_words @eval_host_words ++ @live_host_words
   @stack_words ~w(DUP DROP SWAP OVER + - *)
 
   def host_words, do: @host_words
+  def eval_host_words, do: @eval_host_words
+  def live_host_words, do: @live_host_words
   def stack_words, do: @stack_words
 
   @doc "Install persisted colon bodies onto the VM."
@@ -251,6 +255,14 @@ defmodule LdHost.Forth do
           {path, vm} = pop_str(vm, word)
           {content, vm} = pop_str(vm, word)
           {[content, path], vm}
+
+        "USE-OBJECT" ->
+          one_str(vm, word)
+
+        "PATCH-FILE" ->
+          {path, vm} = pop_str(vm, word)
+          {patch, vm} = pop_str(vm, word)
+          {[patch, path], vm}
 
         _ ->
           {[], vm}

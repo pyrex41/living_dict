@@ -11,7 +11,7 @@ defmodule LdHost.Run do
   "model-authored claims" loudly.
   """
 
-  alias LdHost.{Critic, Contracts, Dictionary, Envelope, Forth, Gates, Host, Ledger}
+  alias LdHost.{Critic, Contracts, Dictionary, Envelope, Forth, Gates, Host, Ledger, Policy, Store}
 
   @default_max_episodes 6
 
@@ -37,6 +37,7 @@ defmodule LdHost.Run do
     end
 
     {prelude, prelude_words} = Dictionary.load_prelude(dictionary_dir)
+    store = Store.open(Path.join(run_dir, "objects"))
 
     state = %{
       goal: goal,
@@ -44,6 +45,7 @@ defmodule LdHost.Run do
       run_dir: run_dir,
       dictionary_dir: dictionary_dir,
       ledger: ledger,
+      store: store,
       contract: contract,
       allow_model_checks: Keyword.get(opts, :allow_model_checks, false),
       planner_fn: planner_fn,
@@ -61,6 +63,7 @@ defmodule LdHost.Run do
       seen: MapSet.new(),
       feedback: "",
       last_report: nil,
+      last_used_words: [],
       reused_names: [],
       promoted_words: [],
       tokens: %{input_tokens: 0, output_tokens: 0},
@@ -139,13 +142,23 @@ defmodule LdHost.Run do
         Ledger.trace(state.ledger, "dictionary.reuse", %{word: name, version: 1})
       end)
 
-      state = %{state | seen: MapSet.put(state.seen, fingerprint), reused_names: reused}
+      state = %{
+        state
+        | seen: MapSet.put(state.seen, fingerprint),
+          reused_names: reused,
+          last_used_words: reused
+      }
+
+      artifact_sha256 = artifact_digests(envelope.artifacts)
+      persist_envelope(state, envelope, artifact_sha256)
 
       {:ok, _} =
         Ledger.commit(state.ledger, "episode.planned", %{
           episode: episode,
           fingerprint: fingerprint,
-          rationale: envelope.rationale
+          rationale: envelope.rationale,
+          used_words: reused,
+          artifact_sha256: artifact_sha256
         })
 
       composed = compose(state.prelude, envelope.program)
@@ -166,11 +179,14 @@ defmodule LdHost.Run do
           {:continue, feedback(state, "critic rejected the plan:\n" <> Enum.join(errors, "\n"))}
 
         {:accept, depth, effects} ->
+          intern_artifacts(state, envelope.artifacts)
+
           {:ok, _} =
             Ledger.commit(state.ledger, "critic.accepted", %{
               episode: episode,
               depth: depth,
-              effects: effects
+              effects: effects,
+              artifact_sha256: artifact_sha256
             })
 
           execute_episode(state, episode, envelope, composed)
@@ -183,6 +199,8 @@ defmodule LdHost.Run do
   end
 
   defp execute_episode(state, episode, envelope, composed) do
+    objects_dir = Path.join(state.run_dir, "objects")
+
     host =
       Host.new(state.workspace,
         allowed_effects: state.allowed_effects,
@@ -193,6 +211,7 @@ defmodule LdHost.Run do
         contract: state.contract,
         allow_model_checks: state.allow_model_checks,
         emit: Ledger.emitter(state.ledger),
+        objects_dir: objects_dir,
         receipt_path: Path.join(state.run_dir, "receipt.json")
       )
 
@@ -211,7 +230,9 @@ defmodule LdHost.Run do
         {:ok, _} =
           Ledger.commit(state.ledger, "artifacts.applied", %{
             episode: episode,
-            count: map_size(envelope.artifacts)
+            count: map_size(envelope.artifacts),
+            keys: envelope.artifacts |> Map.keys() |> Enum.sort(),
+            artifact_sha256: artifact_digests(envelope.artifacts)
           })
 
         report = vm.host.last_check || Gates.run(vm.host)
@@ -220,7 +241,8 @@ defmodule LdHost.Run do
           Ledger.commit(state.ledger, "gates.measured", %{
             episode: episode,
             ok: report.ok == true,
-            reason: report[:reason]
+            reason: report[:reason],
+            tree_after: Policy.snapshot(state.workspace)
           })
 
         state = %{state | last_report: report}
@@ -353,33 +375,46 @@ defmodule LdHost.Run do
   defp compose("", program), do: program
   defp compose(prelude, program), do: prelude <> "\n" <> program
 
-  @observe_file_cap 8_000
-  @observe_total_cap 60_000
+  defp intern_artifacts(state, artifacts) when is_map(artifacts) do
+    Enum.each(artifacts, fn {_key, body} ->
+      if is_binary(body) do
+        Store.intern(state.store, body)
+      end
+    end)
+  end
+
+  defp artifact_digests(artifacts) when is_map(artifacts) do
+    Map.new(artifacts, fn {key, body} -> {key, Policy.sha256_hex(to_string(body))} end)
+  end
+
+  defp artifact_digests(_), do: %{}
+
+  defp persist_envelope(state, envelope, artifact_sha256) do
+    payload = %{
+      "language" => "forth",
+      "program" => envelope.program,
+      "artifacts" => artifact_sha256,
+      "rationale" => envelope.rationale
+    }
+
+    File.write!(Path.join(state.run_dir, "envelope.json"), JSON.encode!(payload))
+  end
 
   defp observe(state) do
-    names =
-      state.workspace
-      |> LdHost.Policy.snapshot()
-      |> Map.keys()
+    events = Ledger.events(state.ledger)
+    revision = Ledger.revision(state.ledger)
+    tree = Store.as_of(events, revision)
+    tree = if tree == %{}, do: Policy.snapshot(state.workspace), else: tree
+
+    unused =
+      MapSet.new(state.prelude_words)
+      |> MapSet.difference(MapSet.new(state.last_used_words))
       |> Enum.sort()
-      |> Enum.take(200)
 
-    {files, _budget} =
-      Enum.map_reduce(names, @observe_total_cap, fn rel, budget ->
-        content =
-          case File.read(Path.join(state.workspace, rel)) do
-            {:ok, text} when byte_size(text) <= @observe_file_cap ->
-              if String.valid?(text) and budget - byte_size(text) > 0, do: text, else: nil
-
-            _ ->
-              nil
-          end
-
-        case content do
-          nil -> {"#{rel} (contents omitted)", budget}
-          text -> {"#{rel}:\n```\n#{text}```", budget - byte_size(text)}
-        end
-      end)
+    tree_lines =
+      tree
+      |> Enum.sort_by(&elem(&1, 0))
+      |> Enum.map(fn {rel, sha} -> "#{rel}  #{sha}" end)
 
     dictionary =
       case state.prelude_words do
@@ -387,14 +422,32 @@ defmodule LdHost.Run do
           ""
 
         words ->
-          "\nHARNESS DICTIONARY (callable colon words):\n" <>
-            Enum.join(words, " ") <> "\n" <> state.prelude
+          "\nHARNESS DICTIONARY (callable colon words):\n" <> Enum.join(words, " ")
+      end
+
+    unused_s =
+      case unused do
+        [] -> ""
+        names -> "\nUNUSED: " <> Enum.join(names, " ")
       end
 
     gates =
       case state.last_report do
         nil -> ""
-        report -> "\nLAST GATES: " <> JSON.encode!(scrub(report))
+        report -> "\nGATES: " <> JSON.encode!(scrub(report))
+      end
+
+    hashes =
+      case tree_lines do
+        [] -> "\nWORKSPACE TREE:\n(empty)"
+        lines -> "\nWORKSPACE TREE:\n" <> Enum.join(lines, "\n")
+      end
+
+    install_hint =
+      if tree == %{} do
+        ""
+      else
+        "\nUnchanged files may be reinstalled by hash: S\" <sha256>\" USE-OBJECT S\" path\" WRITE-FILE"
       end
 
     feedback =
@@ -403,7 +456,7 @@ defmodule LdHost.Run do
         text -> "\nFEEDBACK:\n" <> text
       end
 
-    "WORKSPACE FILES:\n" <> Enum.join(files, "\n") <> dictionary <> gates <> feedback
+    hashes <> dictionary <> unused_s <> gates <> install_hint <> feedback
   end
 
   defp scrub(report), do: Map.take(report, [:ok, :reason, :judge, :name])

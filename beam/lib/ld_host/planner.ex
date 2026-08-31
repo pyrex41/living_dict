@@ -40,6 +40,8 @@ defmodule LdHost.Planner do
     SEARCH       ( query -- hits | read )
     WRITE-FILE   ( content path -- receipt | write )
     USE-ARTIFACT ( key -- content | read )
+    USE-OBJECT   ( sha -- content | read )
+    PATCH-FILE   ( patch path -- receipt | read, write )
     RUN-TESTS    ( -- report | exec )
     RUN-GATES    ( -- report | exec )
     RECEIPT      ( -- receipt )
@@ -58,6 +60,9 @@ defmodule LdHost.Planner do
   Rules:
   - Follow the GOAL. Implement ONE increment — the next missing piece.
   - Install artifacts with: S" key" USE-ARTIFACT S" path" WRITE-FILE
+  - Unchanged files may be reinstalled by hash:
+    S" <sha256>" USE-OBJECT S" path" WRITE-FILE
+  - PATCH-FILE replaces the whole file (not a unified diff).
   - After sources exist, RUN-GATES. Failed claims are backpressure.
   - FIRST episode, when no approved contract exists: write claims.json —
     {"claims":[{"id","kind":"check","command","timeout_seconds"}]} —
