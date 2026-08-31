@@ -42,7 +42,10 @@ defmodule LdHost.Dictionary do
 
       case colon_body(source, name) do
         {:ok, tokens} ->
-          [{name, tokens, contract_sig(source, name), source}]
+          case contract_sig(source, name) do
+            :error -> []
+            sig -> [{name, tokens, sig, source}]
+          end
 
         :error ->
           []
@@ -161,8 +164,14 @@ defmodule LdHost.Dictionary do
   defp load_aligned_sources(dictionary_dir) do
     Enum.reduce(load_word_sources(dictionary_dir), %{}, fn {name, source}, acc ->
       case colon_body(source, name) do
-        {:ok, _} -> Map.put(acc, name, source)
-        :error -> acc
+        {:ok, _} ->
+          case contract_sig(source, name) do
+            :error -> acc
+            _sig -> Map.put(acc, name, source)
+          end
+
+        :error ->
+          acc
       end
     end)
   end
@@ -206,10 +215,7 @@ defmodule LdHost.Dictionary do
 
   defp contract_sig(source, name) do
     case Map.get(Contracts.extract(source), name) do
-      nil ->
-        {[], [], []}
-
-      inner ->
+      inner when is_binary(inner) ->
         words =
           inner
           |> String.replace(",", " ")
@@ -226,10 +232,28 @@ defmodule LdHost.Dictionary do
             {ins, outs, effects}
 
           _ ->
-            {[], [], []}
+            :error
         end
+
+      _ ->
+        :error
     end
   end
+
+  @doc """
+  Vocab tuple for an in-memory colon word, or `:error` when `contract`
+  has no parseable `--` group. Used to seed the critic catalog.
+  """
+  def vocab_row(name, tokens, contract) when is_binary(contract) do
+    source = ": #{name} #{contract} #{body_source(tokens)} ;\n"
+
+    case contract_sig(source, name) do
+      :error -> :error
+      sig -> {:ok, {name, tokens, sig, source}}
+    end
+  end
+
+  def vocab_row(_, _, _), do: :error
 
   @doc """
   Persist promoted words. Each entry: `{name, body_source, contract}` with

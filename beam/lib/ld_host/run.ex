@@ -255,6 +255,22 @@ defmodule LdHost.Run do
     quarantined = quarantined ++ dependent
     dependent_set = MapSet.new(dependent)
 
+    vocab = Dictionary.load_vocab(state.dictionary_dir)
+
+    sibling_rows =
+      Enum.flat_map(promotable, fn name ->
+        case Dictionary.vocab_row(
+               name,
+               vm.colon[name],
+               Contracts.canonical(contracts[name])
+             ) do
+          {:ok, row} -> [row]
+          :error -> []
+        end
+      end)
+
+    promote_catalog = vocab ++ sibling_rows
+
     {entries, refused} =
       Enum.reduce(promotable, {[], []}, fn name, {keep, skip} ->
         body = Dictionary.body_source(vm.colon[name])
@@ -266,7 +282,8 @@ defmodule LdHost.Run do
                state.allowed_effects,
                state.allowed_globs,
                state.forbidden_globs,
-               []
+               [],
+               promote_catalog
              ) do
           {:accept, _, _} ->
             {[{name, body, contract} | keep], skip}

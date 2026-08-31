@@ -250,6 +250,11 @@ defmodule LdHost.Critic do
     kind, val -> {:reply, {:reject, ["critic error: #{kind} #{inspect(val, limit: 3)}"], 0, []}, state}
   end
 
+  def handle_call({:validate, _p, _e, _g, _f, _a, catalog}, _from, %{engine: engine} = state)
+      when engine in [:luerl, :node] and catalog != [] do
+    {:reply, {:error, "catalog validate requires the beam critic"}, state}
+  end
+
   def handle_call({:validate, program, effects, globs, forbidden, artifacts, _catalog}, _from, %{engine: :luerl} = state) do
     args = [program, effects, globs, forbidden, artifacts]
 
@@ -310,24 +315,32 @@ defmodule LdHost.Critic do
   defp shen_strs(list), do: Enum.map(list, &shen_str/1)
 
   defp shen_catalog(rows) when is_list(rows) do
-    Enum.map(rows, &shen_catalog_row/1)
+    Enum.flat_map(rows, fn row ->
+      case shen_catalog_row(row) do
+        nil -> []
+        wordrow -> [wordrow]
+      end
+    end)
   end
 
   defp shen_catalog(_), do: []
 
-  defp shen_catalog_row({name, _tokens, {ins, outs, effects}, _source}) do
-    shen_wordrow(name, length(List.wrap(ins)), length(List.wrap(outs)), List.wrap(effects))
+  defp shen_catalog_row({name, _tokens, {ins, outs, effects}, _source})
+       when is_list(ins) and is_list(outs) and is_list(effects) do
+    shen_wordrow(name, length(ins), length(outs), effects)
   end
 
-  defp shen_catalog_row({name, inn, out, effects}) when is_integer(inn) and is_integer(out) do
-    shen_wordrow(name, inn, out, List.wrap(effects))
+  defp shen_catalog_row({name, inn, out, effects})
+       when is_integer(inn) and is_integer(out) and is_list(effects) do
+    shen_wordrow(name, inn, out, effects)
   end
 
-  defp shen_catalog_row([name, inn, out, effects]) do
-    shen_wordrow(name, inn, out, List.wrap(effects))
+  defp shen_catalog_row([name, inn, out, effects])
+       when is_integer(inn) and is_integer(out) and is_list(effects) do
+    shen_wordrow(name, inn, out, effects)
   end
 
-  defp shen_catalog_row(_), do: shen_wordrow("INVALID", 0, 0, [])
+  defp shen_catalog_row(_), do: nil
 
   defp shen_wordrow(name, inn, out, effects) do
     [shen_str(to_string(name) |> String.upcase()), inn, out, shen_strs(effects)]

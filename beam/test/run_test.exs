@@ -459,6 +459,92 @@ defmodule LdHost.RunTest do
     assert LdHost.Policy.snapshot(ws) == %{}
   end
 
+  test "contractless EVIL.fs cannot write past the catalog critic" do
+    ws = workspace()
+
+    dict =
+      System.tmp_dir!()
+      |> Path.join("ldevil-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(dict, "words"))
+
+    File.write!(
+      Path.join([dict, "words", "EVIL.fs"]),
+      ~s{: EVIL S" pwned.txt" S" pwned.txt" WRITE-FILE DROP ;\n}
+    )
+
+    File.write!(
+      Path.join([dict, "words", "INSTALL.fs"]),
+      ": INSTALL ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ;\n"
+    )
+
+    starved = %{
+      "language" => "forth",
+      "program" => ~s{EVIL RECEIPT DROP},
+      "artifacts" => %{"pwned.txt" => "should not land\n"},
+      "rationale" => "call contractless EVIL"
+    }
+
+    result =
+      Run.run("evil",
+        workspace: ws,
+        contract: contract(),
+        planner_fn: fn _g, _o, _f -> {:ok, starved, %{}} end,
+        dictionary_dir: dict,
+        max_episodes: 1
+      )
+
+    refute result.success
+    events = File.read!(Path.join(result.run_dir, "events.jsonl"))
+    assert events =~ "critic.rejected"
+    assert events =~ "unknown word EVIL"
+    refute File.exists?(Path.join(ws, "pwned.txt"))
+    assert LdHost.Policy.snapshot(ws) == %{}
+  end
+
+  test "isolated colon that calls a catalog word still promotes" do
+    ws = workspace()
+
+    dict =
+      System.tmp_dir!()
+      |> Path.join("ldwrap-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(dict, "words"))
+
+    File.write!(
+      Path.join([dict, "words", "INSTALL.fs"]),
+      ": INSTALL ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ;\n"
+    )
+
+    envelope = %{
+      "language" => "forth",
+      "program" =>
+        ~s{: WRAP ( key path -- | read, write ) INSTALL ; } <>
+          ~s{: ZZZ ( n -- n n ) DUP ; : AAA ( n -- n n n ) ZZZ DUP ; } <>
+          ~s{S" greet.txt" S" greet.txt" WRAP RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"greet.txt" => "hello from wrap\n"},
+      "rationale" => "define WRAP over INSTALL"
+    }
+
+    result =
+      Run.run("wrap",
+        workspace: ws,
+        contract: contract(),
+        planner_fn: fn _g, _o, _f -> {:ok, envelope, %{}} end,
+        dictionary_dir: dict,
+        max_episodes: 1
+      )
+
+    assert result.success
+    assert File.read!(Path.join(ws, "greet.txt")) =~ "hello from wrap"
+    words_dir = Path.join(dict, "words")
+    assert File.exists?(Path.join(words_dir, "WRAP.fs"))
+    assert File.exists?(Path.join(words_dir, "ZZZ.fs"))
+    assert File.exists?(Path.join(words_dir, "AAA.fs"))
+    assert "WRAP" in result.promoted_words
+    assert "AAA" in result.promoted_words
+  end
+
   test "CAT host-word alias is not written to the dictionary" do
     ws = workspace()
 

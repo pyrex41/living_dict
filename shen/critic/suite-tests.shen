@@ -157,6 +157,16 @@
                       (and (= (tok-value (hd Toks)) " a note ")
                            (= (hd R) accept)))))))
 
+(define check-validate-catalog
+  -> (let Toks (tokenise-program "INSTALL RECEIPT")
+       (let Catalog [["INSTALL" 2 0 ["read" "write"]]]
+         (let R (validate-catalog Toks Catalog
+                                  ["read" "write" "exec"] ["**"] [] [])
+           (report "validate-catalog-starved"
+                   (and (= (hd R) reject)
+                        (contains-sub? (join-space (hd (tl R)))
+                                       "stack underflow at INSTALL")))))))
+
 (define all-pass
   [] -> true
   [true | Rest] -> (all-pass Rest)
@@ -176,7 +186,8 @@
                    (check-colon-invalid)
                    (check-colon-inference)
                    (check-colon-body-path)
-                   (check-comment-token)]
+                   (check-comment-token)
+                   (check-validate-catalog)]
        (if (all-pass Results)
            (do (output "ALL PASS~%") true)
            (do (output "SOME FAIL~%") false))))
