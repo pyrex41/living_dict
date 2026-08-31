@@ -189,9 +189,16 @@ defmodule LdHost.Dictionary do
 
   defp take_colon_body([%{kind: :word, value: value} = token | rest], acc) do
     case String.upcase(value) do
-      ";" -> {:ok, Enum.reverse(acc)}
-      ":" -> :error
-      _ -> take_colon_body(rest, [token | acc])
+      ";" ->
+        # Extra tokens after the closer (a second colon word, etc.) would
+        # reach the critic via prelude source but not Forth.bind_vocab.
+        if rest == [], do: {:ok, Enum.reverse(acc)}, else: :error
+
+      ":" ->
+        :error
+
+      _ ->
+        take_colon_body(rest, [token | acc])
     end
   end
 

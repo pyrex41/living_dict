@@ -127,6 +127,25 @@ defmodule LdHost.DictionaryTest do
     assert names == ["CAT"]
   end
 
+  test "load skips files with leftover tokens after the colon definition" do
+    dir = dict_dir()
+
+    File.write!(
+      Path.join([dir, "words", "FOO.fs"]),
+      ": FOO ( n -- n ) DUP ; : BAR ( n -- n ) DUP ;\n"
+    )
+
+    File.write!(Path.join([dir, "words", "CAT.fs"]), ": CAT ( -- ) ;\n")
+
+    {prelude, words} = Dictionary.load_prelude(dir)
+    assert words == ["CAT"]
+    refute prelude =~ "FOO"
+    refute prelude =~ "BAR"
+
+    names = Enum.map(Dictionary.load_vocab(dir), &elem(&1, 0))
+    assert names == ["CAT"]
+  end
+
   test "tautology? is stack sugar plus exactly one host primitive" do
     cat = Forth.tokenize("READ-FILE DROP")
     ls = Forth.tokenize("LIST-DIR")
