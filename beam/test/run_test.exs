@@ -929,4 +929,138 @@ defmodule LdHost.RunTest do
     refute second =~ "hello from trap-write"
     assert File.read!(Path.join(ws, "greet.txt")) == body
   end
+
+  test "two disjoint artifact keys dispatch one wave of node.ready" do
+    ws = workspace()
+
+    envelope = %{
+      "language" => "forth",
+      "program" =>
+        ~s{S" a.txt" USE-ARTIFACT S" a.txt" WRITE-FILE DROP } <>
+          ~s{S" b.txt" USE-ARTIFACT S" b.txt" WRITE-FILE DROP RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"a.txt" => "A\n", "b.txt" => "B\n"},
+      "rationale" => "two files"
+    }
+
+    contract = %{
+      claims: [
+        %{
+          "id" => "both",
+          "kind" => "check",
+          "command" => "test -f a.txt && test -f b.txt",
+          "timeout_seconds" => 5
+        }
+      ],
+      source: "hidden"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
+
+    result =
+      Run.run("pair", workspace: ws, contract: contract, planner_fn: planner, max_episodes: 1)
+
+    assert result.success
+    assert File.read!(Path.join(ws, "a.txt")) == "A\n"
+    assert File.read!(Path.join(ws, "b.txt")) == "B\n"
+
+    trace =
+      result.run_dir
+      |> Path.join("trace.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+
+    outs =
+      Enum.filter(trace, fn event ->
+        event["type"] == "space.out" and
+          get_in(event, ["data", "pattern_or_tuple", "kind"]) == "node.ready"
+      end)
+
+    takes = Enum.filter(trace, fn event -> event["type"] == "space.take" end)
+
+    assert length(outs) == 2
+    assert length(takes) == 2
+    assert Enum.map(outs, &get_in(&1, ["data", "pattern_or_tuple", "wave"])) |> Enum.uniq() == [0]
+    assert Enum.any?(trace, &(&1["type"] == "graph.wave.gates"))
+  end
+
+  test "overlapping writes in a wave are refused before I/O" do
+    ws = workspace()
+
+    envelope = %{
+      "language" => "forth",
+      "program" => "RECEIPT DROP",
+      "artifacts" => %{"greet.txt" => "hello\n"},
+      "nodes" => [
+        %{"id" => "left", "writes" => ["greet.txt"], "depends_on" => [], "program" => ""},
+        %{"id" => "right", "writes" => ["greet.txt"], "depends_on" => [], "program" => ""}
+      ],
+      "rationale" => "overlap"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
+
+    result =
+      Run.run("overlap",
+        workspace: ws,
+        contract: contract(),
+        planner_fn: planner,
+        max_episodes: 1
+      )
+
+    refute result.success
+    refute File.exists?(Path.join(ws, "greet.txt"))
+    events = File.read!(Path.join(result.run_dir, "events.jsonl"))
+    refute events =~ "artifacts.applied"
+    assert events =~ "critic.rejected"
+  end
+
+  test "serial and waved Run programs hash equal trees" do
+    envelope = %{
+      "language" => "forth",
+      "program" => "RECEIPT DROP",
+      "artifacts" => %{"a.txt" => "A\n", "b.txt" => "B\n"},
+      "nodes" => [
+        %{"id" => "a", "writes" => ["a.txt"], "depends_on" => [], "program" => ""},
+        %{"id" => "b", "writes" => ["b.txt"], "depends_on" => [], "program" => ""}
+      ],
+      "rationale" => "eq"
+    }
+
+    contract = %{
+      claims: [
+        %{
+          "id" => "both",
+          "kind" => "check",
+          "command" => "test -f a.txt && test -f b.txt",
+          "timeout_seconds" => 5
+        }
+      ],
+      source: "hidden"
+    }
+
+    run = fn workers ->
+      ws = workspace()
+      planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
+
+      result =
+        Run.run("eq",
+          workspace: ws,
+          contract: contract,
+          planner_fn: planner,
+          max_episodes: 1,
+          wave_workers: workers
+        )
+
+      assert result.success
+      receipt = result.run_dir |> Path.join("receipt.json") |> File.read!() |> JSON.decode!()
+      {LdHost.Policy.snapshot(ws), receipt["workspace_after"], receipt["changed_files"]}
+    end
+
+    {serial_tree, serial_after, serial_changed} = run.(1)
+    {waved_tree, waved_after, waved_changed} = run.(2)
+    assert serial_tree == waved_tree
+    assert serial_after == waved_after
+    assert serial_changed == waved_changed
+  end
 end

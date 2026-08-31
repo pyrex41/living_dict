@@ -11,7 +11,19 @@ defmodule LdHost.Run do
   "model-authored claims" loudly.
   """
 
-  alias LdHost.{Critic, Contracts, Dictionary, Envelope, Forth, Gates, Host, Ledger, Policy, Store}
+  alias LdHost.{
+    Critic,
+    Contracts,
+    Dictionary,
+    Envelope,
+    Forth,
+    Gates,
+    Host,
+    Ledger,
+    Policy,
+    Store,
+    Wave
+  }
 
   @default_max_episodes 6
 
@@ -67,7 +79,8 @@ defmodule LdHost.Run do
       reused_names: [],
       promoted_words: [],
       tokens: %{input_tokens: 0, output_tokens: 0},
-      model_calls: 0
+      model_calls: 0,
+      wave_workers: Keyword.get(opts, :wave_workers, 4)
     }
 
     result = episodes(state, 1, max_episodes)
@@ -179,17 +192,29 @@ defmodule LdHost.Run do
           {:continue, feedback(state, "critic rejected the plan:\n" <> Enum.join(errors, "\n"))}
 
         {:accept, depth, effects} ->
-          intern_artifacts(state, envelope.artifacts)
+          case node_preflight(state, envelope, artifact_keys) do
+            [_ | _] = errors ->
+              {:ok, _} =
+                Ledger.commit(state.ledger, "critic.rejected", %{episode: episode, errors: errors})
 
-          {:ok, _} =
-            Ledger.commit(state.ledger, "critic.accepted", %{
-              episode: episode,
-              depth: depth,
-              effects: effects,
-              artifact_sha256: artifact_sha256
-            })
+              Ledger.trace(state.ledger, "preflight.rejected", %{errors: errors})
 
-          execute_episode(state, episode, envelope, composed)
+              {:continue,
+               feedback(state, "critic rejected the plan:\n" <> Enum.join(errors, "\n"))}
+
+            [] ->
+              intern_artifacts(state, envelope.artifacts)
+
+              {:ok, _} =
+                Ledger.commit(state.ledger, "critic.accepted", %{
+                  episode: episode,
+                  depth: depth,
+                  effects: effects,
+                  artifact_sha256: artifact_sha256
+                })
+
+              execute_episode(state, episode, envelope, composed)
+          end
 
         {:error, reason} ->
           Ledger.trace(state.ledger, "critic.unavailable", %{reason: reason})
@@ -215,46 +240,163 @@ defmodule LdHost.Run do
         receipt_path: Path.join(state.run_dir, "receipt.json")
       )
 
-    vm =
-      %Forth.VM{host: host, artifacts: envelope.artifacts}
-      |> Forth.bind_vocab(Dictionary.load_vocab(state.dictionary_dir))
+    vocab = Dictionary.load_vocab(state.dictionary_dir)
+    nodes = envelope.nodes || Wave.synthesize(envelope.artifacts)
+    composed = promote_source(composed, envelope)
 
-    Ledger.trace(state.ledger, "execution.program", %{program: envelope.program})
+    case dispatch_waves(state, host, nodes, envelope.artifacts, vocab, episode) do
+      {:error, :overlap, errors} ->
+        {:continue,
+         feedback(state, "overlapping writes refused pre-I/O:\n" <> Enum.join(errors, "\n"))}
 
-    case interpret(vm, envelope.program) do
-      {:trap, code, message} ->
-        Ledger.trace(state.ledger, "execution.trap", %{code: code, message: message})
+      {:error, :graph, reason} ->
+        {:continue, feedback(state, "wave plan: #{reason}")}
+
+      {:trap, code, message, _host, _colon, metrics} ->
+        Ledger.trace(state.ledger, "execution.trap", %{
+          code: code,
+          message: message,
+          node: metrics[:trap_node]
+        })
+
+        trace_metrics(state, metrics)
         {:continue, feedback(state, "execution trap [#{code}]: #{message}")}
 
-      {:ok, vm} ->
-        {:ok, _} =
-          Ledger.commit(state.ledger, "artifacts.applied", %{
-            episode: episode,
-            count: map_size(envelope.artifacts),
-            keys: envelope.artifacts |> Map.keys() |> Enum.sort(),
-            artifact_sha256: artifact_digests(envelope.artifacts)
-          })
+      {:ok, host, colon, metrics} ->
+        vm =
+          %Forth.VM{host: host, artifacts: envelope.artifacts}
+          |> Forth.bind_vocab(vocab)
 
-        report = vm.host.last_check || Gates.run(vm.host)
+        vm = %{vm | colon: Map.merge(vm.colon, colon)}
+        trace_metrics(state, metrics)
 
-        {:ok, _} =
-          Ledger.commit(state.ledger, "gates.measured", %{
-            episode: episode,
-            ok: report.ok == true,
-            reason: report[:reason],
-            tree_after: Policy.snapshot(state.workspace)
-          })
-
-        state = %{state | last_report: report}
-        state = promote(state, episode, vm, composed, report)
-
-        if report.ok == true do
-          {_reply, _payload, _host} = Host.receipt(vm.host)
-          {:success, state}
+        if envelope.nodes do
+          finish_episode(state, episode, envelope, composed, vm, metrics)
         else
-          {:continue, feedback(state, gate_feedback(report))}
+          Ledger.trace(state.ledger, "execution.program", %{program: envelope.program})
+
+          case interpret(vm, envelope.program) do
+            {:trap, code, message} ->
+              Ledger.trace(state.ledger, "execution.trap", %{code: code, message: message})
+              {:continue, feedback(state, "execution trap [#{code}]: #{message}")}
+
+            {:ok, vm} ->
+              finish_episode(state, episode, envelope, composed, vm, metrics)
+          end
         end
     end
+  end
+
+  defp finish_episode(state, episode, envelope, composed, vm, metrics) do
+    {:ok, _} =
+      Ledger.commit(state.ledger, "artifacts.applied", %{
+        episode: episode,
+        count: map_size(envelope.artifacts),
+        keys: envelope.artifacts |> Map.keys() |> Enum.sort(),
+        artifact_sha256: artifact_digests(envelope.artifacts)
+      })
+
+    report = vm.host.last_check || Gates.run(vm.host)
+
+    {:ok, _} =
+      Ledger.commit(state.ledger, "gates.measured", %{
+        episode: episode,
+        ok: report.ok == true,
+        reason: report[:reason],
+        tree_after: Policy.snapshot(state.workspace)
+      })
+
+    state = %{state | last_report: report}
+    state = promote(state, episode, vm, composed, report)
+
+    if report.ok == true do
+      extra = receipt_graph(metrics)
+      {_reply, _payload, _host} = Host.receipt(vm.host, extra)
+      {:success, state}
+    else
+      {:continue, feedback(state, gate_feedback(report))}
+    end
+  end
+
+  defp node_preflight(state, envelope, artifact_keys) do
+    nodes = envelope.nodes || Wave.synthesize(envelope.artifacts)
+
+    graph =
+      case nodes do
+        [] ->
+          []
+
+        _ ->
+          case Wave.plan_waves(nodes) do
+            {:error, reason} -> [reason]
+            {:ok, waves} -> Enum.flat_map(waves, &Wave.overlap_errors/1)
+          end
+      end
+
+    critics =
+      Enum.flat_map(nodes, fn node ->
+        program = node.program || ""
+
+        if String.trim(program) == "" do
+          []
+        else
+          allowed = node_allowed_globs(node, state.allowed_globs)
+
+          case Critic.validate(
+                 program,
+                 state.allowed_effects,
+                 allowed,
+                 state.forbidden_globs,
+                 artifact_keys
+               ) do
+            {:accept, _, _} -> []
+            {:reject, errors, _, _} -> Enum.map(errors, &"node #{node.id}: #{&1}")
+            {:error, reason} -> ["node #{node.id}: critic unavailable: #{reason}"]
+          end
+        end
+      end)
+
+    graph ++ critics
+  end
+
+  defp node_allowed_globs(node, fallback) do
+    case Wave.write_globs(node) do
+      [] -> fallback
+      globs -> globs
+    end
+  end
+
+  defp dispatch_waves(_state, host, [], _artifacts, _vocab, _episode) do
+    {:ok, host, %{}, Wave.compute_metrics([], %{}, 0, 0)}
+  end
+
+  defp dispatch_waves(state, host, nodes, artifacts, vocab, episode) do
+    Wave.execute(host, nodes, artifacts,
+      record: fn kind, payload -> Ledger.trace(state.ledger, kind, payload) end,
+      run_id: host.run_id,
+      episode: episode,
+      vocab: vocab,
+      workers: state.wave_workers
+    )
+  end
+
+  defp promote_source(composed, %{nodes: nil}), do: composed
+
+  defp promote_source(composed, %{nodes: nodes}) when is_list(nodes) do
+    extra = Enum.map_join(nodes, "\n", &(&1.program || ""))
+    compose(composed, extra)
+  end
+
+  defp trace_metrics(_state, nil), do: :ok
+
+  defp trace_metrics(state, metrics) when is_map(metrics) do
+    Ledger.trace(state.ledger, "graph.waves", metrics)
+  end
+
+  defp receipt_graph(nil), do: %{}
+
+  defp receipt_graph(metrics) when is_map(metrics) do
+    Map.take(metrics, Wave.metric_keys())
   end
 
   defp interpret(vm, source) do

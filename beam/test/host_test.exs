@@ -58,6 +58,20 @@ defmodule LdHost.HostTest do
     {:ok, "hello", _} = Host.fetch_object(host, receipt.sha256)
   end
 
+  test "node_view forbids sibling writes; absorb unions effects" do
+    ws = workspace()
+    parent = Host.new(ws, allowed_globs: ["**"], emit: fn _, _ -> :ok end)
+    view = Host.node_view(parent, ["a.txt"], ["b.txt"], parent.emit)
+
+    assert {:trap, "policy", _} = Host.write_file(view, "stolen", "b.txt")
+    {:ok, _receipt, view} = Host.write_file(view, "ok", "a.txt")
+    parent = Host.absorb(parent, view)
+
+    assert "write" in MapSet.to_list(parent.effects_used)
+    assert File.read!(Path.join(ws, "a.txt")) == "ok"
+    refute File.exists?(Path.join(ws, "b.txt"))
+  end
+
   test "Host.new interns the workspace snapshot when objects_dir is set" do
     ws = workspace()
     File.write!(Path.join(ws, "seed.txt"), "already here\n")
