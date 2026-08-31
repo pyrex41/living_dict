@@ -341,4 +341,80 @@ defmodule LdHost.ObligationHoldTest do
     assert summary.model_calls == 0
     assert length(summary.attempt_log) == 2
   end
+
+  test "hold/4 fail-closed when deadline expires mid fail streak" do
+    ws = tmp("ldhold-deadline")
+
+    {status, summary} =
+      Obligation.hold(ws, %{"command" => "false", "timeout_seconds" => 2}, 50,
+        max_attempts: 3,
+        backoff_ms: 40
+      )
+
+    assert status == :failed
+    assert summary.probe_failed
+    refute summary.success
+    assert summary.probes >= 1
+    assert summary.probes < 3
+    assert summary.consecutive_fails < 3
+    assert summary.consecutive_fails == summary.probes
+  end
+
+  test "hold/4 missing or unparseable probe fails closed without Cmd.sh" do
+    ws = tmp("ldhold-noprobe")
+
+    for probe <- [nil, %{}, %{"command" => ""}, %{"command" => "   "}, "not-a-map"] do
+      {status, summary} = Obligation.hold(ws, probe, 10_000)
+      assert status == :failed
+      assert summary.probe_failed
+      refute summary.success
+      assert summary.probes == 0
+      assert summary.attempt_log == []
+    end
+  end
+
+  test "missing probe is acked, not expired-and-retaken" do
+    me = self()
+
+    %{space: space, ledger: ledger, dispatcher: dispatcher} =
+      orchestrator(record: fn kind, payload -> send(me, {:space, kind, payload}) end)
+
+    planner_fn = fn _g, _o, _f ->
+      send(me, :planner_called)
+      {:error, "should not plan during hold"}
+    end
+
+    :sys.replace_state(dispatcher, fn state ->
+      %{state | run_opts: [planner_fn: planner_fn, max_episodes: 1]}
+    end)
+
+    ws = tmp("ldhold-noprobe-disp")
+    Progress.subscribe(:all)
+
+    {:ok, _} =
+      Space.out(space, %{
+        "kind" => "obligation",
+        "id" => "hold-noprobe",
+        "goal" => "timer without probe",
+        "workspace" => ws,
+        "hold_ms" => 5_000
+      })
+
+    assert_receive {:ld_progress, {:obligation, "hold-noprobe"}, :spawned}, 2_000
+    assert_receive {:ld_progress, {:obligation, "hold-noprobe"}, {:failed, summary}}, 2_000
+    assert summary.probe_failed
+    refute summary.success
+    refute_received :planner_called
+    refute_received {:space, "space.lease_expired", _}
+
+    Dispatcher.await_idle(dispatcher, 2_000)
+    Process.sleep(80)
+    refute_received {:ld_progress, {:obligation, "hold-noprobe"}, :spawned}
+
+    events = trace_events(ledger)
+    assert count_type(events, "obligation.failed") == 1
+    assert count_type(events, "space.ack") == 1
+    assert count_type(events, "space.take") == 1
+    assert count_type(events, "space.lease_expired") == 0
+  end
 end

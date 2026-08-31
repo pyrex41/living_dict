@@ -187,12 +187,11 @@ defmodule LdHost.Obligation do
     remaining = state.deadline - System.monotonic_time(:millisecond)
 
     cond do
-      remaining <= 0 ->
-        {:completed, hold_summary(state, true)}
-
       state.command == nil ->
-        Process.sleep(min(@probe_interval_ms, remaining))
-        hold_loop(state)
+        {:failed, Map.put(hold_summary(state, false), :probe_failed, true)}
+
+      remaining <= 0 ->
+        deadline_outcome(state)
 
       true ->
         result =
@@ -213,20 +212,37 @@ defmodule LdHost.Obligation do
           end
         else
           fails = state.consecutive_fails + 1
+          state = %{state | consecutive_fails: fails}
 
           if fails >= state.max_attempts do
-            {:failed,
-             hold_summary(%{state | consecutive_fails: fails}, false)
-             |> Map.put(:probe_failed, true)}
+            {:failed, Map.put(hold_summary(state, false), :probe_failed, true)}
           else
             remaining = state.deadline - System.monotonic_time(:millisecond)
-            sleep_ms = min(state.backoff_ms * fails, max(remaining, 0))
-            if sleep_ms > 0, do: Process.sleep(sleep_ms)
-            hold_loop(%{state | consecutive_fails: fails})
+
+            if remaining <= 0 do
+              {:failed, Map.put(hold_summary(state, false), :probe_failed, true)}
+            else
+              sleep_ms = min(state.backoff_ms * fails, remaining)
+              if sleep_ms > 0, do: Process.sleep(sleep_ms)
+              hold_loop(state)
+            end
           end
         end
     end
   end
+
+  defp deadline_outcome(state) do
+    if failed_last_probe?(state.last) do
+      {:failed, Map.put(hold_summary(state, false), :probe_failed, true)}
+    else
+      {:completed, hold_summary(state, true)}
+    end
+  end
+
+  defp failed_last_probe?(%{returncode: 0, timed_out: false}), do: false
+  defp failed_last_probe?(%{timed_out: true}), do: true
+  defp failed_last_probe?(%{returncode: code}) when code != 0, do: true
+  defp failed_last_probe?(_), do: false
 
   defp probe_attempt(n, result) do
     %{

@@ -42,8 +42,7 @@ defmodule LdHost.Dispatcher do
       worker_id: worker_id,
       run_opts: Keyword.get(opts, :run_opts, []),
       running: %{},
-      idle_waiters: [],
-      acked: MapSet.new()
+      idle_waiters: []
     }
 
     {:ok, spawn_taker(state)}
@@ -95,7 +94,7 @@ defmodule LdHost.Dispatcher do
 
     case deny_reason(ob) do
       reason when is_binary(reason) ->
-        {_, state} = ack_once(state, claim)
+        Space.ack(state.space, claim.token)
         record(state, "obligation.denied", %{id: ob_id, reason: reason})
         state
 
@@ -139,8 +138,7 @@ defmodule LdHost.Dispatcher do
         state =
           case outcome do
             {:done, {status, summary}} ->
-              # Terminal hold/run result, including probe_failed: ack, never expire.
-              {_, state} = ack_once(state, claim)
+              Space.ack(state.space, claim.token)
               record(state, "obligation.#{status}", trace_data(ob_id, summary))
               Progress.broadcast({:obligation, ob_id}, {status, summary})
               state
@@ -160,17 +158,6 @@ defmodule LdHost.Dispatcher do
         else
           state
         end
-    end
-  end
-
-  defp ack_once(state, claim) do
-    token = claim.token
-
-    if MapSet.member?(state.acked, token) do
-      {false, state}
-    else
-      acked? = Space.ack(state.space, token)
-      {acked?, %{state | acked: MapSet.put(state.acked, token)}}
     end
   end
 
