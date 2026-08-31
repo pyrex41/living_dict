@@ -2,8 +2,9 @@ defmodule LdHost.Dictionary do
   @moduledoc """
   Warm dictionary: colon words that persist across runs, contracts
   in-band. Port of `harness/src/livingdict/dictionary.py` with the
-  typed-promotion upgrades. Load is load-all. Grant-scoped retrieval
-  is not a load path and is not authorization.
+  typed-promotion upgrades. Candidates are `.fs` files; promotion is a
+  later reuse mark. Load is load-all. Grant-scoped retrieval is not a
+  load path and is not authorization.
 
   - saved words carry their `( ins -- outs | effects )` group after the
     name; contractless words are never persisted (the caller quarantines)
@@ -104,6 +105,98 @@ defmodule LdHost.Dictionary do
   end
 
   def tautology?(_), do: false
+
+  @doc """
+  Catalog names that occur as Forth words in `program`, first-seen order.
+
+  Port of `harness/src/livingdict/dictionary.py`. Tokenize failures are
+  no reuse: a broken program must not count as evidence. Mentions inside
+  colon bodies count, matching Python.
+  """
+  def used_names(program, names) when is_binary(program) do
+    wanted = MapSet.new(Enum.map(names, &String.upcase(to_string(&1))))
+
+    if MapSet.size(wanted) == 0 do
+      []
+    else
+      try do
+        {used, _seen} =
+          program
+          |> Forth.tokenize()
+          |> Enum.reduce({[], MapSet.new()}, fn
+            %{kind: :word, value: value}, {used, seen} ->
+              name = String.upcase(value)
+
+              if MapSet.member?(wanted, name) and not MapSet.member?(seen, name) do
+                {[name | used], MapSet.put(seen, name)}
+              else
+                {used, seen}
+              end
+
+            _, acc ->
+              acc
+          end)
+
+        Enum.reverse(used)
+      rescue
+        _ -> []
+      end
+    end
+  end
+
+  def used_names(_, _), do: []
+
+  @doc "Names that have survived a clean reuse episode (not Harbor)."
+  def load_promoted(dictionary_dir) do
+    path = Path.join(dictionary_dir, "promoted.txt")
+
+    case File.read(path) do
+      {:ok, body} ->
+        body
+        |> String.split(["\n", "\r"], trim: true)
+        |> Enum.map(&String.upcase/1)
+        |> Enum.filter(&Regex.match?(@safe_name, &1))
+        |> Enum.uniq()
+
+      _ ->
+        []
+    end
+  end
+
+  @doc """
+  Record reuse-proven names in `promoted.txt`. Returns `[{name, sha256}]`
+  only for names newly marked that already have a candidate `.fs`.
+  """
+  def mark_promoted(dictionary_dir, names) when is_list(names) do
+    File.mkdir_p!(dictionary_dir)
+    already = MapSet.new(load_promoted(dictionary_dir))
+
+    newly =
+      names
+      |> Enum.map(&String.upcase/1)
+      |> Enum.filter(&(Regex.match?(@safe_name, &1) and &1 not in @reserved))
+      |> Enum.uniq()
+      |> Enum.reject(&MapSet.member?(already, &1))
+      |> Enum.flat_map(fn name ->
+        path = Path.join(words_dir(dictionary_dir), "#{name}.fs")
+
+        case File.read(path) do
+          {:ok, source} -> [{name, LdHost.Policy.sha256_hex(source)}]
+          _ -> []
+        end
+      end)
+
+    if newly != [] do
+      union = load_promoted(dictionary_dir) ++ Enum.map(newly, &elem(&1, 0))
+
+      File.write!(
+        Path.join(dictionary_dir, "promoted.txt"),
+        Enum.join(Enum.uniq(union), "\n") <> "\n"
+      )
+    end
+
+    newly
+  end
 
   # Order words so definitions precede uses. Dependencies = body words
   # that are other saved word names. Cycles cannot be produced by checked
@@ -389,10 +482,10 @@ defmodule LdHost.Dictionary do
   def vocab_row(_, _, _), do: :error
 
   @doc """
-  Persist promoted words. Each entry: `{name, body_source, contract}` with
+  Persist candidate words. Each entry: `{name, body_source, contract}` with
   contract the canonical `( ... )` string. Returns `[{name, sha256}]` for
   words actually written (byte-identical files are skipped, like the
-  reference).
+  reference). Promotion is a later reuse mark, not this write.
   """
   def save_words(dictionary_dir, entries) do
     dir = words_dir(dictionary_dir)
