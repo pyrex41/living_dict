@@ -74,6 +74,12 @@ merge_accumulator() {
              "$OUT/beam-tbwarm-$jj"/*/agent/run/dictionary/words/*.fs; do
       if [ -f "$f" ]; then cp -f "$f" "$acc/words/"; fi
     done
+    for f in "$OUT/beam-tbwarm-$jj"/*/agent/dict/promoted.txt \
+             "$OUT/beam-tbwarm-$jj"/*/agent/run/dictionary/promoted.txt; do
+      if [ -f "$f" ]; then
+        cat "$f" >> "$acc/promoted.txt" || true
+      fi
+    done
     j=$((j + 1))
   done
   return 0
@@ -103,8 +109,14 @@ for TASK in "${TASKS[@]}"; do
 
   SEED=""
   WORD_COUNT=0
-  if [ -n "$(ls -A "$ACC/words" 2>/dev/null)" ]; then
-    WORD_COUNT="$(ls "$ACC/words" | wc -l | tr -d ' ')"
+  CANDIDATE_COUNT=0
+  PROMOTED_COUNT=0
+  if [ -n "$(ls -A "$ACC/words" 2>/dev/null || true)" ]; then
+    WORD_COUNT="$(ls "$ACC/words"/*.fs 2>/dev/null | wc -l | tr -d ' ')"
+    CANDIDATE_COUNT="$WORD_COUNT"
+    if [ -f "$ACC/promoted.txt" ]; then
+      PROMOTED_COUNT="$(grep -c . "$ACC/promoted.txt" || true)"
+    fi
     # gzip outside tar: bsdtar pads compressed stdout to 10240B records,
     # which both bloats the seed and leaves trailing garbage for the
     # container's gunzip; tar|gzip keeps the padding inside the stream.
@@ -128,8 +140,8 @@ for TASK in "${TASKS[@]}"; do
         -n 1 -o "$OUT" --job-name "$JOB")
 
   if [ "$DRY_RUN" -eq 1 ]; then
-    printf 'DRY [%s/%02d] %s: seed=%dB words=%d\n' \
-      "$NN" "${#TASKS[@]}" "$TASK" "$SEED_BYTES" "$WORD_COUNT"
+    printf 'DRY [%s/%02d] %s: seed=%dB candidates=%d promoted=%d words=%d\n' \
+      "$NN" "${#TASKS[@]}" "$TASK" "$SEED_BYTES" "$CANDIDATE_COUNT" "$PROMOTED_COUNT" "$WORD_COUNT"
     printf '  PYTHONPATH=%s' "$REPO"
     for a in "${CMD[@]}"; do
       case "$a" in
@@ -142,7 +154,7 @@ for TASK in "${TASKS[@]}"; do
     continue
   fi
 
-  echo "tb_warm: [$NN/${#TASKS[@]}] $TASK (seed=${SEED_BYTES}B, words=$WORD_COUNT)"
+  echo "tb_warm: [$NN/${#TASKS[@]}] $TASK (seed=${SEED_BYTES}B, candidates=$CANDIDATE_COUNT promoted=$PROMOTED_COUNT words=$WORD_COUNT)"
   # OAuth access tokens outlive neither this chain nor a long job: refresh
   # per task via the planner's own flow (persists the rotated record to
   # ~/.grok/auth.json). Falls back to the env key on failure.

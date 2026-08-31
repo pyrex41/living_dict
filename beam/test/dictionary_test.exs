@@ -146,6 +146,29 @@ defmodule LdHost.DictionaryTest do
     assert names == ["CAT"]
   end
 
+  test "used_names is first-seen catalog tokens, empty on tokenize failure" do
+    assert Dictionary.used_names(~s{S" a" PATCH RECEIPT}, ["PATCH"]) == ["PATCH"]
+    assert Dictionary.used_names("INSTALL DUP INSTALL", ["install", "MISSING"]) == ["INSTALL"]
+    assert Dictionary.used_names("RECEIPT", ["PATCH"]) == []
+    assert Dictionary.used_names("PATCH", []) == []
+    assert Dictionary.used_names(~s{S" unterminated}, ["PATCH"]) == []
+  end
+
+  test "mark_promoted records reuse-proven names without rewriting bodies" do
+    dir = dict_dir()
+
+    Dictionary.save_words(dir, [
+      {"INSTALL", "DUP USE-ARTIFACT SWAP WRITE-FILE DROP", "( key -- | read, write )"}
+    ])
+
+    assert Dictionary.load_promoted(dir) == []
+    assert [{"INSTALL", sha}] = Dictionary.mark_promoted(dir, ["INSTALL"])
+    assert is_binary(sha)
+    assert Dictionary.load_promoted(dir) == ["INSTALL"]
+    assert Dictionary.mark_promoted(dir, ["INSTALL"]) == []
+    assert File.read!(Path.join(dir, "promoted.txt")) == "INSTALL\n"
+  end
+
   test "tautology? is stack sugar plus exactly one host primitive" do
     cat = Forth.tokenize("READ-FILE DROP")
     ls = Forth.tokenize("LIST-DIR")

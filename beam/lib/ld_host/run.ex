@@ -61,6 +61,7 @@ defmodule LdHost.Run do
       seen: MapSet.new(),
       feedback: "",
       last_report: nil,
+      reused_names: [],
       promoted_words: [],
       tokens: %{input_tokens: 0, output_tokens: 0},
       model_calls: 0
@@ -75,6 +76,7 @@ defmodule LdHost.Run do
       judge: judge_label(elem(result, 1).last_report),
       tokens: elem(result, 1).tokens,
       model_calls: elem(result, 1).model_calls,
+      # Reuse-proven this run, not first persist (candidates stay off this list).
       promoted_words: elem(result, 1).promoted_words,
       run_dir: run_dir
     }
@@ -131,7 +133,13 @@ defmodule LdHost.Run do
          "identical plan resubmitted and blocked — change the plan, the errors stand"
        )}
     else
-      state = %{state | seen: MapSet.put(state.seen, fingerprint)}
+      reused = Dictionary.used_names(envelope.program, state.prelude_words)
+
+      Enum.each(reused, fn name ->
+        Ledger.trace(state.ledger, "dictionary.reuse", %{word: name, version: 1})
+      end)
+
+      state = %{state | seen: MapSet.put(state.seen, fingerprint), reused_names: reused}
 
       {:ok, _} =
         Ledger.commit(state.ledger, "episode.planned", %{
@@ -235,28 +243,65 @@ defmodule LdHost.Run do
 
   # ---- typed promotion --------------------------------------------------
 
-  defp promote(state, episode, vm, composed, report) do
+  # Reachable only after a trap-free interpret: Harbor / report.ok must
+  # not gate persistence; promotion is clean reuse of a candidate.
+  defp promote(state, episode, vm, composed, _report) do
     contracts = Contracts.extract(composed)
-    candidates = Forth.defined_names(vm) -- state.prelude_words
+    new_names = Forth.defined_names(vm) -- state.prelude_words
 
-    eligible? = report.ok == true
-
-    {promotable, quarantined} =
-      Enum.split_with(candidates, fn name ->
-        eligible? and Map.has_key?(contracts, name) and
+    {to_save, quarantined} =
+      Enum.split_with(new_names, fn name ->
+        Map.has_key?(contracts, name) and
           Contracts.canonical(contracts[name]) != nil and
           not Dictionary.tautology?(vm.colon[name])
       end)
 
     entries =
-      Enum.map(promotable, fn name ->
+      Enum.map(to_save, fn name ->
         {name, Dictionary.body_source(vm.colon[name]), Contracts.canonical(contracts[name])}
       end)
 
     written = Dictionary.save_words(state.dictionary_dir, entries)
 
     Enum.each(written, fn {name, sha} ->
-      contract = Contracts.canonical(contracts[name])
+      Ledger.trace(state.ledger, "dictionary.candidate", %{
+        word: name,
+        sha256: sha,
+        contract: Contracts.canonical(contracts[name])
+      })
+    end)
+
+    Enum.each(quarantined, fn name ->
+      # split_with already kept canonical non-tautologies in to_save.
+      reasons =
+        if Dictionary.tautology?(vm.colon[name]),
+          do: ["host-word alias"],
+          else: ["missing contract"]
+
+      {:ok, _} =
+        Ledger.commit(state.ledger, "dictionary.promotion_evidence", %{
+          word: name,
+          episode: episode,
+          eligible: false,
+          reasons: reasons
+        })
+
+      Ledger.trace(state.ledger, "dictionary.quarantined", %{word: name, reasons: reasons})
+    end)
+
+    # Skip tautologies even if a legacy .fs was seeded: alias reuse is not promotion.
+    reusable =
+      Enum.filter(state.reused_names, fn name ->
+        case vm.colon[name] do
+          nil -> false
+          tokens -> not Dictionary.tautology?(tokens)
+        end
+      end)
+
+    newly = Dictionary.mark_promoted(state.dictionary_dir, reusable)
+
+    Enum.each(newly, fn {name, sha} ->
+      contract = promoted_contract(state.dictionary_dir, name, contracts)
 
       {:ok, _} =
         Ledger.commit(state.ledger, "dictionary.promoted", %{
@@ -273,30 +318,7 @@ defmodule LdHost.Run do
       })
     end)
 
-    Enum.each(quarantined, fn name ->
-      reasons =
-        cond do
-          Dictionary.tautology?(vm.colon[name]) ->
-            ["host-word alias"]
-
-          true ->
-            [] ++
-              if(not Map.has_key?(contracts, name), do: ["missing contract"], else: []) ++
-              if(report.ok != true, do: ["claims not discharged"], else: [])
-        end
-
-      {:ok, _} =
-        Ledger.commit(state.ledger, "dictionary.promotion_evidence", %{
-          word: name,
-          episode: episode,
-          eligible: false,
-          reasons: reasons
-        })
-
-      Ledger.trace(state.ledger, "dictionary.quarantined", %{word: name, reasons: reasons})
-    end)
-
-    state = %{state | promoted_words: state.promoted_words ++ Enum.map(written, &elem(&1, 0))}
+    state = %{state | promoted_words: state.promoted_words ++ Enum.map(newly, &elem(&1, 0))}
 
     if written != [] do
       {prelude, words} = Dictionary.load_prelude(state.dictionary_dir)
@@ -304,6 +326,26 @@ defmodule LdHost.Run do
     else
       state
     end
+  end
+
+  defp promoted_contract(dictionary_dir, name, contracts) do
+    from_program =
+      case contracts[name] do
+        inner when is_binary(inner) -> Contracts.canonical(inner)
+        _ -> nil
+      end
+
+    from_program ||
+      case File.read(Path.join(Dictionary.words_dir(dictionary_dir), "#{name}.fs")) do
+        {:ok, source} ->
+          case Contracts.extract(source)[name] do
+            inner when is_binary(inner) -> Contracts.canonical(inner)
+            _ -> nil
+          end
+
+        _ ->
+          nil
+      end
   end
 
   # ---- helpers ----------------------------------------------------------
