@@ -15,52 +15,54 @@ defmodule LdHost.Uniqueness do
   end
 
   def family_transfer(%{tasks: tasks} = results) when is_list(tasks) do
-    prelude = Map.get(results, :prelude) || Map.get(results, "prelude") || []
-
-    used_all =
-      Enum.flat_map(tasks, &List.wrap(&1[:used_words] || &1["used_words"] || []))
+    prelude = names(Map.get(results, :prelude) || Map.get(results, "prelude"))
+    used_all = Enum.flat_map(tasks, &names(get(&1, :used_words)))
+    promoted_all = Enum.flat_map(tasks, &promoted_names/1)
 
     unused_seed =
-      prelude != [] and
-        MapSet.disjoint?(
-          MapSet.new(Enum.map(prelude, &String.upcase/1)),
-          MapSet.new(Enum.map(used_all, &String.upcase/1))
-        )
+      prelude != [] and MapSet.disjoint?(MapSet.new(prelude), MapSet.new(used_all))
 
-    if unused_seed do
-      0
-    else
-      {n, _} =
-        Enum.reduce(tasks, {0, MapSet.new()}, fn task, {hits, promoted} ->
-          used =
-            MapSet.new(
-              Enum.map(List.wrap(task[:used_words] || task["used_words"] || []), &String.upcase/1)
-            )
+    cond do
+      unused_seed ->
+        0
 
-          hit = if MapSet.size(MapSet.intersection(used, promoted)) > 0, do: 1, else: 0
-          newly = Enum.map(List.wrap(task[:promoted] || task["promoted"] || []), &String.upcase/1)
-          {hits + hit, MapSet.union(promoted, MapSet.new(newly))}
-        end)
+      prelude == [] and used_all == [] and promoted_all == [] ->
+        nil
 
-      n
+      true ->
+        {n, _} =
+          Enum.reduce(tasks, {0, MapSet.new()}, fn task, {hits, promoted} ->
+            used = MapSet.new(names(get(task, :used_words)))
+            hit = if MapSet.size(MapSet.intersection(used, promoted)) > 0, do: 1, else: 0
+            {hits + hit, MapSet.union(promoted, MapSet.new(promoted_names(task)))}
+          end)
+
+        n
     end
   end
 
   def family_transfer(_), do: nil
 
   def contract_first(%{tasks: tasks}) when is_list(tasks) do
-    successes = Enum.filter(tasks, &(&1[:success] == true or &1["success"] == true))
+    judged =
+      tasks
+      |> Enum.filter(&(&1[:success] == true or &1["success"] == true))
+      |> Enum.filter(fn task ->
+        case get(task, :judge) do
+          judge when is_binary(judge) and judge != "" -> true
+          _ -> false
+        end
+      end)
 
-    if successes == [] do
+    if judged == [] do
       nil
     else
       good =
-        Enum.count(successes, fn task ->
-          judge = to_string(task[:judge] || task["judge"] || "")
-          judge in ["approved contract", "spec-derived"]
+        Enum.count(judged, fn task ->
+          get(task, :judge) in ["approved contract", "spec-derived"]
         end)
 
-      good / length(successes)
+      good / length(judged)
     end
   end
 
@@ -103,4 +105,14 @@ defmodule LdHost.Uniqueness do
 
   defp maybe(map, _key, nil), do: map
   defp maybe(map, key, value), do: Map.put(map, key, value)
+
+  defp promoted_names(task), do: names(get(task, :promoted) || get(task, :promoted_words))
+
+  defp names(nil), do: []
+  defp names(list) when is_list(list), do: Enum.map(list, &(&1 |> to_string() |> String.upcase()))
+  defp names(_), do: []
+
+  defp get(map, key) when is_map(map) and is_atom(key) do
+    Map.get(map, key, Map.get(map, Atom.to_string(key)))
+  end
 end

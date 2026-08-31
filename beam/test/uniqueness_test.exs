@@ -24,6 +24,15 @@ defmodule LdHost.UniquenessTest do
     assert score.contract_first == 1.0
   end
 
+  test "missing used_words/promoted/judge is omitted, never zeroed" do
+    assert Uniqueness.score(%{tasks: []}) == %{}
+    assert Uniqueness.score(%{tasks: [%{id: "t1", success: true}]}) == %{}
+
+    live = Uniqueness.score(%{tasks: [%{id: "t1", success: true, tokens: %{}}]})
+    refute Map.has_key?(live, :family_transfer)
+    refute Map.has_key?(live, :contract_first)
+  end
+
   test "seed-present unused prelude reports family_transfer 0" do
     results = %{
       prelude: ["INSTALL", "CAT"],

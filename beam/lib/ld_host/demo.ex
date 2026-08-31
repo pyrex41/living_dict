@@ -302,9 +302,9 @@ defmodule LdHost.Demo do
       %{
         id: row[:task] || row["task"],
         success: row[:success],
-        judge: row[:judge],
-        used_words: row[:used_words] || [],
-        promoted: row[:promoted_words] || []
+        judge: row[:judge] || row["judge"],
+        used_words: row[:used_words] || row["used_words"],
+        promoted: row[:promoted] || row[:promoted_words] || row["promoted"] || row["promoted_words"]
       }
     end)
   end
