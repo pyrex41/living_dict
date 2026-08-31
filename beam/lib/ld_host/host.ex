@@ -48,8 +48,9 @@ defmodule LdHost.Host do
 
     allowed = Keyword.get(opts, :allowed_globs, ["**"])
     forbidden = Keyword.get(opts, :forbidden_globs, [])
+    before = Policy.snapshot(workspace)
 
-    %__MODULE__{
+    host = %__MODULE__{
       workspace: workspace,
       allowed_effects: Keyword.get(opts, :allowed_effects, ["read", "write", "exec"]),
       allowed_globs: allowed,
@@ -60,13 +61,16 @@ defmodule LdHost.Host do
       test_timeout_seconds: Keyword.get(opts, :test_timeout_seconds, 60),
       emit: Keyword.get(opts, :emit, fn _type, _data -> :ok end),
       policy: Policy.new(workspace, allowed, forbidden),
-      before: Policy.snapshot(workspace),
+      before: before,
       contract: Keyword.get(opts, :contract),
       allow_model_checks: Keyword.get(opts, :allow_model_checks, false),
       objects_dir: Keyword.get(opts, :objects_dir),
       receipt_path: Keyword.get(opts, :receipt_path),
       write_receipt?: Keyword.get(opts, :write_receipt?, true)
     }
+
+    intern_snapshot(host)
+    host
   end
 
   @doc """
@@ -317,6 +321,19 @@ defmodule LdHost.Host do
 
   defp empty_dot(""), do: "."
   defp empty_dot(rel), do: rel
+
+  defp intern_snapshot(%{objects_dir: nil}), do: :ok
+
+  defp intern_snapshot(%{objects_dir: dir, before: before, workspace: ws}) do
+    store = Store.open(dir)
+
+    Enum.each(before, fn {rel, _sha} ->
+      case File.read(Path.join(ws, rel)) do
+        {:ok, bytes} -> Store.intern(store, bytes)
+        _ -> :ok
+      end
+    end)
+  end
 
   @doc "Idempotent CAS intern. No-op when objects_dir is unset."
   def intern_blob(%{objects_dir: nil}, _content, _digest), do: :ok

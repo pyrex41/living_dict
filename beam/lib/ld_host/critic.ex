@@ -18,8 +18,9 @@ defmodule LdHost.Critic do
   Elixir callers see `{:accept, depth, effects}` /
   `{:reject, errors, depth, effects}` regardless of engine.
 
-  Live BEAM overlays `USE-OBJECT` / `PATCH-FILE` as colon stubs so the
-  frozen Shen HOST_DICTIONARY (eval 1.0 ABI) never grows. Eval adapters
+  Live BEAM binds `USE-OBJECT` / `PATCH-FILE` in the critic word table
+  so the frozen Shen HOST_DICTIONARY (eval 1.0 ABI) never grows and
+  reject token indices still match the envelope program. Eval adapters
   never see those names.
   """
 
@@ -73,19 +74,9 @@ defmodule LdHost.Critic do
   def validate(program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys) do
     GenServer.call(
       __MODULE__,
-      {:validate, overlay(program), allowed_effects, allowed_globs, forbidden_globs,
-       artifact_keys},
+      {:validate, program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys},
       30_000
     )
-  end
-
-  # Live-only host words: fenced to this BEAM critic. Bodies exist only so
-  # validate/5 can bind stack+effects; Forth executes the real host words.
-  defp overlay(program) do
-    """
-    : USE-OBJECT ( sha -- content | read ) READ-FILE ;
-    : PATCH-FILE ( patch path -- receipt | read, write ) SWAP OVER READ-FILE DROP SWAP WRITE-FILE ;
-    """ <> program
   end
 
   def engine, do: GenServer.call(__MODULE__, :engine)
@@ -226,14 +217,28 @@ defmodule LdHost.Critic do
   end
 
   def handle_call({:validate, program, effects, globs, forbidden, artifacts}, _from, %{engine: :beam} = state) do
-    result =
-      :kl_validate.validate(
-        shen_str(program),
-        shen_strs(effects),
+    tokens = apply(:kl_validate, :"tokenise-program", [shen_str(program)])
+
+    walked =
+      apply(:kl_validate, :walk, [
+        tokens,
+        0,
+        0,
+        live_overlay(),
+        [],
         shen_strs(globs),
         shen_strs(forbidden),
-        shen_strs(artifacts)
-      )
+        shen_strs(artifacts),
+        []
+      ])
+
+    result =
+      apply(:kl_validate, :finish, [
+        apply(:kl_validate, :"wres-errors", [walked]),
+        apply(:kl_validate, :"wres-depth", [walked]),
+        apply(:kl_validate, :"wres-effs", [walked]),
+        shen_strs(effects)
+      ])
 
     {:reply, decode_beam(result), state}
   rescue
@@ -301,6 +306,18 @@ defmodule LdHost.Critic do
 
   defp shen_str(s), do: {:string, String.to_charlist(s)}
   defp shen_strs(list), do: Enum.map(list, &shen_str/1)
+
+  # Live-only host words: bound in the BEAM critic word table, not HOST_DICTIONARY.
+  defp live_overlay do
+    [
+      shen_wordrow("USE-OBJECT", 1, 1, ["read"]),
+      shen_wordrow("PATCH-FILE", 2, 1, ["read", "write"])
+    ]
+  end
+
+  defp shen_wordrow(name, inn, out, effects) do
+    [shen_str(String.upcase(to_string(name))), inn, out, shen_strs(effects)]
+  end
 
   defp decode_beam([:accept, depth, effects]), do: {:accept, depth, plain_beam(effects)}
 

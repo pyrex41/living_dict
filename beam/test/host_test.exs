@@ -57,4 +57,15 @@ defmodule LdHost.HostTest do
     assert File.stat!(path).mtime == mtime
     {:ok, "hello", _} = Host.fetch_object(host, receipt.sha256)
   end
+
+  test "Host.new interns the workspace snapshot when objects_dir is set" do
+    ws = workspace()
+    File.write!(Path.join(ws, "seed.txt"), "already here\n")
+    objects = Path.join(ws, "objects")
+    File.mkdir_p!(objects)
+    host = Host.new(ws, objects_dir: objects, emit: fn _, _ -> :ok end)
+    sha = LdHost.Policy.sha256_hex("already here\n")
+    assert File.exists?(Host.object_path(objects, sha))
+    {:ok, "already here\n", _} = Host.fetch_object(host, sha)
+  end
 end

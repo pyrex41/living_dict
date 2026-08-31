@@ -159,6 +159,7 @@ defmodule LdHost.RunTest do
 
     feedbacks = Agent.get(feedback_log, &Enum.reverse/1)
     assert Enum.at(feedbacks, 1) =~ "unknown word MYSTERY"
+    assert Enum.at(feedbacks, 1) =~ "token 0:"
     assert Enum.at(feedbacks, 2) =~ "identical plan resubmitted"
 
     events =
@@ -856,5 +857,76 @@ defmodule LdHost.RunTest do
     assert File.read!(Path.join(ws2, "greet.txt")) == body
     env = run2 |> Path.join("envelope.json") |> File.read!() |> JSON.decode!()
     assert env["artifacts"] == %{}
+  end
+
+  test "pre-existing workspace file is interned and USE-OBJECT succeeds" do
+    body = "hello seeded on disk\n"
+    ws = workspace()
+    File.write!(Path.join(ws, "greet.txt"), body)
+    sha = LdHost.Policy.sha256_hex(body)
+
+    envelope = %{
+      "language" => "forth",
+      "program" =>
+        ~s{S" #{sha}" USE-OBJECT S" greet.txt" WRITE-FILE DROP RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{},
+      "rationale" => "install by hash of seed"
+    }
+
+    result =
+      Run.run("seed-hash",
+        workspace: ws,
+        contract: contract(),
+        planner_fn: fn _g, _o, _f -> {:ok, envelope, %{}} end,
+        max_episodes: 1
+      )
+
+    assert result.success
+    obj = Path.join([result.run_dir, "objects", String.slice(sha, 0, 2), sha])
+    assert File.exists?(obj)
+    assert File.read!(Path.join(ws, "greet.txt")) == body
+  end
+
+  test "observation after write-then-trap shows live tree hashes" do
+    ws = workspace()
+    {:ok, log} = Agent.start_link(fn -> [] end)
+    body = "hello from trap-write\n"
+
+    trap = %{
+      "language" => "forth",
+      "program" =>
+        ~s{S" greet.txt" USE-ARTIFACT S" greet.txt" WRITE-FILE DROP S" missing.txt" READ-FILE},
+      "artifacts" => %{"greet.txt" => body},
+      "rationale" => "write then trap"
+    }
+
+    recover = %{
+      "language" => "forth",
+      "program" => ~s{RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{},
+      "rationale" => "recover"
+    }
+
+    planner = fn _g, obs, feedback ->
+      Agent.update(log, &[{obs, feedback} | &1])
+      {:ok, if(feedback == "", do: trap, else: recover), %{}}
+    end
+
+    result =
+      Run.run("trap-obs",
+        workspace: ws,
+        contract: contract(),
+        planner_fn: planner,
+        max_episodes: 2
+      )
+
+    assert result.success
+    observations = Agent.get(log, &Enum.reverse/1) |> Enum.map(&elem(&1, 0))
+    second = Enum.at(observations, 1)
+    sha = LdHost.Policy.sha256_hex(body)
+    assert second =~ "WORKSPACE TREE"
+    assert second =~ sha
+    refute second =~ "hello from trap-write"
+    assert File.read!(Path.join(ws, "greet.txt")) == body
   end
 end

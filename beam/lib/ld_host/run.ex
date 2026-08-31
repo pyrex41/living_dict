@@ -401,10 +401,8 @@ defmodule LdHost.Run do
   end
 
   defp observe(state) do
-    events = Ledger.events(state.ledger)
-    revision = Ledger.revision(state.ledger)
-    tree = Store.as_of(events, revision)
-    tree = if tree == %{}, do: Policy.snapshot(state.workspace), else: tree
+    # Live tree: as_of lags after write-then-trap (no gates.measured).
+    tree = Policy.snapshot(state.workspace)
 
     unused =
       MapSet.new(state.prelude_words)
