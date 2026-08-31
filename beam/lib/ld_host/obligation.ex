@@ -72,6 +72,10 @@ defmodule LdHost.Obligation do
 
   @probe_interval_ms 100
   @max_attempts_cap 100
+  # Cmd.sh timeouts clipped to the leftover hold window will false-timeout
+  # (`returncode: nil`) and, with max_attempts 1, fail a hold whose probes
+  # already passed. Skip the probe and judge on last evidence instead.
+  @min_probe_budget_ms 50
 
   @doc """
   Execute one claimed obligation under a Jido agent, heart-beating the
@@ -145,7 +149,11 @@ defmodule LdHost.Obligation do
   defp hold_ms(_), do: nil
 
   defp retry_opts(tuple) when is_map(tuple) do
-    retry = tuple["retry"] || %{}
+    retry =
+      case tuple["retry"] do
+        %{} = map -> map
+        _ -> %{}
+      end
 
     [
       max_attempts: tuple["max_attempts"] || retry["max_attempts"],
@@ -190,15 +198,15 @@ defmodule LdHost.Obligation do
       state.command == nil ->
         {:failed, Map.put(hold_summary(state, false), :probe_failed, true)}
 
-      remaining <= 0 ->
+      remaining < @min_probe_budget_ms ->
         deadline_outcome(state)
 
       true ->
         result =
-          LdHost.Cmd.sh(state.command, state.workspace, min(state.timeout_ms, max(remaining, 1)))
+          LdHost.Cmd.sh(state.command, state.workspace, min(state.timeout_ms, remaining))
 
         probes = state.probes + 1
-        attempt_log = state.attempt_log ++ [probe_attempt(probes, result)]
+        attempt_log = [probe_attempt(probes, result) | state.attempt_log]
         state = %{state | probes: probes, last: result, attempt_log: attempt_log}
 
         if result.returncode == 0 and not result.timed_out do
@@ -242,7 +250,7 @@ defmodule LdHost.Obligation do
   defp failed_last_probe?(%{returncode: 0, timed_out: false}), do: false
   defp failed_last_probe?(%{timed_out: true}), do: true
   defp failed_last_probe?(%{returncode: code}) when code != 0, do: true
-  defp failed_last_probe?(_), do: false
+  defp failed_last_probe?(_), do: true
 
   defp probe_attempt(n, result) do
     %{
@@ -269,7 +277,7 @@ defmodule LdHost.Obligation do
       max_attempts: state.max_attempts,
       backoff_ms: state.backoff_ms,
       consecutive_fails: state.consecutive_fails,
-      attempt_log: state.attempt_log
+      attempt_log: Enum.reverse(state.attempt_log)
     }
   end
 

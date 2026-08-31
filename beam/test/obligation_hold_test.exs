@@ -360,6 +360,19 @@ defmodule LdHost.ObligationHoldTest do
     assert summary.consecutive_fails == summary.probes
   end
 
+  test "hold/4 with hold_ms 0 fails closed without a probe" do
+    ws = tmp("ldhold-zero")
+
+    {status, summary} =
+      Obligation.hold(ws, %{"command" => "true", "timeout_seconds" => 2}, 0)
+
+    assert status == :failed
+    assert summary.probe_failed
+    refute summary.success
+    assert summary.probes == 0
+    assert summary.attempt_log == []
+  end
+
   test "hold/4 missing or unparseable probe fails closed without Cmd.sh" do
     ws = tmp("ldhold-noprobe")
 
