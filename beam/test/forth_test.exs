@@ -10,7 +10,10 @@ defmodule LdHost.ForthTest do
 
     @impl true
     def call(host, "READ-FILE", [path]), do: {:ok, "content-of-#{path}", log(host, {:read, path})}
-    def call(host, "WRITE-FILE", [content, path]), do: {:ok, %{path: path, bytes: byte_size(content)}, log(host, {:write, path})}
+
+    def call(host, "WRITE-FILE", [content, path]),
+      do: {:ok, %{path: path, bytes: byte_size(content)}, log(host, {:write, path})}
+
     def call(host, "RUN-GATES", []), do: {:ok, %{ok: true}, log(host, :gates)}
     def call(host, "RUN-TESTS", []), do: {:ok, %{ok: true}, log(host, :tests)}
     def call(host, "RECEIPT", []), do: {:ok, %{success: true}, log(host, :receipt)}
@@ -25,7 +28,12 @@ defmodule LdHost.ForthTest do
 
   test "tokenize matches the reference: comments stripped, strings, numbers" do
     tokens = Forth.tokenize(~s{\\ comment line\n( a note ) S" hello world" -42 WRITE-FILE})
-    assert [%{kind: :string, value: "hello world"}, %{kind: :number, value: -42}, %{kind: :word, value: "WRITE-FILE"}] =
+
+    assert [
+             %{kind: :string, value: "hello world"},
+             %{kind: :number, value: -42},
+             %{kind: :word, value: "WRITE-FILE"}
+           ] =
              tokens
 
     assert Enum.map(tokens, & &1.index) == [0, 1, 2]
@@ -56,7 +64,9 @@ defmodule LdHost.ForthTest do
   end
 
   test "host word dispatch and artifact lookup" do
-    result = Forth.interpret(vm(%{"k" => "body"}), ~s{S" k" USE-ARTIFACT S" out.txt" WRITE-FILE DROP})
+    result =
+      Forth.interpret(vm(%{"k" => "body"}), ~s{S" k" USE-ARTIFACT S" out.txt" WRITE-FILE DROP})
+
     assert result.stack == []
     assert {:write, "out.txt"} in result.host.calls
   end
@@ -83,5 +93,13 @@ defmodule LdHost.ForthTest do
     assert_raise Error, ~r/nested colon definitions are not supported/, fn ->
       Forth.interpret(vm(), ": A : B ; ;")
     end
+  end
+
+  test "bind_vocab installs existing colon bodies, not stubs" do
+    tokens = Forth.tokenize("DUP")
+    row = {"TWICE", tokens, {["n"], ["n", "n"], []}, ": TWICE ( n -- n n ) DUP ;"}
+    result = Forth.interpret(Forth.bind_vocab(vm(), [row]), "5 TWICE")
+    assert result.stack == [5, 5]
+    assert Forth.defined_names(result) == ["TWICE"]
   end
 end
