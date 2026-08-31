@@ -115,12 +115,17 @@ for TASK in "${TASKS[@]}"; do
     WORD_COUNT="$(ls "$ACC/words"/*.fs 2>/dev/null | wc -l | tr -d ' ')"
     CANDIDATE_COUNT="$WORD_COUNT"
     if [ -f "$ACC/promoted.txt" ]; then
+      sort -u "$ACC/promoted.txt" -o "$ACC/promoted.txt"
       PROMOTED_COUNT="$(grep -c . "$ACC/promoted.txt" || true)"
     fi
     # gzip outside tar: bsdtar pads compressed stdout to 10240B records,
     # which both bloats the seed and leaves trailing garbage for the
     # container's gunzip; tar|gzip keeps the padding inside the stream.
-    SEED="$(tar -cf - -C "$ACC" words | gzip -cn | base64 | tr -d '\n')"
+    if [ -f "$ACC/promoted.txt" ]; then
+      SEED="$(tar -cf - -C "$ACC" words promoted.txt | gzip -cn | base64 | tr -d '\n')"
+    else
+      SEED="$(tar -cf - -C "$ACC" words | gzip -cn | base64 | tr -d '\n')"
+    fi
   fi
   SEED_BYTES=${#SEED}
   if [ "$SEED_BYTES" -gt "$SEED_MAX_BYTES" ]; then
