@@ -1,0 +1,157 @@
+{
+  "version": "1.0",
+  "abi": "eval-1.0",
+  "notes": "Tables only for shen/critic/validate.shen and beam/lib/ld_host/forth.ex. Python/Lua/JS HOST_DICTIONARY is documented drift (not generated this spike). Do not codegen docs/ARCHITECTURE.md. Method bodies stay handwritten. RUN-GATES and RUN-TESTS are two table entries. RESERVED (: ;) is a handwritten superset, not host words.",
+  "lockstep": {
+    "generated": [
+      "shen/critic/validate.shen",
+      "beam/lib/ld_host/forth.ex"
+    ],
+    "drift": [
+      "harness/src/livingdict/preflight.py",
+      "openresty/lua/forth.lua",
+      "browser/js/forth.js",
+      "openresty/shen/",
+      "browser/shen/"
+    ]
+  },
+  "words": {
+    "READ-FILE": {
+      "inputs": 1,
+      "outputs": 1,
+      "effects": ["read"],
+      "stack": "( path -- content | read )",
+      "class": "host",
+      "eval_abi": true
+    },
+    "LIST-DIR": {
+      "inputs": 1,
+      "outputs": 1,
+      "effects": ["read"],
+      "stack": "( path -- listing | read )",
+      "class": "host",
+      "eval_abi": true
+    },
+    "SEARCH": {
+      "inputs": 1,
+      "outputs": 1,
+      "effects": ["read"],
+      "stack": "( query -- hits | read )",
+      "class": "host",
+      "eval_abi": true
+    },
+    "WRITE-FILE": {
+      "inputs": 2,
+      "outputs": 1,
+      "effects": ["write"],
+      "stack": "( content path -- receipt | write )",
+      "class": "host",
+      "eval_abi": true
+    },
+    "RUN-TESTS": {
+      "inputs": 0,
+      "outputs": 1,
+      "effects": ["exec"],
+      "stack": "( -- report | exec )",
+      "class": "host",
+      "eval_abi": true
+    },
+    "RUN-GATES": {
+      "inputs": 0,
+      "outputs": 1,
+      "effects": ["exec"],
+      "stack": "( -- report | exec )",
+      "class": "host",
+      "eval_abi": true
+    },
+    "RECEIPT": {
+      "inputs": 0,
+      "outputs": 1,
+      "effects": [],
+      "stack": "( -- receipt )",
+      "class": "host",
+      "eval_abi": true
+    },
+    "USE-ARTIFACT": {
+      "inputs": 1,
+      "outputs": 1,
+      "effects": ["read"],
+      "stack": "( key -- content | read )",
+      "class": "ir",
+      "eval_abi": false
+    },
+    "DUP": {
+      "inputs": 1,
+      "outputs": 2,
+      "effects": [],
+      "stack": "( x -- x x )",
+      "class": "stack"
+    },
+    "DROP": {
+      "inputs": 1,
+      "outputs": 0,
+      "effects": [],
+      "stack": "( x -- )",
+      "class": "stack"
+    },
+    "SWAP": {
+      "inputs": 2,
+      "outputs": 2,
+      "effects": [],
+      "stack": "( x y -- y x )",
+      "class": "stack"
+    },
+    "OVER": {
+      "inputs": 2,
+      "outputs": 3,
+      "effects": [],
+      "stack": "( x y -- x y x )",
+      "class": "stack"
+    },
+    "+": {
+      "inputs": 2,
+      "outputs": 1,
+      "effects": [],
+      "stack": "( a b -- n )",
+      "class": "stack"
+    },
+    "-": {
+      "inputs": 2,
+      "outputs": 1,
+      "effects": [],
+      "stack": "( a b -- n )",
+      "class": "stack"
+    },
+    "*": {
+      "inputs": 2,
+      "outputs": 1,
+      "effects": [],
+      "stack": "( a b -- n )",
+      "class": "stack"
+    },
+    "IF": {
+      "inputs": 1,
+      "outputs": 0,
+      "effects": [],
+      "stack": "( flag -- )",
+      "class": "control",
+      "join": "shape"
+    },
+    "ELSE": {
+      "inputs": 0,
+      "outputs": 0,
+      "effects": [],
+      "stack": "( -- )",
+      "class": "control",
+      "join": "shape"
+    },
+    "THEN": {
+      "inputs": 0,
+      "outputs": 0,
+      "effects": [],
+      "stack": "( -- )",
+      "class": "control",
+      "join": "shape"
+    }
+  }
+}

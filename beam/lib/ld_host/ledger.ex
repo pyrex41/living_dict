@@ -8,6 +8,15 @@ defmodule LdHost.Ledger do
     kind refused, sequence is exactly revision+1).
   - `trace.jsonl` — unsequenced observability events
     (`{type, timestamp, data}`), same shape as the Python trace.
+
+  `dictionary.promoted` payloads include identity fields retrieval needs:
+  `effects` (in-band contract), `path_region` (literal WRITE-FILE globs
+  else the episode grant), and empty `task_families` on live jobs.
+
+  Overlay kinds are record-only. Freeze is a host fold (`LdHost.Run.freeze_of/1`),
+  not a ledger State field. `dictionary.overlay.rejected` coincides with
+  `critic.rejected`: emit both; one `pending_execute=false` (the existing
+  critic.rejected continue). Python `EVENT_KINDS` stays frozen.
   """
 
   use GenServer
@@ -16,6 +25,8 @@ defmodule LdHost.Ledger do
     episode.planned critic.accepted critic.rejected artifacts.applied
     gates.measured budget.consumed episode.blocked_duplicate
     dictionary.promoted dictionary.promotion_evidence contract.approved
+    dictionary.overlay.proposed dictionary.overlay.admitted
+    dictionary.overlay.rejected dictionary.narrowed dictionary.discarded
   )
 
   def event_kinds, do: @event_kinds
@@ -36,9 +47,18 @@ defmodule LdHost.Ledger do
   @impl true
   def init(run_dir) do
     File.mkdir_p!(run_dir)
-    events = File.open!(Path.join(run_dir, "events.jsonl"), [:append, :utf8])
+    events_path = Path.join(run_dir, "events.jsonl")
+    revision = existing_revision(events_path)
+    events = File.open!(events_path, [:append, :utf8])
     trace = File.open!(Path.join(run_dir, "trace.jsonl"), [:append, :utf8])
-    {:ok, %{events: events, trace: trace, revision: 0, run_dir: run_dir}}
+    {:ok, %{events: events, trace: trace, revision: revision, run_dir: run_dir}}
+  end
+
+  defp existing_revision(path) do
+    case File.read(path) do
+      {:ok, bin} -> bin |> String.split("\n", trim: true) |> length()
+      _ -> 0
+    end
   end
 
   @impl true

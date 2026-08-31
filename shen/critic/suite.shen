@@ -198,6 +198,11 @@
             ""
             (cn "path outside allowed change set: " Rel))))
 
+\\ BEGIN GENERATED PRIMITIVES v1
+\\ primitive_contract f22443470fafc4af4669003a41e2238513a5dc0f53fca95bad56d0a013c0101e
+\\ python3 tools/gen_primitives.py spec/primitives.v1.json
+\\ Python/Lua/JS HOST_DICTIONARY is documented drift (not generated).
+
 (define contract-inputs
   { string --> number }
   "READ-FILE" -> 1
@@ -255,7 +260,26 @@
 
 (define host-word?
   { string --> boolean }
-  Name -> (not (= (contract-inputs Name) -1)))
+  "READ-FILE" -> true
+  "LIST-DIR" -> true
+  "SEARCH" -> true
+  "WRITE-FILE" -> true
+  "RUN-TESTS" -> true
+  "RUN-GATES" -> true
+  "RECEIPT" -> true
+  "USE-ARTIFACT" -> true
+  "DUP" -> true
+  "DROP" -> true
+  "SWAP" -> true
+  "OVER" -> true
+  "+" -> true
+  "-" -> true
+  "*" -> true
+  "IF" -> true
+  "ELSE" -> true
+  "THEN" -> true
+  X -> false)
+\\ END GENERATED PRIMITIVES v1
 
 (define ch-code
   { string --> number }
@@ -1187,6 +1211,31 @@
   [true | Rest] -> (all-pass Rest)
   [_ | _] -> false)
 
+(define check-primitive-tables
+  -> (report "primitive-tables"
+             (all-pass [(= (contract-inputs "READ-FILE") 1)
+                        (= (contract-outputs "READ-FILE") 1)
+                        (= (contract-effect "READ-FILE") ["read"])
+                        (= (contract-inputs "WRITE-FILE") 2)
+                        (= (contract-outputs "WRITE-FILE") 1)
+                        (= (contract-effect "WRITE-FILE") ["write"])
+                        (= (contract-inputs "RUN-GATES") 0)
+                        (= (contract-inputs "RUN-TESTS") 0)
+                        (= (contract-effect "RUN-GATES") ["exec"])
+                        (= (contract-effect "RUN-TESTS") ["exec"])
+                        (= (contract-inputs "RECEIPT") 0)
+                        (= (contract-effect "RECEIPT") [])
+                        (= (contract-inputs "USE-ARTIFACT") 1)
+                        (= (contract-effect "USE-ARTIFACT") ["read"])
+                        (= (contract-inputs "DUP") 1)
+                        (= (contract-outputs "DUP") 2)
+                        (= (contract-inputs "IF") 1)
+                        (= (contract-outputs "ELSE") 0)
+                        (= (contract-inputs "MYSTERY") -1)
+                        (host-word? "READ-FILE")
+                        (host-word? "+")
+                        (not (host-word? "MYSTERY"))])))
+
 (define run-critic-suite
   -> (let Results [(check-accept-straight)
                    (check-reject-bundle)
@@ -1201,7 +1250,8 @@
                    (check-colon-invalid)
                    (check-colon-inference)
                    (check-colon-body-path)
-                   (check-comment-token)]
+                   (check-comment-token)
+                   (check-primitive-tables)]
        (if (all-pass Results)
            (do (output "ALL PASS~%") true)
            (do (output "SOME FAIL~%") false))))

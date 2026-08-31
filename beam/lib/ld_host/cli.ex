@@ -15,6 +15,7 @@ defmodule LdHost.CLI do
     * `LD_ALLOW_MODEL_CHECKS` — truthy ("1"/"true") lets model-authored
       check claims execute advisorily when no approved contract exists
     * `LD_DICTIONARY` — dictionary directory for warm-start/promotion
+    * `LD_DICT_MODE` — `load-all` (default) or `retrieved` (grant+path subset)
 
   Prints exactly ONE JSON line with the run summary, then halts with an
   HONEST exit code: 0 iff the claims discharged, 1 otherwise. Exit-0

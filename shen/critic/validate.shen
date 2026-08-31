@@ -194,6 +194,11 @@
             ""
             (cn "path outside allowed change set: " Rel))))
 
+\\ BEGIN GENERATED PRIMITIVES v1
+\\ primitive_contract f22443470fafc4af4669003a41e2238513a5dc0f53fca95bad56d0a013c0101e
+\\ python3 tools/gen_primitives.py spec/primitives.v1.json
+\\ Python/Lua/JS HOST_DICTIONARY is documented drift (not generated).
+
 (define contract-inputs
   { string --> number }
   "READ-FILE" -> 1
@@ -251,7 +256,26 @@
 
 (define host-word?
   { string --> boolean }
-  Name -> (not (= (contract-inputs Name) -1)))
+  "READ-FILE" -> true
+  "LIST-DIR" -> true
+  "SEARCH" -> true
+  "WRITE-FILE" -> true
+  "RUN-TESTS" -> true
+  "RUN-GATES" -> true
+  "RECEIPT" -> true
+  "USE-ARTIFACT" -> true
+  "DUP" -> true
+  "DROP" -> true
+  "SWAP" -> true
+  "OVER" -> true
+  "+" -> true
+  "-" -> true
+  "*" -> true
+  "IF" -> true
+  "ELSE" -> true
+  "THEN" -> true
+  X -> false)
+\\ END GENERATED PRIMITIVES v1
 
 (define ch-code
   { string --> number }

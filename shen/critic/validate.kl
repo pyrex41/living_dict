@@ -16,7 +16,7 @@
 
 (defun contract-effect (V5165) (cond ((= "READ-FILE" V5165) (cons "read" ())) ((= "LIST-DIR" V5165) (cons "read" ())) ((= "SEARCH" V5165) (cons "read" ())) ((= "WRITE-FILE" V5165) (cons "write" ())) ((= "RUN-TESTS" V5165) (cons "exec" ())) ((= "RUN-GATES" V5165) (cons "exec" ())) ((= "USE-ARTIFACT" V5165) (cons "read" ())) (true ())))
 
-(defun host-word? (V5166) (not (= (contract-inputs V5166) -1)))
+(defun host-word? (V5166) (cond ((= "READ-FILE" V5166) true) ((= "LIST-DIR" V5166) true) ((= "SEARCH" V5166) true) ((= "WRITE-FILE" V5166) true) ((= "RUN-TESTS" V5166) true) ((= "RUN-GATES" V5166) true) ((= "RECEIPT" V5166) true) ((= "USE-ARTIFACT" V5166) true) ((= "DUP" V5166) true) ((= "DROP" V5166) true) ((= "SWAP" V5166) true) ((= "OVER" V5166) true) ((= "+" V5166) true) ((= "-" V5166) true) ((= "*" V5166) true) ((= "IF" V5166) true) ((= "ELSE" V5166) true) ((= "THEN" V5166) true) (true false)))
 
 (defun ch-code (V5167) (string->n V5167))
 

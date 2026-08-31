@@ -26,9 +26,16 @@ defmodule LdHost.Forth do
     defstruct stack: [], colon: %{}, host: nil, artifacts: %{}
   end
 
+  # BEGIN GENERATED PRIMITIVES v1
+  # primitive_contract f22443470fafc4af4669003a41e2238513a5dc0f53fca95bad56d0a013c0101e
+  # python3 tools/gen_primitives.py spec/primitives.v1.json
+  # Python/Lua/JS HOST_DICTIONARY is documented drift (not generated).
+  @primitive_contract "f22443470fafc4af4669003a41e2238513a5dc0f53fca95bad56d0a013c0101e"
   @host_words ~w(READ-FILE LIST-DIR SEARCH WRITE-FILE RUN-TESTS RUN-GATES RECEIPT USE-ARTIFACT)
   @stack_words ~w(DUP DROP SWAP OVER + - *)
+  # END GENERATED PRIMITIVES v1
 
+  def primitive_contract, do: @primitive_contract
   def host_words, do: @host_words
   def stack_words, do: @stack_words
 
