@@ -50,7 +50,7 @@ monotonic sequence, single writer) + `trace.jsonl`.
 | `gates.ex` / `cmd.ex` | executable contract claims, bounded shell execution |
 | `ledger.ex` | kernel event log + trace, single-writer by construction |
 | `run.ex` | the kernel loop; duplicate blocking; planner retry w/ backoff |
-| `dictionary.ex` / `contracts.ex` | warm dictionary, in-band contracts, topo-ordered prelude |
+| `dictionary.ex` / `contracts.ex` | warm dictionary, in-band contracts, topo-ordered prelude (load-all) |
 | `space.ex` | Linda tuple space: generation-fenced leases (OTP timers), specificity-ordered handoff, obligation kind accepted |
 | `obligation.ex` / `dispatcher.ex` | Jido agents per obligation, lease heartbeats, deny-by-default gate |
 | `verdict.ex` | preregistered warm-dictionary go/no-go thresholds |
@@ -93,3 +93,9 @@ word's `( ins -- outs | effects )` contract is proved against its body
 by the critic at accept time, persisted in-band, re-bound on load, and
 a starved call is rejected **before any I/O** (see
 `test/run_test.exs:"starved call..."` — workspace provably untouched).
+
+## Dictionary load
+
+Load is **load-all**: every aligned `.fs` word is composed into the
+prelude and bound as vocab. Grant-scoped retrieval is not shipped and
+is not authorization. Default `mix test` excludes `:retrieve_auth`.

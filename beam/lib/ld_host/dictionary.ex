@@ -2,7 +2,8 @@ defmodule LdHost.Dictionary do
   @moduledoc """
   Warm dictionary: colon words that persist across runs, contracts
   in-band. Port of `harness/src/livingdict/dictionary.py` with the
-  typed-promotion upgrades:
+  typed-promotion upgrades. Load is load-all. Grant-scoped retrieval
+  is not a load path and is not authorization.
 
   - saved words carry their `( ins -- outs | effects )` group after the
     name; contractless words are never persisted (the caller quarantines)
