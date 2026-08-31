@@ -638,17 +638,23 @@ defmodule LdHost.Run do
   defp record_model_call(state, telemetry) do
     Ledger.trace(state.ledger, "llm.response", telemetry)
 
-    {:ok, _} =
-      Ledger.commit(state.ledger, "budget.consumed", Map.put(telemetry, :episode, state.episode))
+    calls = Map.get(telemetry, :model_calls, Map.get(telemetry, "model_calls", 1))
 
-    %{
+    if calls == 0 do
       state
-      | model_calls: state.model_calls + 1,
-        tokens: %{
-          input_tokens: state.tokens.input_tokens + (telemetry[:input_tokens] || 0),
-          output_tokens: state.tokens.output_tokens + (telemetry[:output_tokens] || 0)
-        }
-    }
+    else
+      {:ok, _} =
+        Ledger.commit(state.ledger, "budget.consumed", Map.put(telemetry, :episode, state.episode))
+
+      %{
+        state
+        | model_calls: state.model_calls + calls,
+          tokens: %{
+            input_tokens: state.tokens.input_tokens + (telemetry[:input_tokens] || 0),
+            output_tokens: state.tokens.output_tokens + (telemetry[:output_tokens] || 0)
+          }
+      }
+    end
   end
 
   # Transient transport failures (timeouts, resets) must not kill a run:

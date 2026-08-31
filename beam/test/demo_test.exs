@@ -1,7 +1,7 @@
 defmodule LdHost.DemoTest do
   use ExUnit.Case
 
-  alias LdHost.Verdict
+  alias LdHost.{Demo, Ledger, Verdict}
 
   test "verdict math: the preregistered thresholds" do
     cold = [
@@ -36,6 +36,59 @@ defmodule LdHost.DemoTest do
     warm_pricey = Enum.map(cold, &%{&1 | tokens: %{input_tokens: 900, output_tokens: 900}})
     {false, reasons} = Verdict.warm_run_allowed(Verdict.measures(cold, warm_pricey))
     assert reasons == ["cost reduction is below threshold"]
+  end
+
+  test "summarize emits uniqueness beside warm_run_allowed and does not gate" do
+    out =
+      System.tmp_dir!()
+      |> Path.join("lddemo-uniq-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(out)
+    {:ok, ledger} = Ledger.start_link(Path.join(out, "orchestrator"))
+
+    tasks = [%{id: "t1"}, %{id: "t2"}]
+
+    results = %{
+      "cold" => [
+        %{task: "t1", success: true, tokens: %{input_tokens: 1000, output_tokens: 1000}, policy_violations: 0, model_calls: 1},
+        %{task: "t2", success: true, tokens: %{input_tokens: 1000, output_tokens: 1000}, policy_violations: 0, model_calls: 1}
+      ],
+      "warm" => [
+        %{
+          task: "t1",
+          success: true,
+          tokens: %{input_tokens: 400, output_tokens: 400},
+          policy_violations: 0,
+          model_calls: 1,
+          used_words: [],
+          promoted_words: ["INSTALL"],
+          judge: "approved contract"
+        },
+        %{
+          task: "t2",
+          success: true,
+          tokens: %{input_tokens: 400, output_tokens: 400},
+          policy_violations: 0,
+          model_calls: 1,
+          used_words: ["INSTALL"],
+          promoted_words: [],
+          judge: "approved contract"
+        }
+      ]
+    }
+
+    summary = Demo.summarize(out, ledger, tasks, results)
+    assert {true, []} = Verdict.warm_run_allowed(summary.verdict.measures)
+    assert summary.verdict.allowed
+    assert summary.uniqueness.family_transfer > 0
+    assert summary.uniqueness.contract_first == 1.0
+    refute Map.has_key?(summary.uniqueness, :wave_speedup)
+    refute Map.has_key?(summary.uniqueness, :obligation_hold)
+    refute Map.has_key?(summary.uniqueness, :replay_without_model)
+
+    encoded = File.read!(Path.join(out, "summary.json")) |> JSON.decode!()
+    assert Map.has_key?(encoded, "uniqueness")
+    assert Map.has_key?(encoded, "verdict")
   end
 
   @tag :e2e
