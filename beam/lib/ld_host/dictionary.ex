@@ -55,9 +55,10 @@ defmodule LdHost.Dictionary do
   end
 
   @doc """
-  Reject WRITE-FILE / the USE-ARTIFACT+WRITE-FILE zipper when INSTALL is
-  already in the catalog. Tokenizes envelope.program only so a carried
-  INSTALL.fs body cannot false-trigger itself.
+  Reject WRITE-FILE when INSTALL is already in the catalog and not called
+  at program top level. Tokenizes envelope.program only so a carried
+  INSTALL.fs body cannot false-trigger itself. Non-INSTALL colon bodies
+  in the program still count as WRITE-FILE uses.
   """
   def catalog_pressure(prelude_words, envelope) when is_list(prelude_words) do
     names = MapSet.new(Enum.map(prelude_words, &String.upcase/1))
@@ -66,16 +67,18 @@ defmodule LdHost.Dictionary do
       :ok
     else
       artifacts = envelope_artifacts(envelope)
-      words = program_words(envelope)
+      tokens = program_tokens(envelope)
+      called = word_names(skip_colon_bodies(tokens))
+      rest = word_names(skip_install_colon_bodies(tokens))
 
       cond do
-        artifacts == %{} and "WRITE-FILE" not in words ->
+        artifacts == %{} and "WRITE-FILE" not in rest ->
           :ok
 
-        "INSTALL" in words ->
+        "INSTALL" in called ->
           :ok
 
-        "WRITE-FILE" in words or zipper?(words) ->
+        "WRITE-FILE" in rest ->
           {:error, @install_covering_error}
 
         true ->
@@ -159,21 +162,21 @@ defmodule LdHost.Dictionary do
   defp envelope_artifacts(%{artifacts: arts}) when is_map(arts), do: arts
   defp envelope_artifacts(_), do: %{}
 
-  defp program_words(%{program: source}) when is_binary(source) do
-    source
-    |> Forth.tokenize()
-    |> skip_colon_bodies()
-    |> Enum.filter(&(&1.kind == :word))
-    |> Enum.map(&String.upcase(&1.value))
+  defp program_tokens(%{program: source}) when is_binary(source) do
+    Forth.tokenize(source)
   rescue
     _ -> []
   end
 
-  defp program_words(_), do: []
+  defp program_tokens(_), do: []
 
-  defp zipper?(words), do: "USE-ARTIFACT" in words and "WRITE-FILE" in words
+  defp word_names(tokens) do
+    tokens
+    |> Enum.filter(&(&1.kind == :word))
+    |> Enum.map(&String.upcase(&1.value))
+  end
 
-  # Covering looks at envelope.program top-level tokens only.
+  # INSTALL is a top-level call; names inside any colon body do not count.
   defp skip_colon_bodies(tokens) do
     {kept, _} =
       Enum.reduce(tokens, {[], :top}, fn token, {acc, mode} ->
@@ -194,6 +197,57 @@ defmodule LdHost.Dictionary do
 
           {:colon, _} ->
             {acc, :colon}
+
+          {:top, token} ->
+            {[token | acc], :top}
+        end
+      end)
+
+    Enum.reverse(kept)
+  end
+
+  # WRITE-FILE in a carried INSTALL body is the catalog word, not a zipper.
+  # Other program colon bodies (PUT wrappers) still count.
+  defp skip_install_colon_bodies(tokens) do
+    {kept, _} =
+      Enum.reduce(tokens, {[], :top}, fn token, {acc, mode} ->
+        case {mode, token} do
+          {:top, %{kind: :word, value: value}} ->
+            if String.upcase(value) == ":" do
+              {acc, :name}
+            else
+              {[token | acc], :top}
+            end
+
+          {:name, %{kind: :word, value: value}} ->
+            if String.upcase(value) == "INSTALL" do
+              {acc, :skip}
+            else
+              {[token | acc], :keep}
+            end
+
+          {:name, token} ->
+            {[token | acc], :keep}
+
+          {:skip, %{kind: :word, value: value}} ->
+            if String.upcase(value) == ";" do
+              {acc, :top}
+            else
+              {acc, :skip}
+            end
+
+          {:skip, _} ->
+            {acc, :skip}
+
+          {:keep, %{kind: :word, value: value}} ->
+            if String.upcase(value) == ";" do
+              {acc, :top}
+            else
+              {[token | acc], :keep}
+            end
+
+          {:keep, token} ->
+            {[token | acc], :keep}
 
           {:top, token} ->
             {[token | acc], :top}

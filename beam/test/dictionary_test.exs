@@ -197,7 +197,7 @@ defmodule LdHost.DictionaryTest do
     assert Dictionary.catalog_pressure(["INSTALL"], env) == :ok
   end
 
-  test "catalog_pressure tokenizes envelope.program only, skipping colon bodies" do
+  test "catalog_pressure skips WRITE-FILE inside a program INSTALL definition" do
     env = %{
       program:
         ~s{: INSTALL ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ; } <>
@@ -206,6 +206,28 @@ defmodule LdHost.DictionaryTest do
     }
 
     assert Dictionary.catalog_pressure(["INSTALL"], env) == :ok
+  end
+
+  test "catalog_pressure rejects zipper after defining INSTALL without calling it" do
+    env = %{
+      program:
+        ~s{: INSTALL ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ; } <>
+          ~s{S" greet.txt" USE-ARTIFACT S" greet.txt" WRITE-FILE DROP},
+      artifacts: %{"greet.txt" => "hello"}
+    }
+
+    assert Dictionary.catalog_pressure(["INSTALL"], env) == {:error, @covering_error}
+  end
+
+  test "catalog_pressure rejects zipper wrapped in PUT with no INSTALL call" do
+    env = %{
+      program:
+        ~s{: PUT ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ; } <>
+          ~s{S" greet.txt" S" greet.txt" PUT},
+      artifacts: %{"greet.txt" => "hello"}
+    }
+
+    assert Dictionary.catalog_pressure(["INSTALL"], env) == {:error, @covering_error}
   end
 
   test "catalog_pressure ignores empty-artifact read-only programs" do
