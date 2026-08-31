@@ -424,4 +424,45 @@ defmodule LdHost.RunTest do
                event["payload"]["reasons"] == ["host-word alias"]
            end)
   end
+
+  test "callers of quarantined aliases are not persisted" do
+    ws = workspace()
+
+    envelope = %{
+      "language" => "forth",
+      "program" =>
+        ~s{: CAT ( path -- | read ) READ-FILE DROP ; } <>
+          ~s{: CAT2 ( path -- | read ) CAT ; } <>
+          ~s{S" greet.txt" USE-ARTIFACT S" greet.txt" WRITE-FILE DROP } <>
+          ~s{S" greet.txt" CAT2 RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"greet.txt" => "hello\n"},
+      "rationale" => "alias caller"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
+
+    result =
+      Run.run("goal", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 1)
+
+    assert result.success
+    dict = Path.join([result.run_dir, "dictionary", "words"])
+    refute File.exists?(Path.join(dict, "CAT.fs"))
+    refute File.exists?(Path.join(dict, "CAT2.fs"))
+    refute "CAT" in result.promoted_words
+    refute "CAT2" in result.promoted_words
+
+    events =
+      result.run_dir
+      |> Path.join("events.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+
+    evidence = Enum.filter(events, &(&1["kind"] == "dictionary.promotion_evidence"))
+
+    assert Enum.any?(evidence, fn event ->
+             event["payload"]["word"] == "CAT2" and event["payload"]["eligible"] == false and
+               event["payload"]["reasons"] == ["depends on host-word alias"]
+           end)
+  end
 end

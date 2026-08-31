@@ -248,6 +248,10 @@ defmodule LdHost.Run do
           not Dictionary.tautology?(vm.colon[name])
       end)
 
+    {promotable, dependent} = quarantine_dependents(promotable, quarantined, vm)
+    quarantined = quarantined ++ dependent
+    dependent_set = MapSet.new(dependent)
+
     entries =
       Enum.map(promotable, fn name ->
         {name, Dictionary.body_source(vm.colon[name]), Contracts.canonical(contracts[name])}
@@ -279,6 +283,9 @@ defmodule LdHost.Run do
           Dictionary.tautology?(vm.colon[name]) ->
             ["host-word alias"]
 
+          MapSet.member?(dependent_set, name) ->
+            ["depends on host-word alias"]
+
           true ->
             [] ++
               if(not Map.has_key?(contracts, name), do: ["missing contract"], else: []) ++
@@ -307,6 +314,32 @@ defmodule LdHost.Run do
   end
 
   # ---- helpers ----------------------------------------------------------
+
+  defp quarantine_dependents(promotable, quarantined, vm) do
+    close_quarantine(promotable, [], MapSet.new(quarantined), vm)
+  end
+
+  defp close_quarantine(remaining, extra, banned, vm) do
+    {hit, rest} =
+      Enum.split_with(remaining, fn name ->
+        refers_to_banned?(vm.colon[name], banned)
+      end)
+
+    if hit == [] do
+      {remaining, extra}
+    else
+      close_quarantine(rest, extra ++ hit, MapSet.union(banned, MapSet.new(hit)), vm)
+    end
+  end
+
+  defp refers_to_banned?(tokens, banned) when is_list(tokens) do
+    Enum.any?(tokens, fn
+      %{kind: :word, value: value} -> MapSet.member?(banned, String.upcase(to_string(value)))
+      _ -> false
+    end)
+  end
+
+  defp refers_to_banned?(_, _), do: false
 
   defp compose("", program), do: program
   defp compose(prelude, program), do: prelude <> "\n" <> program
