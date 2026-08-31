@@ -91,6 +91,35 @@ defmodule LdHost.DemoTest do
     assert Map.has_key?(encoded, "verdict")
   end
 
+  test "summarize omits uniqueness axes when live rows lack used_words/promoted/judge" do
+    out =
+      System.tmp_dir!()
+      |> Path.join("lddemo-omit-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(out)
+    {:ok, ledger} = Ledger.start_link(Path.join(out, "orchestrator"))
+
+    tasks = [%{id: "t1"}]
+
+    results = %{
+      "cold" => [
+        %{task: "t1", success: true, tokens: %{input_tokens: 1000, output_tokens: 1000}, policy_violations: 0, model_calls: 1}
+      ],
+      "warm" => [
+        %{task: "t1", success: true, tokens: %{input_tokens: 400, output_tokens: 400}, policy_violations: 0, model_calls: 1}
+      ]
+    }
+
+    summary = Demo.summarize(out, ledger, tasks, results)
+    assert summary.verdict.allowed
+    assert summary.uniqueness in [nil, %{}]
+    encoded = File.read!(Path.join(out, "summary.json")) |> JSON.decode!()
+    uniqueness = encoded["uniqueness"]
+    assert uniqueness in [nil, %{}]
+    refute uniqueness["family_transfer"] == 0
+    refute uniqueness["contract_first"] == 0.0
+  end
+
   @tag :e2e
   test "demo end-to-end on config-01 with canned arms (no model)" do
     # The full demo needs planner credentials + grok; covered manually.
