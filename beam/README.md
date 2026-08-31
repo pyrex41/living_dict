@@ -42,7 +42,8 @@ Every episode lands in a per-run `events.jsonl` (closed kind set,
 monotonic sequence, single writer) + `trace.jsonl`.
 
 The critic validates `envelope.program` against the bound catalog. Colon
-bodies are checked at promotion/load, not composed into every episode.
+bodies are checked at promotion (`validate/6` of `: NAME (c) body ;`).
+Load requires a parseable `--` contract and does not walk bodies.
 
 ## Modules
 
