@@ -1015,6 +1015,51 @@ defmodule LdHost.RunTest do
     assert events =~ "critic.rejected"
   end
 
+  test "no-nodes Forth without RUN-GATES is judged on the post-Forth tree" do
+    ws_fix = workspace()
+
+    stub_then_hello = %{
+      "language" => "forth",
+      "program" => ~s{S" hello from forth\n" S" greet.txt" WRITE-FILE DROP},
+      "artifacts" => %{"greet.txt" => "stub\n"},
+      "rationale" => "rewrite stub"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, stub_then_hello, %{}} end
+
+    fixed =
+      Run.run("fix",
+        workspace: ws_fix,
+        contract: contract(),
+        planner_fn: planner,
+        max_episodes: 1
+      )
+
+    assert fixed.success
+    assert File.read!(Path.join(ws_fix, "greet.txt")) == "hello from forth\n"
+
+    ws_wreck = workspace()
+
+    hello_then_wreck = %{
+      "language" => "forth",
+      "program" => ~s{S" wrecked\n" S" greet.txt" WRITE-FILE DROP},
+      "artifacts" => %{"greet.txt" => "hello from the beam\n"},
+      "rationale" => "wreck tree"
+    }
+
+    wrecked =
+      Run.run("wreck",
+        workspace: ws_wreck,
+        contract: contract(),
+        planner_fn: fn _g, _o, _f -> {:ok, hello_then_wreck, %{}} end,
+        max_episodes: 1
+      )
+
+    refute wrecked.success
+    assert File.read!(Path.join(ws_wreck, "greet.txt")) == "wrecked\n"
+    assert wrecked.report.ok != true
+  end
+
   test "serial and waved Run programs hash equal trees" do
     envelope = %{
       "language" => "forth",

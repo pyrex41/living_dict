@@ -296,7 +296,17 @@ defmodule LdHost.Run do
         artifact_sha256: artifact_digests(envelope.artifacts)
       })
 
-    report = vm.host.last_check || Gates.run(vm.host)
+    # Explicit nodes: last-wave Gates.run is the episode measure.
+    # Synthesized artifacts + top-level Forth: ignore wave-boundary
+    # last_check and remeasure the post-Forth tree (HARNESS.md: host
+    # still measures if the program omitted RUN-GATES).
+    {report, vm} =
+      if envelope.nodes do
+        {vm.host.last_check || Gates.run(vm.host), vm}
+      else
+        report = Gates.run(vm.host)
+        {report, %{vm | host: %{vm.host | last_check: report}}}
+      end
 
     {:ok, _} =
       Ledger.commit(state.ledger, "gates.measured", %{
