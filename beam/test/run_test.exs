@@ -622,4 +622,96 @@ defmodule LdHost.RunTest do
                event["payload"]["reasons"] == ["depends on host-word alias"]
            end)
   end
+
+  defp seed_install(dict) do
+    File.mkdir_p!(Path.join(dict, "words"))
+
+    File.write!(
+      Path.join([dict, "words", "INSTALL.fs"]),
+      ": INSTALL ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ;\n"
+    )
+  end
+
+  @zipper_envelope %{
+    "language" => "forth",
+    "program" =>
+      ~s{S" greet.txt" USE-ARTIFACT S" greet.txt" WRITE-FILE DROP RUN-GATES DROP RECEIPT DROP},
+    "artifacts" => %{"greet.txt" => "hello from zipper\n"},
+    "rationale" => "zipper instead of INSTALL"
+  }
+
+  @reuse_install_envelope %{
+    "language" => "forth",
+    "program" => ~s{S" greet.txt" S" greet.txt" INSTALL RUN-GATES DROP RECEIPT DROP},
+    "artifacts" => %{"greet.txt" => "hello from install\n"},
+    "rationale" => "call seeded INSTALL"
+  }
+
+  test "seeded INSTALL rejects WRITE-FILE zipper pre-I/O" do
+    ws = workspace()
+
+    dict =
+      System.tmp_dir!()
+      |> Path.join(
+        "lddictcover-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    seed_install(dict)
+
+    planner = fn _g, _o, _f -> {:ok, @zipper_envelope, %{}} end
+
+    result =
+      Run.run("greet",
+        workspace: ws,
+        contract: contract(),
+        planner_fn: planner,
+        dictionary_dir: dict,
+        max_episodes: 1
+      )
+
+    refute result.success
+    events = File.read!(Path.join(result.run_dir, "events.jsonl"))
+    assert events =~ "critic.rejected"
+    assert events =~ "catalog has INSTALL; use it instead of WRITE-FILE"
+    assert LdHost.Policy.snapshot(ws) == %{}
+  end
+
+  test "follow-up INSTALL after covering miss writes the file" do
+    ws = workspace()
+
+    dict =
+      System.tmp_dir!()
+      |> Path.join(
+        "lddictfollow-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    seed_install(dict)
+
+    planner = fn _g, _o, feedback ->
+      if feedback == "" do
+        {:ok, @zipper_envelope, %{}}
+      else
+        assert feedback =~ "catalog has INSTALL; use it instead of WRITE-FILE"
+        assert LdHost.Policy.snapshot(ws) == %{}
+        {:ok, @reuse_install_envelope, %{}}
+      end
+    end
+
+    result =
+      Run.run("greet",
+        workspace: ws,
+        contract: contract(),
+        planner_fn: planner,
+        dictionary_dir: dict,
+        max_episodes: 3
+      )
+
+    assert result.success
+    assert File.read!(Path.join(ws, "greet.txt")) =~ "hello from install"
+
+    events = File.read!(Path.join(result.run_dir, "events.jsonl"))
+    assert events =~ "critic.rejected"
+    assert events =~ "catalog has INSTALL; use it instead of WRITE-FILE"
+    assert events =~ "critic.accepted"
+  end
 end

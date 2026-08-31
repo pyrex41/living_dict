@@ -58,6 +58,7 @@ defmodule LdHost.Planner do
   Rules:
   - Follow the GOAL. Implement ONE increment — the next missing piece.
   - Install artifacts with: S" key" USE-ARTIFACT S" path" WRITE-FILE
+  - If HARNESS DICTIONARY lists INSTALL, emit INSTALL not the zipper.
   - After sources exist, RUN-GATES. Failed claims are backpressure.
   - FIRST episode, when no approved contract exists: write claims.json —
     {"claims":[{"id","kind":"check","command","timeout_seconds"}]} —

@@ -176,4 +176,49 @@ defmodule LdHost.DictionaryTest do
     refute Dictionary.tautology?(sugar_only)
     refute Dictionary.tautology?([])
   end
+
+  @covering_error "catalog has INSTALL; use it instead of WRITE-FILE"
+
+  test "catalog_pressure rejects WRITE-FILE zipper when INSTALL is in prelude" do
+    env = %{
+      program: ~s{S" greet.txt" USE-ARTIFACT S" greet.txt" WRITE-FILE DROP},
+      artifacts: %{"greet.txt" => "hello"}
+    }
+
+    assert Dictionary.catalog_pressure(["INSTALL"], env) == {:error, @covering_error}
+  end
+
+  test "catalog_pressure allows calling INSTALL instead of the zipper" do
+    env = %{
+      program: ~s{S" greet.txt" S" greet.txt" INSTALL},
+      artifacts: %{"greet.txt" => "hello"}
+    }
+
+    assert Dictionary.catalog_pressure(["INSTALL"], env) == :ok
+  end
+
+  test "catalog_pressure tokenizes envelope.program only, skipping colon bodies" do
+    env = %{
+      program:
+        ~s{: INSTALL ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ; } <>
+          ~s{S" greet.txt" S" greet.txt" INSTALL},
+      artifacts: %{"greet.txt" => "hello"}
+    }
+
+    assert Dictionary.catalog_pressure(["INSTALL"], env) == :ok
+  end
+
+  test "catalog_pressure ignores empty-artifact read-only programs" do
+    env = %{program: "RECEIPT DROP", artifacts: %{}}
+    assert Dictionary.catalog_pressure(["INSTALL"], env) == :ok
+  end
+
+  test "catalog_pressure is a no-op when INSTALL is not in the catalog" do
+    env = %{
+      program: ~s{S" greet.txt" USE-ARTIFACT S" greet.txt" WRITE-FILE DROP},
+      artifacts: %{"greet.txt" => "hello"}
+    }
+
+    assert Dictionary.catalog_pressure([], env) == :ok
+  end
 end
