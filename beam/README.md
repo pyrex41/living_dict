@@ -52,7 +52,7 @@ monotonic sequence, single writer) + `trace.jsonl`.
 | `run.ex` | the kernel loop; duplicate blocking; planner retry w/ backoff |
 | `dictionary.ex` / `contracts.ex` | warm dictionary, in-band contracts, topo-ordered prelude |
 | `space.ex` | Linda tuple space: generation-fenced leases (OTP timers), specificity-ordered handoff, obligation kind accepted |
-| `obligation.ex` / `dispatcher.ex` | Jido agents per obligation, lease heartbeats, deny-by-default gate |
+| `obligation.ex` / `dispatcher.ex` | Jido agents per obligation, lease heartbeats, deny-by-default gate. `hold_ms` skips the planner (`Cmd.sh` probe only). Probe failure acks after bounded `max_attempts` (no expire-and-retake); crash/lease loss expires for sibling retake. Overrides greatness-plan PR6 "expire on probe fail". |
 | `verdict.ex` | preregistered warm-dictionary go/no-go thresholds |
 | `demo.ex` / `bench/polyglot.ex` / `bench/grok_arm.ex` | arms races: vendored eval + Aider Polyglot, grok CLI baseline |
 | `cli.ex` | release entry (`bin/ld_host eval "LdHost.CLI.main_from_env()"`) |

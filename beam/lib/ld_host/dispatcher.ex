@@ -8,10 +8,11 @@ defmodule LdHost.Dispatcher do
     recorded — a denied obligation must not loop forever). The gate
     never widens scope: the run's own Host confines every write to the
     obligation's workspace regardless of what the tuple asks for.
-  - Success or terminal failure acks the lease (the run *finished*;
-    retry policy is the obligation author's concern). A crashed run
-    expires it immediately — the honest signal, and the tuple returns
-    to the bag for another taker.
+  - Success or terminal failure (including a completed negative probe
+    result) acks the lease. Bounded probe retries happen inside the
+    hold, never by expire-and-retake.
+  - A crashed run or lost lease expires immediately — the tuple returns
+    to the bag so a sibling can retake. Stale tokens cannot ack.
   - Lifecycle lands in the orchestrator ledger (trace shape), never in
     any run's events.jsonl: run dirs stay run-owned, the single-writer
     rule never crosses processes.
@@ -41,7 +42,8 @@ defmodule LdHost.Dispatcher do
       worker_id: worker_id,
       run_opts: Keyword.get(opts, :run_opts, []),
       running: %{},
-      idle_waiters: []
+      idle_waiters: [],
+      acked: MapSet.new()
     }
 
     {:ok, spawn_taker(state)}
@@ -54,7 +56,9 @@ defmodule LdHost.Dispatcher do
 
     taker =
       spawn_link(fn ->
-        claim = Space.take(space, %{"kind" => "obligation"}, @lease_ms, worker_id, timeout: :infinity)
+        claim =
+          Space.take(space, %{"kind" => "obligation"}, @lease_ms, worker_id, timeout: :infinity)
+
         send(parent, {:claimed, claim})
       end)
 
@@ -91,12 +95,17 @@ defmodule LdHost.Dispatcher do
 
     case deny_reason(ob) do
       reason when is_binary(reason) ->
-        Space.ack(state.space, claim.token)
+        {_, state} = ack_once(state, claim)
         record(state, "obligation.denied", %{id: ob_id, reason: reason})
         state
 
       nil ->
-        record(state, "obligation.spawned", %{id: ob_id, goal: ob["goal"], workspace: ob["workspace"]})
+        record(state, "obligation.spawned", %{
+          id: ob_id,
+          goal: ob["goal"],
+          workspace: ob["workspace"]
+        })
+
         Progress.broadcast({:obligation, ob_id}, :spawned)
 
         task =
@@ -104,7 +113,7 @@ defmodule LdHost.Dispatcher do
             Obligation.execute(state.space, claim, state.run_opts)
           end)
 
-        put_in(state.running[task.ref], %{claim: claim, id: ob_id})
+        put_in(state.running[task.ref], %{claim: claim, id: ob_id, pid: task.pid})
     end
   end
 
@@ -127,26 +136,21 @@ defmodule LdHost.Dispatcher do
         state
 
       {%{claim: claim, id: ob_id}, running} ->
-        case outcome do
-          {:done, {status, summary}} ->
-            Space.ack(state.space, claim.token)
+        state =
+          case outcome do
+            {:done, {status, summary}} ->
+              # Terminal hold/run result, including probe_failed: ack, never expire.
+              {_, state} = ack_once(state, claim)
+              record(state, "obligation.#{status}", trace_data(ob_id, summary))
+              Progress.broadcast({:obligation, ob_id}, {status, summary})
+              state
 
-            record(state, "obligation.#{status}", %{
-              id: ob_id,
-              success: summary.success,
-              episodes: summary.episodes,
-              judge: summary.judge,
-              tokens: summary.tokens,
-              run_dir: summary.run_dir
-            })
-
-            Progress.broadcast({:obligation, ob_id}, {status, summary})
-
-          {:crashed, reason} ->
-            Space.expire(state.space, claim.token)
-            record(state, "obligation.crashed", %{id: ob_id, reason: inspect(reason, limit: 5)})
-            Progress.broadcast({:obligation, ob_id}, :crashed)
-        end
+            {:crashed, reason} ->
+              Space.expire(state.space, claim.token)
+              record(state, "obligation.crashed", %{id: ob_id, reason: inspect(reason, limit: 5)})
+              Progress.broadcast({:obligation, ob_id}, :crashed)
+              state
+          end
 
         state = %{state | running: running}
 
@@ -159,5 +163,37 @@ defmodule LdHost.Dispatcher do
     end
   end
 
+  defp ack_once(state, claim) do
+    token = claim.token
+
+    if MapSet.member?(state.acked, token) do
+      {false, state}
+    else
+      acked? = Space.ack(state.space, token)
+      {acked?, %{state | acked: MapSet.put(state.acked, token)}}
+    end
+  end
+
   defp record(state, type, data), do: LdHost.Ledger.trace(state.ledger, type, data)
+
+  defp trace_data(ob_id, summary) do
+    %{
+      id: ob_id,
+      success: Map.get(summary, :success),
+      episodes: Map.get(summary, :episodes),
+      judge: Map.get(summary, :judge),
+      tokens: Map.get(summary, :tokens),
+      run_dir: Map.get(summary, :run_dir)
+    }
+    |> maybe_put(:hold_ms, Map.get(summary, :hold_ms))
+    |> maybe_put(:probes, Map.get(summary, :probes))
+    |> maybe_put(:last_probe, Map.get(summary, :last_probe))
+    |> maybe_put(:max_attempts, Map.get(summary, :max_attempts))
+    |> maybe_put(:backoff_ms, Map.get(summary, :backoff_ms))
+    |> maybe_put(:probe_failed, Map.get(summary, :probe_failed))
+    |> maybe_put(:attempt_log, Map.get(summary, :attempt_log))
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end
