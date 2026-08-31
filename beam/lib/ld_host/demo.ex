@@ -19,7 +19,7 @@ defmodule LdHost.Demo do
   stack, arms racing concurrently on separate channels.
   """
 
-  alias LdHost.{Cmd, Dispatcher, Ledger, Policy, Progress, Space, Verdict}
+  alias LdHost.{Cmd, Dispatcher, Ledger, Policy, Progress, Space, Uniqueness, Verdict}
 
   @default_arms ~w(grok cold warm)
 
@@ -228,7 +228,7 @@ defmodule LdHost.Demo do
 
   # ---- summary ----------------------------------------------------------
 
-  defp summarize(out, ledger, tasks, results) do
+  def summarize(out, ledger, tasks, results) do
     cold = results["cold"] || []
     warm = results["warm"] || []
 
@@ -239,7 +239,10 @@ defmodule LdHost.Demo do
         %{measures: measures, allowed: allowed, reasons: reasons}
       end
 
-    summary = %{tasks: Enum.map(tasks, & &1.id), results: results, verdict: verdict}
+    uniqueness = Uniqueness.score(%{tasks: uniqueness_tasks(results)})
+    uniqueness = if uniqueness == %{}, do: nil, else: uniqueness
+
+    summary = %{tasks: Enum.map(tasks, & &1.id), results: results, verdict: verdict, uniqueness: uniqueness}
     File.write!(Path.join(out, "summary.json"), JSON.encode!(summary))
     File.write!(Path.join(out, "summary.md"), render_markdown(tasks, results, verdict))
 
@@ -291,6 +294,19 @@ defmodule LdHost.Demo do
       end
 
     "# Arms race: same goals, hidden judge\n\n" <> header <> divider <> rows <> verdict_md
+  end
+
+  defp uniqueness_tasks(results) do
+    (results["warm"] || results["cold"] || [])
+    |> Enum.map(fn row ->
+      %{
+        id: row[:task] || row["task"],
+        success: row[:success],
+        judge: row[:judge],
+        used_words: row[:used_words] || [],
+        promoted: row[:promoted_words] || []
+      }
+    end)
   end
 
   defp stamp, do: DateTime.utc_now() |> Calendar.strftime("%Y%m%d-%H%M%S")

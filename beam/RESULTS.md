@@ -1,5 +1,9 @@
 # Arms race results
 
+Uniqueness axes (family-transfer, contract-first, replay-without-model,
+wave-speedup, obligation-hold) are the headline for the BEAM catalog OS.
+Terminal-Bench remains Harbor hygiene, not the go/no-go.
+
 ## Aider Polyglot (rust + go + cpp full tracks), 2026-08-27
 
 Tasks from the published Aider Polyglot benchmark (Exercism exercises,
