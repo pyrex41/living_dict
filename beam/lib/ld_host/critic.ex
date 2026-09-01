@@ -67,9 +67,18 @@ defmodule LdHost.Critic do
   or `{:error, reason}` when no critic engine is available.
   """
   def validate(program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys) do
+    validate(program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys, [])
+  end
+
+  @doc """
+  Validate `program` against an optional catalog of already-bound word
+  rows `{name, in, out, effects}` (or vocab tuples). Empty catalog is
+  `validate/5`.
+  """
+  def validate(program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys, catalog) do
     GenServer.call(
       __MODULE__,
-      {:validate, program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys},
+      {:validate, program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys, catalog},
       30_000
     )
   end
@@ -211,15 +220,27 @@ defmodule LdHost.Critic do
     {:reply, {:error, state.error}, state}
   end
 
-  def handle_call({:validate, program, effects, globs, forbidden, artifacts}, _from, %{engine: :beam} = state) do
+  def handle_call({:validate, _p, _e, _g, _f, _a, _c}, _from, %{engine: :none} = state) do
+    {:reply, {:error, state.error}, state}
+  end
+
+  def handle_call({:validate, program, effects, globs, forbidden, artifacts}, from, state) do
+    handle_call({:validate, program, effects, globs, forbidden, artifacts, []}, from, state)
+  end
+
+  def handle_call({:validate, program, effects, globs, forbidden, artifacts, catalog}, _from, %{engine: :beam} = state) do
+    tokens = apply(:kl_validate, :"tokenise-program", [shen_str(program)])
+    rows = shen_catalog(catalog)
+
     result =
-      :kl_validate.validate(
-        shen_str(program),
+      apply(:kl_validate, :"validate-catalog", [
+        tokens,
+        rows,
         shen_strs(effects),
         shen_strs(globs),
         shen_strs(forbidden),
         shen_strs(artifacts)
-      )
+      ])
 
     {:reply, decode_beam(result), state}
   rescue
@@ -229,7 +250,12 @@ defmodule LdHost.Critic do
     kind, val -> {:reply, {:reject, ["critic error: #{kind} #{inspect(val, limit: 3)}"], 0, []}, state}
   end
 
-  def handle_call({:validate, program, effects, globs, forbidden, artifacts}, _from, %{engine: :luerl} = state) do
+  def handle_call({:validate, _p, _e, _g, _f, _a, catalog}, _from, %{engine: engine} = state)
+      when engine in [:luerl, :node] and catalog != [] do
+    {:reply, {:error, "catalog validate requires the beam critic"}, state}
+  end
+
+  def handle_call({:validate, program, effects, globs, forbidden, artifacts, _catalog}, _from, %{engine: :luerl} = state) do
     args = [program, effects, globs, forbidden, artifacts]
 
     case :luerl.call_function([:ld_validate], args, state.lua) do
@@ -240,7 +266,7 @@ defmodule LdHost.Critic do
     e -> {:reply, {:reject, ["critic error: #{Exception.message(e)}"], 0, []}, state}
   end
 
-  def handle_call({:validate, program, effects, globs, forbidden, artifacts}, _from, %{engine: :node} = state) do
+  def handle_call({:validate, program, effects, globs, forbidden, artifacts, _catalog}, _from, %{engine: :node} = state) do
     id = state.next_id
 
     request =
@@ -287,6 +313,38 @@ defmodule LdHost.Critic do
 
   defp shen_str(s), do: {:string, String.to_charlist(s)}
   defp shen_strs(list), do: Enum.map(list, &shen_str/1)
+
+  defp shen_catalog(rows) when is_list(rows) do
+    Enum.flat_map(rows, fn row ->
+      case shen_catalog_row(row) do
+        nil -> []
+        wordrow -> [wordrow]
+      end
+    end)
+  end
+
+  defp shen_catalog(_), do: []
+
+  defp shen_catalog_row({name, _tokens, {ins, outs, effects}, _source})
+       when is_list(ins) and is_list(outs) and is_list(effects) do
+    shen_wordrow(name, length(ins), length(outs), effects)
+  end
+
+  defp shen_catalog_row({name, inn, out, effects})
+       when is_integer(inn) and is_integer(out) and is_list(effects) do
+    shen_wordrow(name, inn, out, effects)
+  end
+
+  defp shen_catalog_row([name, inn, out, effects])
+       when is_integer(inn) and is_integer(out) and is_list(effects) do
+    shen_wordrow(name, inn, out, effects)
+  end
+
+  defp shen_catalog_row(_), do: nil
+
+  defp shen_wordrow(name, inn, out, effects) do
+    [shen_str(to_string(name) |> String.upcase()), inn, out, shen_strs(effects)]
+  end
 
   defp decode_beam([:accept, depth, effects]), do: {:accept, depth, plain_beam(effects)}
 

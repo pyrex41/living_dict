@@ -24,7 +24,8 @@ The trinity, each in its right place:
 goal + observation ──▶ planner (grok-4.6; the ONLY model-facing module)
         │ envelope {program, artifacts, rationale}   fingerprinted; identical
         ▼                                            resubmission is blocked
-   critic.validate  ──reject──▶ errors become next episode's feedback
+   critic.validate(program, catalog)  ──reject──▶ next episode's feedback
+        │ (prelude is bound, never concatenated)
         │ accept (native BEAM call, ~54-157µs)
         ▼
    Forth VM executes host words     ← model switched off; policy-fenced
@@ -39,6 +40,10 @@ goal + observation ──▶ planner (grok-4.6; the ONLY model-facing module)
 
 Every episode lands in a per-run `events.jsonl` (closed kind set,
 monotonic sequence, single writer) + `trace.jsonl`.
+
+The critic validates `envelope.program` against the bound catalog. Colon
+bodies are checked at promotion (`validate/6` of `: NAME (c) body ;`).
+Load requires a parseable `--` contract and does not walk bodies.
 
 ## Modules
 

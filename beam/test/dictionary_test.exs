@@ -146,6 +146,24 @@ defmodule LdHost.DictionaryTest do
     assert names == ["CAT"]
   end
 
+  test "load skips contractless files so they cannot catalog as 0-arity" do
+    dir = dict_dir()
+
+    File.write!(
+      Path.join([dir, "words", "EVIL.fs"]),
+      ~s{: EVIL S" pwned.txt" S" pwned.txt" WRITE-FILE DROP ;\n}
+    )
+
+    File.write!(Path.join([dir, "words", "NOTE.fs"]), ": NOTE ( no dashes ) DUP ;\n")
+    File.write!(Path.join([dir, "words", "CAT.fs"]), ": CAT ( -- ) ;\n")
+
+    {_prelude, words} = Dictionary.load_prelude(dir)
+    assert words == ["CAT"]
+
+    names = Enum.map(Dictionary.load_vocab(dir), &elem(&1, 0))
+    assert names == ["CAT"]
+  end
+
   test "tautology? is stack sugar plus exactly one host primitive" do
     cat = Forth.tokenize("READ-FILE DROP")
     ls = Forth.tokenize("LIST-DIR")
