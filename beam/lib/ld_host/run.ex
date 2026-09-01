@@ -625,12 +625,26 @@ defmodule LdHost.Run do
         failure: state.feedback
       })
 
-      research_observation(
-        state,
-        manifest,
-        episode,
-        state.goal <> "\n\nREPAIR PACKET:\n" <> repair_packet(state)
-      )
+      if state.initial_route == :direct and plan_failure?(state.feedback) do
+        observation =
+          OODA.direct_context(manifest) <>
+            "\nREPAIR PACKET:\n" <> repair_packet(state)
+
+        Ledger.trace(state.ledger, "ooda.repair_context", %{
+          episode: episode,
+          source: "prior bounded source pack",
+          research_skipped: true
+        })
+
+        {:ok, append_harness_context(observation, state), state}
+      else
+        research_observation(
+          state,
+          manifest,
+          episode,
+          state.goal <> "\n\nREPAIR PACKET:\n" <> repair_packet(state)
+        )
+      end
     end
   end
 
@@ -677,6 +691,14 @@ defmodule LdHost.Run do
   defp escalate("medium"), do: "high"
   defp escalate("high"), do: "xhigh"
   defp escalate(_), do: "high"
+
+  defp plan_failure?(feedback) do
+    String.starts_with?(feedback, [
+      "critic rejected the plan:",
+      "envelope invalid:",
+      "identical plan resubmitted"
+    ])
+  end
 
   defp append_harness_context(observation, state) do
     dictionary = Dictionary.load_vocab(state.dictionary_dir) |> Enum.map(&elem(&1, 0))

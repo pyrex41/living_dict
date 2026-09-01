@@ -148,7 +148,12 @@ defmodule LdHost.RunTest do
     assert result.success
     assert result.episodes == 2
     assert result.repair_used
-    assert result.research_rounds == 1
+    assert result.research_rounds == 0
+    assert result.research_tool_calls == 0
+
+    trace = File.read!(Path.join(result.run_dir, "trace.jsonl"))
+    assert trace =~ "ooda.repair_context"
+    assert trace =~ "research_skipped"
   end
 
   test "advisory round trip: failed model check feeds back, next episode self-judges green" do
