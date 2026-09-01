@@ -12,6 +12,36 @@ headline score: historical summaries do not carry the required
 `used_words`/`promoted` fields, and waves or interned objects are not on
 main. Terminal-Bench remains Harbor hygiene, not the go/no-go.
 
+## Bounded OODA canary, 2026-09-01
+
+Same `grok-4.6`, cold isolated workspaces, approved hidden verifiers, three
+serial replicates per arm on parser-02 and graph-08. Auto results are from
+`f1de811`; two fixed-high replicates are from that revision and the first is
+from `368452a` before two auto-only routing fixes. Raw artifacts are under
+`/tmp/ooda-canary-f1de811` and `/tmp/ooda-canary-368452a`.
+
+| task | fixed-high pass | auto pass | median wall, fixed -> auto | median total tokens, fixed -> auto |
+|---|---:|---:|---:|---:|
+| parser-02 | 3/3 | 3/3 | 160.2s -> 30.8s (-80.8%) | 9,823 -> 2,312 (-76.5%) |
+| graph-08 | 3/3 | 3/3 | 78.8s -> 21.0s (-73.4%) | 6,909 -> 3,095 (-55.2%) |
+
+Every final auto row routed direct/low, passed in one model call, and used no
+repair or research. Two discarded tuning canaries were informative rather
+than credited: a five-file graph crossed the initial four-file threshold and
+paid for unnecessary research; after widening that count guard, a low-effort
+plan hit a critic-only Forth error and the repair unnecessarily researched the
+workspace again. The fixes keep small graphs direct under the byte cap and
+reuse the bounded source pack for plan-only repairs.
+
+One investigator-specific Rust `macros` probe used a deliberately broad scope
+over a fresh 14-file exercise. OODA deep research passed the approved Cargo
+contract on its first envelope (4 calls, 6 tools, 7,636 evidence bytes,
+38,690 total tokens, 201.4s). Fixed-high passed after a second episode (2
+calls, 18,523 tokens, 236.6s). Same-model OpenCode passed in 6 steps and 18
+tools (71,418 processed tokens including 37,632 cache reads, 57.8s). Thus the
+research loop is operational and improves first-shot convergence here, but it
+is not a token-efficiency win over fixed-high and remains opt-in.
+
 ## Post-harvest measurement (not yet run)
 
 The 2026-08-31 harvest is a correctness/accounting change, not a claimed
