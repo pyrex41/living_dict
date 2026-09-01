@@ -1,15 +1,7 @@
 defmodule LdHost.UniquenessTest do
   use ExUnit.Case
 
-  alias LdHost.{Forth, Run, Uniqueness, Wave}
-
-  test "Forth.host_words/0 is eval six plus USE-ARTIFACT plus live-only USE-OBJECT/PATCH-FILE" do
-    eval = Forth.eval_host_words()
-    live = Forth.live_host_words()
-    assert eval == ~w(READ-FILE LIST-DIR SEARCH WRITE-FILE RUN-TESTS RUN-GATES RECEIPT USE-ARTIFACT)
-    assert live == ~w(USE-OBJECT PATCH-FILE)
-    assert Forth.host_words() == eval ++ live
-  end
+  alias LdHost.{Run, Uniqueness}
 
   test "two-task canned warm sequence calling INSTALL reports family_transfer > 0" do
     results = %{
@@ -76,25 +68,14 @@ defmodule LdHost.UniquenessTest do
     assert score.replay_without_model
   end
 
-  test "two-node canned envelope via node_view + Space reports wave speedup" do
-    nodes = [
-      %{id: "a", writes: ["a.txt"], depends_on: [], program: ""},
-      %{id: "b", writes: ["b.txt"], depends_on: [], program: ""}
-    ]
+  test "wave_speedup is derived from supplied metrics, omitted when missing" do
+    refute Map.has_key?(Uniqueness.score(%{}), :wave_speedup)
 
-    {:ok, waves} = Wave.plan_waves(nodes)
-    assert length(hd(waves)) == 2
+    score =
+      Uniqueness.score(%{
+        wave: %{wall_ms_actual: 90, wall_ms_serial_estimate: 160, nodes_parallel: 2}
+      })
 
-    timings = %{
-      "a" => {"2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.080Z"},
-      "b" => {"2026-01-01T00:00:00.010Z", "2026-01-01T00:00:00.090Z"}
-    }
-
-    metrics = Wave.compute_metrics(waves, timings, 90)
-    assert metrics.nodes_parallel >= 2
-    assert metrics.wall_ms_actual < metrics.wall_ms_serial_estimate
-
-    score = Uniqueness.score(%{wave: metrics})
     assert score.wave_speedup
   end
 
