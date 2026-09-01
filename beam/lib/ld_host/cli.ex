@@ -15,6 +15,8 @@ defmodule LdHost.CLI do
     * `LD_ALLOW_MODEL_CHECKS` — truthy ("1"/"true") lets model-authored
       check claims execute advisorily when no approved contract exists
     * `LD_DICTIONARY` — dictionary directory for warm-start/promotion
+    * `LD_OODA_MODE` — `off` (default) or opt-in `auto`
+    * `LD_REASONING_EFFORT` — fixed `low`, `medium`, `high`, or `xhigh`
 
   Prints exactly ONE JSON line with the run summary, then halts with an
   HONEST exit code: 0 iff the claims discharged, 1 otherwise. Exit-0
@@ -41,7 +43,9 @@ defmodule LdHost.CLI do
         max_episodes: parse_positive_int(System.get_env("LD_MAX_EPISODES")),
         contract: load_contract(System.get_env("LD_CONTRACT")),
         dictionary_dir: System.get_env("LD_DICTIONARY"),
-        allow_model_checks: parse_truthy(System.get_env("LD_ALLOW_MODEL_CHECKS"))
+        allow_model_checks: parse_truthy(System.get_env("LD_ALLOW_MODEL_CHECKS")),
+        ooda_mode: System.get_env("LD_OODA_MODE"),
+        reasoning_effort: System.get_env("LD_REASONING_EFFORT")
       )
 
     result = LdHost.Run.run(goal, opts)
@@ -54,6 +58,13 @@ defmodule LdHost.CLI do
         model_calls: result.model_calls,
         tokens: result.tokens,
         promoted_words: result.promoted_words,
+        ooda_mode: result.ooda_mode,
+        initial_route: result.initial_route,
+        repair_used: result.repair_used,
+        research_rounds: result.research_rounds,
+        research_tool_calls: result.research_tool_calls,
+        research_evidence_bytes: result.research_evidence_bytes,
+        unresolved_questions: result.unresolved_questions,
         engine: LdHost.Critic.engine(),
         run_dir: result.run_dir
       })
@@ -69,12 +80,24 @@ defmodule LdHost.CLI do
   `mix ld.run`; nil extras are dropped.
   """
   def run_opts(workspace, extras \\ []) do
-    Enum.reduce([:contract, :dictionary_dir, :max_episodes, :run_dir, :allow_model_checks], [workspace: Path.expand(workspace)], fn key, opts ->
-      case Keyword.get(extras, key) do
-        nil -> opts
-        value -> Keyword.put(opts, key, value)
+    Enum.reduce(
+      [
+        :contract,
+        :dictionary_dir,
+        :max_episodes,
+        :run_dir,
+        :allow_model_checks,
+        :ooda_mode,
+        :reasoning_effort
+      ],
+      [workspace: Path.expand(workspace)],
+      fn key, opts ->
+        case Keyword.get(extras, key) do
+          nil -> opts
+          value -> Keyword.put(opts, key, value)
+        end
       end
-    end)
+    )
   end
 
   @doc """

@@ -28,7 +28,15 @@ defmodule LdHost.Forth do
   end
 
   defmodule VM do
-    defstruct stack: [], colon: %{}, host: nil, artifacts: %{}
+    # `catalog_words` is the set of persisted words bound before this VM
+    # started.  `used_words` records actual execution (including nested
+    # colon calls), rather than planner mentions in the submitted source.
+    defstruct stack: [],
+              colon: %{},
+              host: nil,
+              artifacts: %{},
+              catalog_words: MapSet.new(),
+              used_words: []
   end
 
   @host_words ~w(READ-FILE LIST-DIR SEARCH WRITE-FILE RUN-TESTS RUN-GATES RECEIPT USE-ARTIFACT)
@@ -45,7 +53,15 @@ defmodule LdHost.Forth do
         {name, tokens}, acc -> Map.put(acc, String.upcase(name), tokens)
       end)
 
-    %{vm | colon: colon}
+    catalog_words =
+      rows
+      |> Enum.map(fn
+        {name, _tokens, _sig, _source} -> String.upcase(name)
+        {name, _tokens} -> String.upcase(name)
+      end)
+      |> MapSet.new()
+
+    %{vm | colon: colon, catalog_words: catalog_words, used_words: []}
   end
 
   # ---- tokenizer --------------------------------------------------------
@@ -184,7 +200,9 @@ defmodule LdHost.Forth do
   defp exec_word(vm, key, original) do
     cond do
       Map.has_key?(vm.colon, key) ->
-        run_tokens(vm, vm.colon[key])
+        vm
+        |> mark_catalog_use(key)
+        |> run_tokens(vm.colon[key])
 
       key == "USE-ARTIFACT" ->
         {path, vm} = pop_str(vm, "USE-ARTIFACT")
@@ -202,6 +220,14 @@ defmodule LdHost.Forth do
 
       true ->
         raise Error, code: "unknown", message: "unknown word #{original}"
+    end
+  end
+
+  defp mark_catalog_use(%VM{catalog_words: catalog, used_words: used} = vm, key) do
+    if MapSet.member?(catalog, key) and key not in used do
+      %{vm | used_words: used ++ [key]}
+    else
+      vm
     end
   end
 
@@ -288,7 +314,15 @@ defmodule LdHost.Forth do
 
     cond do
       token.kind == :word and String.upcase(token.value) == ";" ->
-        {%{vm | colon: Map.put(vm.colon, name, Enum.reverse(body))}, j + 1}
+        # A plan-local definition shadows a persisted catalog word of the
+        # same name; subsequent calls are not evidence of catalog reuse.
+        vm = %{
+          vm
+          | colon: Map.put(vm.colon, name, Enum.reverse(body)),
+            catalog_words: MapSet.delete(vm.catalog_words, name)
+        }
+
+        {vm, j + 1}
 
       token.kind == :word and String.upcase(token.value) == ":" ->
         raise Error, code: "syntax", message: "nested colon definitions are not supported"

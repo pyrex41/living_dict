@@ -1,7 +1,7 @@
 defmodule LdHost.RunTest do
   use ExUnit.Case
 
-  alias LdHost.Run
+  alias LdHost.{OODA, Run}
 
   defp workspace do
     tmp =
@@ -76,6 +76,79 @@ defmodule LdHost.RunTest do
     assert "gates.measured" in kinds
     refute "dictionary.promoted" in kinds
     assert Enum.map(events, & &1["sequence"]) == Enum.to_list(1..length(events))
+  end
+
+  test "auto OODA uses direct low-effort planning for narrow approved work" do
+    ws = workspace()
+    File.write!(Path.join(ws, "greet.txt"), "old\n")
+
+    planner = fn _goal, observation, _feedback ->
+      assert observation =~ "workspace_manifest"
+      assert observation =~ "greet.txt"
+      {:ok, @good_envelope, %{input_tokens: 1, output_tokens: 1}}
+    end
+
+    result =
+      Run.run("write greeting",
+        workspace: ws,
+        contract: contract(),
+        allowed_globs: ["greet.txt"],
+        planner_fn: planner,
+        ooda_mode: :auto,
+        max_episodes: 3
+      )
+
+    assert result.success
+    assert result.initial_route == :direct
+    refute result.repair_used
+    assert result.research_tool_calls == 0
+  end
+
+  test "auto OODA allows one researched repair then halts the semantic loop" do
+    ws = workspace()
+    File.write!(Path.join(ws, "greet.txt"), "old\n")
+
+    bad = %{
+      "language" => "forth",
+      "program" => "MYSTERY RECEIPT",
+      "artifacts" => %{},
+      "rationale" => "bad"
+    }
+
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    planner = fn _goal, _observation, _feedback ->
+      call = Agent.get_and_update(calls, fn n -> {n, n + 1} end)
+      {:ok, if(call == 0, do: bad, else: @good_envelope), %{input_tokens: 1, output_tokens: 1}}
+    end
+
+    research = fn _goal, _manifest, _opts ->
+      budget = OODA.new_budget()
+
+      {:ok,
+       %{
+         "questions" => [],
+         "findings" => [],
+         "recommended_files" => ["greet.txt"],
+         "uncertainties" => []
+       }, budget, %{model_calls: 0}}
+    end
+
+    result =
+      Run.run("write greeting",
+        workspace: ws,
+        contract: contract(),
+        allowed_globs: ["greet.txt"],
+        planner_fn: planner,
+        research_fn: research,
+        ooda_mode: :auto,
+        max_episodes: 6
+      )
+
+    assert result.success
+    assert result.episodes == 2
+    assert result.repair_used
+    assert result.research_rounds == 1
   end
 
   test "advisory round trip: failed model check feeds back, next episode self-judges green" do
@@ -218,6 +291,11 @@ defmodule LdHost.RunTest do
       )
 
     assert r1.success
+    assert r1.catalog_before == []
+    assert r1.eligible_words == []
+    assert r1.candidate_words == ["INSTALL"]
+    assert r1.used_words == []
+    assert r1.unused_eligible_words == []
 
     # Second run: the plan CALLS the promoted word without defining it.
     ws2 = workspace()
@@ -246,6 +324,10 @@ defmodule LdHost.RunTest do
     assert r2.success
     assert File.read!(Path.join(ws2, "greet.txt")) =~ "hello again"
     assert r2.promoted_words == ["INSTALL"]
+    assert r2.catalog_before == ["INSTALL"]
+    assert r2.eligible_words == ["INSTALL"]
+    assert r2.used_words == ["INSTALL"]
+    assert r2.unused_eligible_words == []
 
     trace_types =
       r2.run_dir
@@ -271,6 +353,53 @@ defmodule LdHost.RunTest do
            )
 
     assert File.read!(Path.join(shared_dict, "promoted.txt")) =~ "INSTALL"
+  end
+
+  test "local shadow of a catalog word is not counted as reuse promotion" do
+    shared_dict =
+      System.tmp_dir!()
+      |> Path.join(
+        "lddictshadow-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    first = workspace()
+
+    assert Run.run("seed",
+             workspace: first,
+             contract: contract(),
+             planner_fn: fn _g, _o, _f ->
+               {:ok, @good_envelope, %{}}
+             end,
+             dictionary_dir: shared_dict,
+             max_episodes: 1
+           ).success
+
+    second = workspace()
+
+    shadow = %{
+      "language" => "forth",
+      "program" =>
+        ~s{: INSTALL ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ; } <>
+          ~s{S" greet.txt" S" greet.txt" INSTALL RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"greet.txt" => "shadowed\n"},
+      "rationale" => "local definition shadows catalog"
+    }
+
+    result =
+      Run.run("shadow",
+        workspace: second,
+        contract: contract(),
+        planner_fn: fn _g, _o, _f ->
+          {:ok, shadow, %{}}
+        end,
+        dictionary_dir: shared_dict,
+        max_episodes: 1
+      )
+
+    # The critic may fail closed on a catalog-name redefinition before any
+    # VM execution; either way it must not become reuse evidence.
+    refute result.success
+    refute File.exists?(Path.join(shared_dict, "promoted.txt"))
   end
 
   test "starved call of a candidate word rejects pre-I/O (the closed type hole)" do
@@ -321,6 +450,7 @@ defmodule LdHost.RunTest do
     assert events =~ "stack underflow at INSTALL"
     refute events =~ "dictionary.promoted"
     refute File.exists?(Path.join(shared_dict, "promoted.txt"))
+    assert r2.critic_covering_rejections == 0
     assert File.read!(Path.join(r2.run_dir, "trace.jsonl")) =~ "dictionary.reuse"
     # No I/O happened: workspace untouched
     assert LdHost.Policy.snapshot(ws2) == %{}
@@ -1010,6 +1140,7 @@ defmodule LdHost.RunTest do
     events = File.read!(Path.join(result.run_dir, "events.jsonl"))
     assert events =~ "critic.rejected"
     assert events =~ "catalog has INSTALL; use it instead of WRITE-FILE"
+    assert result.critic_covering_rejections == 1
     assert LdHost.Policy.snapshot(ws) == %{}
   end
 
@@ -1051,5 +1182,4 @@ defmodule LdHost.RunTest do
     assert events =~ "catalog has INSTALL; use it instead of WRITE-FILE"
     assert events =~ "critic.accepted"
   end
-
 end

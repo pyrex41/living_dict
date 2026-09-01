@@ -30,7 +30,9 @@ defmodule Mix.Tasks.Ld.Polyglot do
           grok_sample: :integer,
           max_episodes: :integer,
           out: :string,
-          bench_root: :string
+          bench_root: :string,
+          ooda: :string,
+          reasoning_effort: :string
         ]
       )
 
@@ -47,6 +49,8 @@ defmodule Mix.Tasks.Ld.Polyglot do
       |> maybe(:max_episodes, opts[:max_episodes])
       |> maybe(:out, opts[:out])
       |> maybe(:bench_root, opts[:bench_root])
+      |> maybe(:ooda_mode, opts[:ooda])
+      |> maybe(:reasoning_effort, opts[:reasoning_effort])
 
     summary = LdHost.Bench.Polyglot.run(langs, poly_opts)
 

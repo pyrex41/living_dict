@@ -1,5 +1,18 @@
 defmodule LdHost.PlannerTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
+
+  test "planner endpoint can be routed through a run-local recorder" do
+    previous = System.get_env("LIVINGDICT_PLANNER_ENDPOINT")
+    System.put_env("LIVINGDICT_PLANNER_ENDPOINT", "http://127.0.0.1:8765/v1/chat/completions")
+
+    on_exit(fn ->
+      if previous,
+        do: System.put_env("LIVINGDICT_PLANNER_ENDPOINT", previous),
+        else: System.delete_env("LIVINGDICT_PLANNER_ENDPOINT")
+    end)
+
+    assert LdHost.Planner.endpoint() == "http://127.0.0.1:8765/v1/chat/completions"
+  end
 
   test "sanitize scrubs invalid utf-8 so JSON encoding cannot reject" do
     dirty = "price: " <> <<0xA3>> <> "10"

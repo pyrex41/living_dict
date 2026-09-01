@@ -170,6 +170,11 @@ defmodule LdHost.Dispatcher do
       episodes: Map.get(summary, :episodes),
       judge: Map.get(summary, :judge),
       tokens: Map.get(summary, :tokens),
+      ooda_mode: Map.get(summary, :ooda_mode),
+      initial_route: Map.get(summary, :initial_route),
+      repair_used: Map.get(summary, :repair_used),
+      research_tool_calls: Map.get(summary, :research_tool_calls),
+      research_evidence_bytes: Map.get(summary, :research_evidence_bytes),
       run_dir: Map.get(summary, :run_dir)
     }
     |> maybe_put(:hold_ms, Map.get(summary, :hold_ms))

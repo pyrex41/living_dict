@@ -1,0 +1,20 @@
+services:
+  llm-flight-recorder:
+    build:
+      context: .
+      dockerfile: tools/llm-flight-recorder/Dockerfile
+    command: ["--listen", "0.0.0.0:8765", "--log", "/logs/llm.jsonl"]
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - type: bind
+        source: ${LIVINGDICT_FLIGHT_LOG_DIR:-/tmp/livingdict-flight-recorder}
+        target: /logs
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"

@@ -13,8 +13,14 @@ defmodule LdHost.Verdict do
   def warm_run_allowed(measures) do
     reasons =
       []
-      |> maybe(measures.success_delta_points < -@max_correctness_loss_points, "correctness loss exceeds threshold")
-      |> maybe(measures.token_reduction_fraction < @min_cost_reduction_fraction, "cost reduction is below threshold")
+      |> maybe(
+        measures.success_delta_points < -@max_correctness_loss_points,
+        "correctness loss exceeds threshold"
+      )
+      |> maybe(
+        measures.token_reduction_fraction < @min_cost_reduction_fraction,
+        "cost reduction is below threshold"
+      )
       |> maybe(measures.policy_violations_increased, "policy violations increased")
       |> maybe(measures.negative_transfer, "negative transfer detected")
 
@@ -34,7 +40,9 @@ defmodule LdHost.Verdict do
     end
 
     tokens = fn results ->
-      Enum.reduce(results, 0, fn r, acc -> acc + r.tokens.input_tokens + r.tokens.output_tokens end)
+      Enum.reduce(results, 0, fn r, acc ->
+        acc + Map.get(r.tokens, :total_tokens, r.tokens.input_tokens + r.tokens.output_tokens)
+      end)
     end
 
     cold_tokens = tokens.(cold_results)

@@ -5,14 +5,34 @@ defmodule LdHost.DemoTest do
 
   test "verdict math: the preregistered thresholds" do
     cold = [
-      %{task: "t1", success: true, tokens: %{input_tokens: 1000, output_tokens: 1000}, policy_violations: 0},
-      %{task: "t2", success: true, tokens: %{input_tokens: 1000, output_tokens: 1000}, policy_violations: 0}
+      %{
+        task: "t1",
+        success: true,
+        tokens: %{input_tokens: 1000, output_tokens: 1000},
+        policy_violations: 0
+      },
+      %{
+        task: "t2",
+        success: true,
+        tokens: %{input_tokens: 1000, output_tokens: 1000},
+        policy_violations: 0
+      }
     ]
 
     # warm: same correctness, 50% cheaper -> GO
     warm = [
-      %{task: "t1", success: true, tokens: %{input_tokens: 500, output_tokens: 500}, policy_violations: 0},
-      %{task: "t2", success: true, tokens: %{input_tokens: 500, output_tokens: 500}, policy_violations: 0}
+      %{
+        task: "t1",
+        success: true,
+        tokens: %{input_tokens: 500, output_tokens: 500},
+        policy_violations: 0
+      },
+      %{
+        task: "t2",
+        success: true,
+        tokens: %{input_tokens: 500, output_tokens: 500},
+        policy_violations: 0
+      }
     ]
 
     measures = Verdict.measures(cold, warm)
@@ -38,10 +58,34 @@ defmodule LdHost.DemoTest do
     assert reasons == ["cost reduction is below threshold"]
   end
 
+  test "verdict prefers provider total tokens including hidden reasoning" do
+    cold = [
+      %{
+        task: "t1",
+        success: true,
+        tokens: %{input_tokens: 100, output_tokens: 100, total_tokens: 1000},
+        policy_violations: 0
+      }
+    ]
+
+    warm = [
+      %{
+        task: "t1",
+        success: true,
+        tokens: %{input_tokens: 100, output_tokens: 100, total_tokens: 500},
+        policy_violations: 0
+      }
+    ]
+
+    assert Verdict.measures(cold, warm).token_reduction_fraction == 0.5
+  end
+
   test "summarize emits uniqueness beside warm_run_allowed and does not gate" do
     out =
       System.tmp_dir!()
-      |> Path.join("lddemo-uniq-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+      |> Path.join(
+        "lddemo-uniq-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
 
     File.mkdir_p!(out)
     {:ok, ledger} = Ledger.start_link(Path.join(out, "orchestrator"))
@@ -50,8 +94,20 @@ defmodule LdHost.DemoTest do
 
     results = %{
       "cold" => [
-        %{task: "t1", success: true, tokens: %{input_tokens: 1000, output_tokens: 1000}, policy_violations: 0, model_calls: 1},
-        %{task: "t2", success: true, tokens: %{input_tokens: 1000, output_tokens: 1000}, policy_violations: 0, model_calls: 1}
+        %{
+          task: "t1",
+          success: true,
+          tokens: %{input_tokens: 1000, output_tokens: 1000},
+          policy_violations: 0,
+          model_calls: 1
+        },
+        %{
+          task: "t2",
+          success: true,
+          tokens: %{input_tokens: 1000, output_tokens: 1000},
+          policy_violations: 0,
+          model_calls: 1
+        }
       ],
       "warm" => [
         %{
@@ -94,7 +150,9 @@ defmodule LdHost.DemoTest do
   test "summarize omits uniqueness axes when live rows lack used_words/promoted/judge" do
     out =
       System.tmp_dir!()
-      |> Path.join("lddemo-omit-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+      |> Path.join(
+        "lddemo-omit-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
 
     File.mkdir_p!(out)
     {:ok, ledger} = Ledger.start_link(Path.join(out, "orchestrator"))
@@ -103,10 +161,22 @@ defmodule LdHost.DemoTest do
 
     results = %{
       "cold" => [
-        %{task: "t1", success: true, tokens: %{input_tokens: 1000, output_tokens: 1000}, policy_violations: 0, model_calls: 1}
+        %{
+          task: "t1",
+          success: true,
+          tokens: %{input_tokens: 1000, output_tokens: 1000},
+          policy_violations: 0,
+          model_calls: 1
+        }
       ],
       "warm" => [
-        %{task: "t1", success: true, tokens: %{input_tokens: 400, output_tokens: 400}, policy_violations: 0, model_calls: 1}
+        %{
+          task: "t1",
+          success: true,
+          tokens: %{input_tokens: 400, output_tokens: 400},
+          policy_violations: 0,
+          model_calls: 1
+        }
       ]
     }
 
@@ -120,6 +190,33 @@ defmodule LdHost.DemoTest do
     refute uniqueness["contract_first"] == 0.0
   end
 
+  test "policy accounting ignores host-authorized claims bookkeeping" do
+    root =
+      System.tmp_dir!()
+      |> Path.join(
+        "lddemo-policy-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    task_dir = Path.join(root, "task")
+    repo = Path.join(task_dir, "repo")
+    ws = Path.join(root, "workspace")
+    File.mkdir_p!(repo)
+    File.mkdir_p!(ws)
+    File.write!(Path.join(repo, "src.py"), "seed\n")
+    File.cp_r!(repo, ws)
+
+    # Both files are produced by the normal harness flow; only rogue.py is
+    # an actual out-of-policy product change.
+    File.write!(Path.join(ws, "TASK.md"), "goal\n")
+    File.write!(Path.join(ws, "claims.json"), ~s({"claims": []}))
+    File.write!(Path.join(ws, "rogue.py"), "unexpected\n")
+
+    task = %{dir: task_dir, allowed_globs: ["src.py"], forbidden_globs: []}
+    assert Demo.policy_violation_count(ws, task) == 1
+
+    File.rm_rf!(root)
+  end
+
   @tag :e2e
   test "demo end-to-end on config-01 with canned arms (no model)" do
     # The full demo needs planner credentials + grok; covered manually.
@@ -127,7 +224,11 @@ defmodule LdHost.DemoTest do
     # oracle solution instead.
     repo = LdHost.Critic.repo_root()
     task_dir = Path.join([repo, "eval", "tasks", "config-01"])
-    ws = System.tmp_dir!() |> Path.join("lddemo-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+
+    ws =
+      System.tmp_dir!()
+      |> Path.join("lddemo-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+
     File.cp_r!(Path.join(task_dir, "repo"), ws)
 
     oracle = Path.join([task_dir, "protected", "oracle", "files"])
@@ -143,6 +244,8 @@ defmodule LdHost.DemoTest do
         ~s{! echo "$out" | grep -q '"passed": false'}
 
     result = LdHost.Cmd.sh(check, ws, 60_000)
-    assert result.returncode == 0, "oracle solution must pass its own hidden verifier: #{result.output}"
+
+    assert result.returncode == 0,
+           "oracle solution must pass its own hidden verifier: #{result.output}"
   end
 end

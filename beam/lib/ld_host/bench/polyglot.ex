@@ -44,14 +44,16 @@ defmodule LdHost.Bench.Polyglot do
   """
   def tasks(lang, bench_root \\ nil) do
     unless lang in @languages do
-      raise ArgumentError, "unsupported polyglot language #{inspect(lang)} (want one of #{Enum.join(@languages, ", ")})"
+      raise ArgumentError,
+            "unsupported polyglot language #{inspect(lang)} (want one of #{Enum.join(@languages, ", ")})"
     end
 
     root = bench_root || default_root()
     practice = Path.join([root, lang, "exercises", "practice"])
 
     unless File.dir?(practice) do
-      raise ArgumentError, "polyglot benchmark not found at #{practice} — clone Aider-AI/polyglot-benchmark there"
+      raise ArgumentError,
+            "polyglot benchmark not found at #{practice} — clone Aider-AI/polyglot-benchmark there"
     end
 
     cfg = lang_config(lang)
@@ -185,6 +187,11 @@ defmodule LdHost.Bench.Polyglot do
     serial? = Keyword.get(opts, :serial, false)
     max_episodes = Keyword.get(opts, :max_episodes, 4)
 
+    run_opts =
+      [max_episodes: max_episodes]
+      |> maybe_opt(:ooda_mode, Keyword.get(opts, :ooda_mode))
+      |> maybe_opt(:reasoning_effort, Keyword.get(opts, :reasoning_effort))
+
     File.mkdir_p!(out)
 
     # Same guard as the demo: refresh shared planner credentials once,
@@ -200,7 +207,7 @@ defmodule LdHost.Bench.Polyglot do
     {:ok, space} = Space.start_link(record: Ledger.emitter(ledger))
 
     {:ok, _dispatcher} =
-      Dispatcher.start_link(space: space, ledger: ledger, run_opts: [max_episodes: max_episodes])
+      Dispatcher.start_link(space: space, ledger: ledger, run_opts: run_opts)
 
     results_by_lang =
       Map.new(langs, fn lang ->
@@ -299,10 +306,47 @@ defmodule LdHost.Bench.Polyglot do
         run_dir: summary && summary.run_dir
       }
 
+      result = Map.merge(result, summary_evidence(summary))
+
       Ledger.trace(ctx.ledger, "polyglot.arm_result", result)
       result
     end)
   end
+
+  # Runtime evidence is optional: rows from an unreachable planner do not
+  # claim that an empty catalog or zero invocations were observed.
+  defp summary_evidence(summary) when is_map(summary) do
+    [
+      :catalog_before,
+      :eligible_words,
+      :used_words,
+      :candidate_words,
+      :promoted_words,
+      :unused_eligible_words,
+      :critic_covering_rejections,
+      :judge,
+      :ooda_mode,
+      :initial_route,
+      :repair_used,
+      :research_rounds,
+      :research_tool_calls,
+      :research_evidence_bytes,
+      :unresolved_questions
+    ]
+    |> Enum.reduce(%{}, fn key, acc ->
+      value = Map.get(summary, key)
+
+      if Map.has_key?(summary, key) and
+           not (key == :judge and value in [nil, "unknown", "no gates measured"]),
+         do: Map.put(acc, key, value),
+         else: acc
+    end)
+  end
+
+  defp summary_evidence(_), do: %{}
+
+  defp maybe_opt(opts, _key, nil), do: opts
+  defp maybe_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp seed(out, arm, task) do
     # task.id is "<lang>/<slug>", so this lands at
@@ -316,7 +360,8 @@ defmodule LdHost.Bench.Polyglot do
 
   defp await_obligation(ob_id) do
     receive do
-      {:ld_progress, {:obligation, ^ob_id}, {status, summary}} when status in [:completed, :failed] ->
+      {:ld_progress, {:obligation, ^ob_id}, {status, summary}}
+      when status in [:completed, :failed] ->
         summary
 
       {:ld_progress, {:obligation, ^ob_id}, :crashed} ->
@@ -394,7 +439,11 @@ defmodule LdHost.Bench.Polyglot do
           |> Enum.uniq()
           |> Enum.sort()
 
-        header = "| arm | " <> Enum.map_join(task_ids, " | ", &Path.basename/1) <> " | tokens (in/out) | model calls |\n"
+        header =
+          "| arm | " <>
+            Enum.map_join(task_ids, " | ", &Path.basename/1) <>
+            " | tokens (in/out) | model calls |\n"
+
         divider = "|---|" <> String.duplicate("---|", length(task_ids) + 2) <> "\n"
 
         rows =

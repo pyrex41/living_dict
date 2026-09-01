@@ -37,6 +37,8 @@ defmodule LdHost.Obligation do
         |> maybe(:allowed_globs, ob["allowed_globs"])
         |> maybe(:forbidden_globs, forbidden_of(ob))
         |> maybe(:allow_model_checks, ob["allow_model_checks"])
+        |> maybe(:ooda_mode, ob["ooda_mode"])
+        |> maybe(:reasoning_effort, ob["reasoning_effort"])
         |> Keyword.merge(extra)
 
       summary = LdHost.Run.run(goal, opts)

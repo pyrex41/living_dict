@@ -102,4 +102,26 @@ defmodule LdHost.ForthTest do
     assert result.stack == [5, 5]
     assert Forth.defined_names(result) == ["TWICE"]
   end
+
+  test "records actual persisted-word invocations, including nested calls" do
+    tokens = Forth.tokenize("DUP")
+    row = {"TWICE", tokens, {["n"], ["n", "n"], []}, ": TWICE ( n -- n n ) DUP ;"}
+    vm = Forth.bind_vocab(vm(), [row])
+
+    result = Forth.interpret(vm, "5 TWICE TWICE")
+
+    assert result.used_words == ["TWICE"]
+    assert result.catalog_words == MapSet.new(["TWICE"])
+  end
+
+  test "does not count planner-local definitions as catalog use" do
+    result = Forth.interpret(vm(), ": LOCAL DUP ; 5 LOCAL")
+    assert result.used_words == []
+  end
+
+  test "a local definition shadows a persisted name for usage accounting" do
+    row = {"LOCAL", Forth.tokenize("DUP"), {["n"], ["n"], []}, ": LOCAL ( n -- n ) DUP ;"}
+    result = Forth.interpret(Forth.bind_vocab(vm(), [row]), ": LOCAL DROP ; 5 LOCAL")
+    assert result.used_words == []
+  end
 end

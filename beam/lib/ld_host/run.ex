@@ -11,7 +11,18 @@ defmodule LdHost.Run do
   "model-authored claims" loudly.
   """
 
-  alias LdHost.{Critic, Contracts, Dictionary, Envelope, Forth, Gates, Host, Ledger}
+  alias LdHost.{
+    Critic,
+    Contracts,
+    Dictionary,
+    Envelope,
+    Forth,
+    Gates,
+    Host,
+    Ledger,
+    OODA,
+    Research
+  }
 
   @default_max_episodes 6
 
@@ -24,7 +35,13 @@ defmodule LdHost.Run do
     dictionary_dir = Keyword.get(opts, :dictionary_dir, Path.join(run_dir, "dictionary"))
     max_episodes = Keyword.get(opts, :max_episodes, @default_max_episodes)
     contract = normalize_contract(Keyword.get(opts, :contract))
-    planner_fn = Keyword.get(opts, :planner_fn, &default_planner/3)
+    planner_fn = Keyword.get(opts, :planner_fn)
+    ooda_mode = normalize_ooda(Keyword.get(opts, :ooda_mode, :off))
+    reasoning_effort = normalize_effort(Keyword.get(opts, :reasoning_effort))
+
+    if ooda_mode == :auto and reasoning_effort do
+      raise ArgumentError, "ooda auto conflicts with fixed reasoning_effort"
+    end
 
     {:ok, ledger} = Ledger.start_link(run_dir)
 
@@ -37,6 +54,10 @@ defmodule LdHost.Run do
     end
 
     {prelude, prelude_words} = Dictionary.load_prelude(dictionary_dir)
+    # Only contract-valid rows are actually bound into the VM.  Keep this
+    # separate from the source prelude names so eligibility never overstates
+    # what the runtime could call.
+    catalog_before = Dictionary.load_vocab(dictionary_dir) |> Enum.map(&elem(&1, 0))
 
     state = %{
       goal: goal,
@@ -47,6 +68,15 @@ defmodule LdHost.Run do
       contract: contract,
       allow_model_checks: Keyword.get(opts, :allow_model_checks, false),
       planner_fn: planner_fn,
+      research_fn: Keyword.get(opts, :research_fn, &default_research/3),
+      ooda_mode: ooda_mode,
+      current_effort: reasoning_effort,
+      initial_route: if(ooda_mode == :auto, do: nil, else: :fixed),
+      repair_used: false,
+      research_rounds: 0,
+      research_tool_calls: 0,
+      research_evidence_bytes: 0,
+      unresolved_questions: [],
       prelude: prelude,
       prelude_words: prelude_words,
       allowed_effects: Keyword.get(opts, :allowed_effects, ["read", "write", "exec"]),
@@ -61,25 +91,68 @@ defmodule LdHost.Run do
       seen: MapSet.new(),
       feedback: "",
       last_report: nil,
+      last_plan: nil,
       reused_names: [],
+      catalog_before: catalog_before,
+      eligible_words: catalog_before,
+      used_words: [],
+      used_words_known: false,
+      used_words_complete: true,
+      candidate_words: [],
+      covering_rejections: 0,
       promoted_words: [],
-      tokens: %{input_tokens: 0, output_tokens: 0},
+      tokens: %{
+        input_tokens: 0,
+        output_tokens: 0,
+        reasoning_tokens: 0,
+        cached_tokens: 0,
+        total_tokens: 0
+      },
       model_calls: 0
     }
 
-    result = episodes(state, 1, max_episodes)
+    episode_result = episodes(state, 1, max_episodes)
 
-    %{
-      success: match?({:ok, _}, result),
-      episodes: elem(result, 1).episode,
-      report: elem(result, 1).last_report,
-      judge: judge_label(elem(result, 1).last_report),
-      tokens: elem(result, 1).tokens,
-      model_calls: elem(result, 1).model_calls,
+    result = %{
+      success: match?({:ok, _}, episode_result),
+      episodes: elem(episode_result, 1).episode,
+      report: elem(episode_result, 1).last_report,
+      judge: judge_label(elem(episode_result, 1).last_report),
+      tokens: elem(episode_result, 1).tokens,
+      model_calls: elem(episode_result, 1).model_calls,
+      ooda_mode: elem(episode_result, 1).ooda_mode,
+      initial_route: elem(episode_result, 1).initial_route,
+      repair_used: elem(episode_result, 1).repair_used,
+      research_rounds: elem(episode_result, 1).research_rounds,
+      research_tool_calls: elem(episode_result, 1).research_tool_calls,
+      research_evidence_bytes: elem(episode_result, 1).research_evidence_bytes,
+      unresolved_questions: elem(episode_result, 1).unresolved_questions,
       # Reuse-proven this run, not first persist (candidates stay off this list).
-      promoted_words: elem(result, 1).promoted_words,
+      promoted_words: elem(episode_result, 1).promoted_words,
       run_dir: run_dir
     }
+
+    evidence = %{
+      catalog_before: elem(episode_result, 1).catalog_before,
+      eligible_words: elem(episode_result, 1).eligible_words,
+      candidate_words: elem(episode_result, 1).candidate_words,
+      promoted_words: elem(episode_result, 1).promoted_words,
+      critic_covering_rejections: elem(episode_result, 1).covering_rejections
+    }
+
+    evidence =
+      if elem(episode_result, 1).used_words_known and elem(episode_result, 1).used_words_complete do
+        used = elem(episode_result, 1).used_words
+
+        Map.merge(evidence, %{
+          used_words: used,
+          unused_eligible_words: evidence.eligible_words -- used
+        })
+      else
+        evidence
+      end
+
+    Map.merge(result, evidence)
   end
 
   defp episodes(state, episode, max) when episode > max do
@@ -87,37 +160,59 @@ defmodule LdHost.Run do
   end
 
   defp episodes(state, episode, max) do
-    state = Map.put(state, :episode, episode)
+    if state.ooda_mode == :auto and episode > 2 do
+      Ledger.trace(state.ledger, "ooda.halt_blocked", %{
+        reason: "semantic repair budget exhausted"
+      })
 
-    case run_episode(state, episode) do
-      {:success, state} -> {:ok, Map.put(state, :episode, episode)}
-      {:continue, state} -> episodes(state, episode + 1, max)
-      {:halt, state} -> {:failed, Map.put(state, :episode, episode)}
+      {:failed, Map.put(state, :episode, episode - 1)}
+    else
+      state = Map.put(state, :episode, episode)
+
+      case run_episode(state, episode) do
+        {:success, state} -> {:ok, Map.put(state, :episode, episode)}
+        {:continue, state} -> episodes(state, episode + 1, max)
+        {:halt, state} -> {:failed, Map.put(state, :episode, episode)}
+      end
     end
   end
 
   defp run_episode(state, episode) do
-    observation = observe(state)
-
-    case plan_with_retry(state, observation, 3) do
-      {:error, reason} ->
-        Ledger.trace(state.ledger, "planner.error", %{reason: inspect(reason)})
+    case prepare_observation(state, episode) do
+      {:error, reason, state} ->
+        Ledger.trace(state.ledger, "ooda.research_failed", %{episode: episode, reason: reason})
         {:halt, state}
 
-      {:ok, raw_envelope, telemetry} ->
-        state = record_model_call(state, telemetry)
-
-        case Envelope.parse(raw_envelope) do
+      {:ok, observation, state} ->
+        case plan_with_retry(state, observation, 3) do
           {:error, reason} ->
-            {:continue, feedback(state, "envelope invalid: #{reason}")}
+            Ledger.trace(state.ledger, "planner.error", %{reason: inspect(reason)})
+            {:halt, state}
 
-          {:ok, envelope} ->
-            plan_episode(state, episode, envelope)
+          {:ok, raw_envelope, telemetry} ->
+            state = record_model_call(state, telemetry)
+
+            case Envelope.parse(raw_envelope) do
+              {:error, reason} ->
+                {:continue, feedback(state, "envelope invalid: #{reason}")}
+
+              {:ok, envelope} ->
+                plan_episode(state, episode, envelope)
+            end
         end
     end
   end
 
   defp plan_episode(state, episode, envelope) do
+    state = %{
+      state
+      | last_plan: %{
+          program: envelope.program,
+          artifacts: envelope.artifacts,
+          rationale: envelope.rationale
+        }
+    }
+
     fingerprint = Envelope.fingerprint(envelope)
 
     if MapSet.member?(state.seen, fingerprint) do
@@ -136,7 +231,11 @@ defmodule LdHost.Run do
       reused = Dictionary.used_names(envelope.program, state.prelude_words)
 
       Enum.each(reused, fn name ->
-        Ledger.trace(state.ledger, "dictionary.reuse", %{word: name, version: 1})
+        Ledger.trace(state.ledger, "dictionary.reuse_intent", %{
+          word: name,
+          version: 1,
+          episode: episode
+        })
       end)
 
       state = %{state | seen: MapSet.put(state.seen, fingerprint), reused_names: reused}
@@ -156,6 +255,12 @@ defmodule LdHost.Run do
             Ledger.commit(state.ledger, "critic.rejected", %{episode: episode, errors: errors})
 
           Ledger.trace(state.ledger, "preflight.rejected", %{errors: errors})
+
+          state =
+            if covering_rejection?(message),
+              do: %{state | covering_rejections: state.covering_rejections + 1},
+              else: state
+
           {:continue, feedback(state, "critic rejected the plan:\n" <> message)}
 
         :ok ->
@@ -213,18 +318,32 @@ defmodule LdHost.Run do
         receipt_path: Path.join(state.run_dir, "receipt.json")
       )
 
+    vocab = Dictionary.load_vocab(state.dictionary_dir)
+
     vm =
       %Forth.VM{host: host, artifacts: envelope.artifacts}
-      |> Forth.bind_vocab(Dictionary.load_vocab(state.dictionary_dir))
+      |> Forth.bind_vocab(vocab)
 
     Ledger.trace(state.ledger, "execution.program", %{program: envelope.program})
 
     case interpret(vm, envelope.program) do
       {:trap, code, message} ->
         Ledger.trace(state.ledger, "execution.trap", %{code: code, message: message})
+        # The VM raises without returning its partial state.  Mark aggregate
+        # invocation evidence incomplete so a later successful episode cannot
+        # be mistaken for a complete run-wide trace.
+        state = %{state | used_words_complete: false}
         {:continue, feedback(state, "execution trap [#{code}]: #{message}")}
 
       {:ok, vm} ->
+        Enum.each(vm.used_words, fn name ->
+          Ledger.trace(state.ledger, "dictionary.reuse", %{
+            word: name,
+            version: 1,
+            episode: episode
+          })
+        end)
+
         {:ok, _} =
           Ledger.commit(state.ledger, "artifacts.applied", %{
             episode: episode,
@@ -240,7 +359,13 @@ defmodule LdHost.Run do
             reason: report[:reason]
           })
 
-        state = %{state | last_report: report}
+        state = %{
+          state
+          | last_report: report,
+            used_words: Enum.uniq(state.used_words ++ vm.used_words),
+            used_words_known: true
+        }
+
         state = promote(state, episode, vm, envelope.program, report)
 
         if report.ok == true do
@@ -320,6 +445,11 @@ defmodule LdHost.Run do
 
     written = Dictionary.save_words(state.dictionary_dir, Enum.reverse(entries))
 
+    state = %{
+      state
+      | candidate_words: Enum.uniq(state.candidate_words ++ Enum.map(written, &elem(&1, 0)))
+    }
+
     Enum.each(written, fn {name, sha} ->
       Ledger.trace(state.ledger, "dictionary.candidate", %{
         word: name,
@@ -365,8 +495,11 @@ defmodule LdHost.Run do
     end)
 
     # Skip tautologies even if a legacy .fs was seeded: alias reuse is not promotion.
+    # Promotion requires an actual invocation of the currently bound
+    # persisted body.  Planner-text mentions (including a local definition
+    # that shadows a catalog name) are not reuse evidence.
     reusable =
-      Enum.filter(state.reused_names, fn name ->
+      Enum.filter(vm.used_words, fn name ->
         case vm.colon[name] do
           nil -> false
           tokens -> not Dictionary.tautology?(tokens)
@@ -451,9 +584,126 @@ defmodule LdHost.Run do
 
   defp refers_to_banned?(_, _), do: false
 
-
   @observe_file_cap 8_000
   @observe_total_cap 60_000
+
+  defp prepare_observation(%{ooda_mode: :off} = state, _episode),
+    do: {:ok, observe(state), state}
+
+  defp prepare_observation(%{ooda_mode: :auto} = state, episode) do
+    manifest =
+      OODA.manifest(state.workspace,
+        allowed_globs: state.allowed_globs,
+        approved_contract: state.contract != nil
+      )
+
+    if episode == 1 do
+      decision = OODA.orient(manifest)
+
+      Ledger.trace(state.ledger, "ooda.oriented", %{
+        episode: episode,
+        route: decision.route,
+        reasoning_effort: decision.effort,
+        reasons: decision.reasons,
+        file_count: manifest.file_count,
+        total_bytes: manifest.total_bytes
+      })
+
+      state = %{state | initial_route: decision.route, current_effort: decision.effort}
+
+      case decision.route do
+        :direct -> {:ok, append_harness_context(OODA.direct_context(manifest), state), state}
+        _ -> research_observation(state, manifest, episode, state.goal)
+      end
+    else
+      effort = escalate(state.current_effort)
+      state = %{state | repair_used: true, current_effort: effort}
+
+      Ledger.trace(state.ledger, "ooda.repair", %{
+        episode: episode,
+        reasoning_effort: effort,
+        failure: state.feedback
+      })
+
+      research_observation(
+        state,
+        manifest,
+        episode,
+        state.goal <> "\n\nREPAIR PACKET:\n" <> repair_packet(state)
+      )
+    end
+  end
+
+  defp research_observation(state, manifest, episode, research_goal) do
+    case state.research_fn.(research_goal, manifest,
+           run_id: Path.basename(state.run_dir),
+           emit: fn type, data ->
+             Ledger.trace(state.ledger, type, Map.put(data, :episode, episode))
+           end
+         ) do
+      {:ok, brief, budget, telemetry} ->
+        state = record_model_call(state, telemetry)
+        entries = OODA.selected_sources(manifest, brief)
+        unresolved = brief["uncertainties"] || []
+        limits = OODA.limits()
+        calls = limits.tool_calls - budget.calls_left
+        bytes = limits.evidence_bytes - budget.bytes_left
+
+        Ledger.trace(state.ledger, "ooda.research_brief", %{
+          episode: episode,
+          questions: brief["questions"] || [],
+          findings: length(brief["findings"] || []),
+          uncertainties: unresolved,
+          tool_calls: calls,
+          evidence_bytes: bytes
+        })
+
+        state = %{
+          state
+          | research_rounds: state.research_rounds + 1,
+            research_tool_calls: state.research_tool_calls + calls,
+            research_evidence_bytes: state.research_evidence_bytes + bytes,
+            unresolved_questions: Enum.uniq(state.unresolved_questions ++ unresolved)
+        }
+
+        {:ok, append_harness_context(OODA.context(manifest, brief, entries), state), state}
+
+      {:error, reason} ->
+        {:error, to_string(reason), state}
+    end
+  end
+
+  defp escalate("low"), do: "medium"
+  defp escalate("medium"), do: "high"
+  defp escalate("high"), do: "xhigh"
+  defp escalate(_), do: "high"
+
+  defp append_harness_context(observation, state) do
+    dictionary = Dictionary.load_vocab(state.dictionary_dir) |> Enum.map(&elem(&1, 0))
+
+    observation <>
+      "\nHARNESS CONTEXT:\n" <>
+      JSON.encode!(%{
+        approved_contract: state.contract != nil,
+        dictionary: dictionary,
+        feedback: state.feedback
+      })
+  end
+
+  defp repair_packet(state) do
+    encoded =
+      JSON.encode!(%{
+        failure: state.feedback,
+        prior_plan: state.last_plan,
+        last_gates: state.last_report && scrub(state.last_report)
+      })
+
+    if byte_size(encoded) <= 32_000,
+      do: encoded,
+      else:
+        String.replace_invalid(binary_part(encoded, 0, 32_000)) <>
+          "\n<<repair packet truncated>>"
+  end
 
   defp observe(state) do
     names =
@@ -541,6 +791,11 @@ defmodule LdHost.Run do
 
   defp feedback(state, text), do: %{state | feedback: text}
 
+  defp covering_rejection?(message),
+    do:
+      is_binary(message) and
+        String.contains?(message, "catalog has INSTALL; use it instead of WRITE-FILE")
+
   defp record_model_call(state, telemetry) do
     Ledger.trace(state.ledger, "llm.response", telemetry)
 
@@ -550,17 +805,33 @@ defmodule LdHost.Run do
       state
     else
       {:ok, _} =
-        Ledger.commit(state.ledger, "budget.consumed", Map.put(telemetry, :episode, state.episode))
+        Ledger.commit(
+          state.ledger,
+          "budget.consumed",
+          Map.put(telemetry, :episode, state.episode)
+        )
 
       %{
         state
         | model_calls: state.model_calls + calls,
-          tokens: %{
-            input_tokens: state.tokens.input_tokens + (telemetry[:input_tokens] || 0),
-            output_tokens: state.tokens.output_tokens + (telemetry[:output_tokens] || 0)
-          }
+          tokens: add_token_usage(state.tokens, telemetry)
       }
     end
+  end
+
+  defp add_token_usage(tokens, telemetry) do
+    input = telemetry[:input_tokens] || 0
+    output = telemetry[:output_tokens] || 0
+    reasoning = telemetry[:reasoning_tokens] || 0
+    total = telemetry[:total_tokens] || input + output + reasoning
+
+    %{
+      input_tokens: tokens.input_tokens + input,
+      output_tokens: tokens.output_tokens + output,
+      reasoning_tokens: tokens.reasoning_tokens + reasoning,
+      cached_tokens: tokens.cached_tokens + (telemetry[:cached_tokens] || 0),
+      total_tokens: tokens.total_tokens + total
+    }
   end
 
   # Transient transport failures (timeouts, resets) must not kill a run:
@@ -568,7 +839,7 @@ defmodule LdHost.Run do
   defp plan_with_retry(state, observation, attempts) do
     result =
       try do
-        state.planner_fn.(state.goal, observation, state.feedback)
+        invoke_planner(state, observation)
       rescue
         # A raising planner (encoding, transport internals) must become a
         # retryable error, not instant run death.
@@ -590,12 +861,36 @@ defmodule LdHost.Run do
     end
   end
 
-  defp default_planner(goal, observation, feedback) do
-    observation =
-      if feedback == "", do: observation, else: observation <> "\nFEEDBACK:\n" <> feedback
+  defp invoke_planner(%{planner_fn: planner} = state, observation) when is_function(planner, 3),
+    do: planner.(state.goal, observation, state.feedback)
 
-    LdHost.Planner.plan(goal, observation)
+  defp invoke_planner(state, observation) do
+    observation =
+      if state.feedback == "",
+        do: observation,
+        else: observation <> "\nFEEDBACK:\n" <> state.feedback
+
+    LdHost.Planner.plan(state.goal, observation,
+      reasoning_effort: state.current_effort,
+      cache_key: Path.basename(state.run_dir)
+    )
   end
+
+  defp default_research(goal, manifest, opts), do: Research.run(goal, manifest, opts)
+
+  defp normalize_ooda(value) when value in [:auto, "auto"], do: :auto
+  defp normalize_ooda(value) when value in [:off, "off", nil], do: :off
+  defp normalize_ooda(value), do: raise(ArgumentError, "invalid ooda mode: #{inspect(value)}")
+
+  defp normalize_effort(value) when value in ~w(low medium high xhigh), do: value
+
+  defp normalize_effort(value) when value in [:low, :medium, :high, :xhigh],
+    do: Atom.to_string(value)
+
+  defp normalize_effort(nil), do: nil
+
+  defp normalize_effort(value),
+    do: raise(ArgumentError, "invalid reasoning effort: #{inspect(value)}")
 
   defp normalize_contract(nil), do: nil
 

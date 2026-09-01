@@ -1,8 +1,52 @@
 # Arms race results
 
+The published campaign numbers below are pre-harvest results: these runs
+landed 2026-08-26--28, while the dictionary-correctness harvest landed
+2026-08-31. They therefore do **not** measure, or receive credit for, the
+harvested A--I ideas. In particular, do not attribute the Polyglot 96.8%
+or Terminal-Bench v5 8/15 figures to those changes.
+
 Uniqueness axes (family-transfer, contract-first, replay-without-model,
-wave-speedup, obligation-hold) are the headline for the BEAM catalog OS.
-Terminal-Bench remains Harbor hygiene, not the go/no-go.
+wave-speedup, obligation-hold) remain observational instrumentation, not a
+headline score: historical summaries do not carry the required
+`used_words`/`promoted` fields, and waves or interned objects are not on
+main. Terminal-Bench remains Harbor hygiene, not the go/no-go.
+
+## Post-harvest measurement (not yet run)
+
+The 2026-08-31 harvest is a correctness/accounting change, not a claimed
+benchmark lift. The measured scope is deliberately limited to the
+fail-closed dictionary organs that have evidence behind them: alias
+quarantine (A), critic catalog checks (B), bounded INSTALL covering (C),
+candidate-versus-promoted accounting (D), obligation holds (F), omission of
+unsupported uniqueness axes (H), and the retrieve authorization fence (I).
+Interned objects (E), waves (G), and retrieval as a load path are excluded
+from any effectiveness claim.
+
+Before collecting new scores, record per task `catalog_before`,
+`eligible_words`, `used_words`, `candidate_words`, `promoted_words`,
+`unused_eligible_words`, and `critic_covering_rejections`. Run three paired
+parser-family replicates (cold versus a fresh warm family dictionary), then
+one paired graph-family confirmation; keep transport failures separate from
+task failures. A Polyglot-Rust confirmation is warranted only if those runs
+show actual repeated word use.
+
+Preregistered interpretation:
+
+- A warm arm is a measured lift only if an actually used word accompanies
+  correctness improvement and at least a 25% input-token reduction.
+- Equal correctness with a reduction below 25% is safe reuse but a token
+  amortization **NO-GO**; no observed word use means no demonstrated catalog
+  effect.
+- A regression while an eligible word is used is negative transfer; a
+  regression without word use is a warm-arm/planner or transport confound.
+- Covering rejections count as useful only when they are followed by later
+  successful use; otherwise they are pressure without demonstrated benefit.
+- First persistence is a candidate, not promotion; promotion without later
+  use is not evidence of transfer.
+
+No post-harvest scores are available yet, so this section intentionally makes
+no effectiveness claim.
 
 ## Aider Polyglot (rust + go + cpp full tracks), 2026-08-27
 
@@ -132,12 +176,13 @@ Raw run: `beam/runs/demo-parser`.
 | cold | **3/3** | 4,366 | 1,731 | 3 |
 | warm | 2/3* | 4,436 | 1,441 | 3 |
 
-*warm parser-02 is an infrastructure casualty, not a dictionary
-failure: its episode-2 repair planning legitimately reasoned past the
-client's then-180s receive_timeout, three attempts in a row, in two
-separate runs (trivial episodes returned in seconds). The summary's
-"negative transfer detected" flag is noise from that. Timeout raised
-to 10 minutes (559c4ed); a clean warm parser-02 rerun is pending.
+*warm parser-02 remains unresolved.* Its episode-2 repair planning ran past
+the client's then-180s `receive_timeout` three attempts in a row, in two
+separate runs (trivial episodes returned in seconds). The carried INSTALL
+entry also makes negative transfer a live alternative, so the summary's
+"negative transfer detected" flag cannot be dismissed as infrastructure
+noise yet. Timeout was raised to 10 minutes (559c4ed); a clean post-harvest
+warm parser-02 rerun is pending.
 
 ## config_migration family (config-01..05 partial), 2026-08-26
 

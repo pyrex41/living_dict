@@ -25,10 +25,19 @@ defmodule LdHost.Demo do
 
   def run(task_ids, opts \\ []) do
     repo = LdHost.Critic.repo_root()
-    out = Keyword.get(opts, :out, Path.join([repo, "beam", "runs", "demo-" <> stamp()])) |> Path.expand()
+
+    out =
+      Keyword.get(opts, :out, Path.join([repo, "beam", "runs", "demo-" <> stamp()]))
+      |> Path.expand()
+
     arms = Keyword.get(opts, :arms, @default_arms)
     serial? = Keyword.get(opts, :serial, false)
     max_episodes = Keyword.get(opts, :max_episodes, 6)
+
+    run_opts =
+      [max_episodes: max_episodes]
+      |> maybe_opt(:ooda_mode, Keyword.get(opts, :ooda_mode))
+      |> maybe_opt(:reasoning_effort, Keyword.get(opts, :reasoning_effort))
 
     File.mkdir_p!(out)
 
@@ -44,7 +53,7 @@ defmodule LdHost.Demo do
     {:ok, space} = Space.start_link(record: Ledger.emitter(ledger))
 
     {:ok, _dispatcher} =
-      Dispatcher.start_link(space: space, ledger: ledger, run_opts: [max_episodes: max_episodes])
+      Dispatcher.start_link(space: space, ledger: ledger, run_opts: run_opts)
 
     tasks = Enum.map(task_ids, &load_task(repo, &1))
 
@@ -89,7 +98,12 @@ defmodule LdHost.Demo do
       forbidden_globs: toml_list(toml, "forbidden_globs"),
       contract: %{
         "claims" => [
-          %{"id" => "hidden-verifier", "kind" => "check", "command" => check, "timeout_seconds" => 120}
+          %{
+            "id" => "hidden-verifier",
+            "kind" => "check",
+            "command" => check,
+            "timeout_seconds" => 120
+          }
         ]
       }
     }
@@ -129,7 +143,9 @@ defmodule LdHost.Demo do
     Enum.map(tasks, fn task ->
       ws = seed_workspace(ctx.out, "grok", task)
       started = System.monotonic_time(:millisecond)
-      {usage, calls, exit_status} = run_grok(task.goal, ws, Path.join([ctx.out, "grok", task.id, "grok-output.txt"]))
+
+      {usage, calls, exit_status} =
+        run_grok(task.goal, ws, Path.join([ctx.out, "grok", task.id, "grok-output.txt"]))
 
       score = Cmd.sh(hd(task.contract["claims"])["command"], ws, 120_000)
 
@@ -188,14 +204,53 @@ defmodule LdHost.Demo do
         run_dir: summary && summary.run_dir
       }
 
+      result = Map.merge(result, summary_evidence(summary))
+
       Ledger.trace(ctx.ledger, "demo.arm_result", result)
       result
     end)
   end
 
+  # Evidence is copied only when the runtime measured it.  In particular,
+  # planner/transport failures have no VM invocation evidence and therefore
+  # contribute no fabricated empty fields to campaign rows.
+  defp summary_evidence(summary) when is_map(summary) do
+    [
+      :catalog_before,
+      :eligible_words,
+      :used_words,
+      :candidate_words,
+      :promoted_words,
+      :unused_eligible_words,
+      :critic_covering_rejections,
+      :judge,
+      :ooda_mode,
+      :initial_route,
+      :repair_used,
+      :research_rounds,
+      :research_tool_calls,
+      :research_evidence_bytes,
+      :unresolved_questions
+    ]
+    |> Enum.reduce(%{}, fn key, acc ->
+      value = Map.get(summary, key)
+
+      if Map.has_key?(summary, key) and
+           not (key == :judge and value in [nil, "unknown", "no gates measured"]),
+         do: Map.put(acc, key, value),
+         else: acc
+    end)
+  end
+
+  defp summary_evidence(_), do: %{}
+
+  defp maybe_opt(opts, _key, nil), do: opts
+  defp maybe_opt(opts, key, value), do: Keyword.put(opts, key, value)
+
   defp await_obligation(ob_id) do
     receive do
-      {:ld_progress, {:obligation, ^ob_id}, {status, summary}} when status in [:completed, :failed] ->
+      {:ld_progress, {:obligation, ^ob_id}, {status, summary}}
+      when status in [:completed, :failed] ->
         summary
 
       {:ld_progress, {:obligation, ^ob_id}, :crashed} ->
@@ -214,12 +269,17 @@ defmodule LdHost.Demo do
 
   defdelegate last_json(output), to: LdHost.Bench.GrokArm
 
-  defp policy_violation_count(ws, task) do
+  @doc false
+  def policy_violation_count(ws, task) do
     baseline = Path.join(task.dir, "repo") |> Policy.snapshot()
     now = Policy.snapshot(ws)
 
     Policy.changed_files(baseline, now)
-    |> Enum.reject(&(&1 == "TASK.md"))
+    # TASK.md and claims.json are harness bookkeeping written by the host
+    # contract flow, not model-authorized product changes.  The obligation
+    # itself grants both paths (see run_arm/3), so accounting must use the
+    # same authority rather than counting claims.json as an out-of-scope edit.
+    |> Enum.reject(&(&1 in ["TASK.md", "claims.json"]))
     |> Enum.count(fn rel ->
       Policy.matches_any?(rel, task.forbidden_globs) or
         not Policy.matches_any?(rel, task.allowed_globs)
@@ -242,7 +302,13 @@ defmodule LdHost.Demo do
     uniqueness = Uniqueness.score(%{tasks: uniqueness_tasks(results)})
     uniqueness = if uniqueness == %{}, do: nil, else: uniqueness
 
-    summary = %{tasks: Enum.map(tasks, & &1.id), results: results, verdict: verdict, uniqueness: uniqueness}
+    summary = %{
+      tasks: Enum.map(tasks, & &1.id),
+      results: results,
+      verdict: verdict,
+      uniqueness: uniqueness
+    }
+
     File.write!(Path.join(out, "summary.json"), JSON.encode!(summary))
     File.write!(Path.join(out, "summary.md"), render_markdown(tasks, results, verdict))
 
@@ -252,7 +318,9 @@ defmodule LdHost.Demo do
   end
 
   defp render_markdown(tasks, results, verdict) do
-    header = "| arm | " <> Enum.map_join(tasks, " | ", & &1.id) <> " | tokens (in/out) | model calls |\n"
+    header =
+      "| arm | " <> Enum.map_join(tasks, " | ", & &1.id) <> " | tokens (in/out) | model calls |\n"
+
     divider = "|---|" <> String.duplicate("---|", length(tasks) + 2) <> "\n"
 
     rows =
@@ -304,7 +372,8 @@ defmodule LdHost.Demo do
         success: row[:success],
         judge: row[:judge] || row["judge"],
         used_words: row[:used_words] || row["used_words"],
-        promoted: row[:promoted] || row[:promoted_words] || row["promoted"] || row["promoted_words"]
+        promoted:
+          row[:promoted] || row[:promoted_words] || row["promoted"] || row["promoted_words"]
       }
     end)
   end

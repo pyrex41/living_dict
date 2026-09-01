@@ -12,7 +12,7 @@ defmodule LdHost.Planner do
   never promoted.
   """
 
-  @endpoint "https://api.x.ai/v1/chat/completions"
+  @default_endpoint "https://api.x.ai/v1/chat/completions"
   @default_model "grok-4.6"
 
   @doc """
@@ -21,6 +21,9 @@ defmodule LdHost.Planner do
   build machine's env into a release.
   """
   def model, do: System.get_env("LIVINGDICT_MODEL") || @default_model
+
+  @doc "Planner endpoint. Override only for an OpenAI-compatible recorder/proxy."
+  def endpoint, do: System.get_env("LIVINGDICT_PLANNER_ENDPOINT") || @default_endpoint
 
   @system """
   You are the planner for a general coding harness whose plan language is
@@ -90,13 +93,26 @@ defmodule LdHost.Planner do
 
       body = %{model: Keyword.get(opts, :model, model()), messages: messages, temperature: 0.2}
 
+      body =
+        case Keyword.get(opts, :reasoning_effort) do
+          effort when effort in ~w(low medium high xhigh) ->
+            Map.put(body, :reasoning_effort, effort)
+
+          _ ->
+            body
+        end
+
       # Hard episodes can legitimately reason for minutes; a tight
       # receive_timeout guillotines exactly the calls that matter most
       # (observed: repair-episode planning on parser-02 exceeding 180s
       # repeatedly while trivial episodes returned in seconds).
-      case Req.post(@endpoint,
+      request_json = JSON.encode!(body)
+      started = System.monotonic_time(:millisecond)
+
+      case Req.post(endpoint(),
              json: body,
              auth: {:bearer, token},
+             headers: cache_headers(opts),
              receive_timeout: 600_000,
              retry: false
            ) do
@@ -106,7 +122,17 @@ defmodule LdHost.Planner do
 
           telemetry = %{
             input_tokens: usage["prompt_tokens"] || 0,
-            output_tokens: usage["completion_tokens"] || 0
+            output_tokens: usage["completion_tokens"] || 0,
+            reasoning_tokens:
+              get_in(usage, ["completion_tokens_details", "reasoning_tokens"]) || 0,
+            cached_tokens: get_in(usage, ["prompt_tokens_details", "cached_tokens"]) || 0,
+            total_tokens: usage["total_tokens"] || 0,
+            duration_ms: System.monotonic_time(:millisecond) - started,
+            request_bytes: byte_size(request_json),
+            response_bytes: byte_size(JSON.encode!(response)),
+            request_sha256: sha256(request_json),
+            endpoint_host: endpoint_host(endpoint()),
+            reasoning_effort: Keyword.get(opts, :reasoning_effort, "high")
           }
 
           case extract_json_object(text) do
@@ -120,6 +146,13 @@ defmodule LdHost.Planner do
         {:error, reason} ->
           {:error, "planner request failed: #{inspect(reason)}"}
       end
+    end
+  end
+
+  defp cache_headers(opts) do
+    case Keyword.get(opts, :cache_key) do
+      key when is_binary(key) and key != "" -> [{"x-grok-conv-id", key}]
+      _ -> []
     end
   end
 
@@ -180,7 +213,8 @@ defmodule LdHost.Planner do
       form = [grant_type: "refresh_token", refresh_token: refresh, client_id: client_id]
 
       case Req.post(@token_url, form: form, receive_timeout: 30_000, retry: false) do
-        {:ok, %{status: 200, body: %{"access_token" => access} = payload}} when is_binary(access) ->
+        {:ok, %{status: 200, body: %{"access_token" => access} = payload}}
+        when is_binary(access) ->
           rec =
             rec
             |> Map.put("key", access)
@@ -225,6 +259,15 @@ defmodule LdHost.Planner do
   @doc "Replace invalid UTF-8 bytes so downstream JSON encoding never rejects."
   def sanitize(text) when is_binary(text) do
     if String.valid?(text), do: text, else: String.replace_invalid(text)
+  end
+
+  defp sha256(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+
+  defp endpoint_host(url) do
+    case URI.parse(url) do
+      %URI{host: host} when is_binary(host) -> host
+      _ -> "invalid"
+    end
   end
 
   @doc "Pull the first JSON object out of model text (port of the reference)."

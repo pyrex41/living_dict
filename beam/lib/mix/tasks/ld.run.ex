@@ -5,7 +5,8 @@ defmodule Mix.Tasks.Ld.Run do
 
       mix ld.run --goal "..." --cwd PATH [--contract claims.json]
                  [--dictionary DIR] [--max-episodes N]
-                 [--allow-model-checks]
+                 [--allow-model-checks] [--ooda off|auto]
+                 [--reasoning-effort low|medium|high|xhigh]
 
   `--contract` points at a JSON file `{"claims": [...]}` — the
   approved/hidden contract whose `check` commands judge success. Without
@@ -30,7 +31,9 @@ defmodule Mix.Tasks.Ld.Run do
           contract: :string,
           dictionary: :string,
           max_episodes: :integer,
-          allow_model_checks: :boolean
+          allow_model_checks: :boolean,
+          ooda: :string,
+          reasoning_effort: :string
         ]
       )
 
@@ -41,7 +44,9 @@ defmodule Mix.Tasks.Ld.Run do
         contract: LdHost.CLI.load_contract(opts[:contract]),
         dictionary_dir: opts[:dictionary],
         max_episodes: opts[:max_episodes],
-        allow_model_checks: opts[:allow_model_checks]
+        allow_model_checks: opts[:allow_model_checks],
+        ooda_mode: opts[:ooda],
+        reasoning_effort: opts[:reasoning_effort]
       )
 
     result = LdHost.Run.run(goal, run_opts)
@@ -50,8 +55,16 @@ defmodule Mix.Tasks.Ld.Run do
     IO.puts("run: #{result.run_dir}")
     IO.puts("judge: #{result.judge}")
     IO.puts("episodes: #{result.episodes}  model calls: #{result.model_calls}")
+
+    IO.puts(
+      "ooda: #{result.ooda_mode}  route: #{result.initial_route}  repair: #{result.repair_used}"
+    )
+
     IO.puts("tokens: in #{result.tokens.input_tokens} / out #{result.tokens.output_tokens}")
-    IO.puts(if result.success, do: "SUCCESS — claims discharged", else: "FAILED — claims not discharged")
+
+    IO.puts(
+      if result.success, do: "SUCCESS — claims discharged", else: "FAILED — claims not discharged"
+    )
 
     unless result.success, do: exit({:shutdown, 1})
   end

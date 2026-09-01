@@ -18,7 +18,15 @@ defmodule Mix.Tasks.Ld.Demo do
 
     {opts, _rest, _invalid} =
       OptionParser.parse(argv,
-        strict: [tasks: :string, arms: :string, serial: :boolean, max_episodes: :integer, out: :string]
+        strict: [
+          tasks: :string,
+          arms: :string,
+          serial: :boolean,
+          max_episodes: :integer,
+          out: :string,
+          ooda: :string,
+          reasoning_effort: :string
+        ]
       )
 
     task_ids =
@@ -32,6 +40,8 @@ defmodule Mix.Tasks.Ld.Demo do
       |> maybe(:serial, opts[:serial])
       |> maybe(:max_episodes, opts[:max_episodes])
       |> maybe(:out, opts[:out])
+      |> maybe(:ooda_mode, opts[:ooda])
+      |> maybe(:reasoning_effort, opts[:reasoning_effort])
 
     summary = LdHost.Demo.run(task_ids, demo_opts)
 
