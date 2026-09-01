@@ -4,7 +4,10 @@ defmodule LdHost.RunTest do
   alias LdHost.Run
 
   defp workspace do
-    tmp = System.tmp_dir!() |> Path.join("ldrun-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+    tmp =
+      System.tmp_dir!()
+      |> Path.join("ldrun-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+
     File.mkdir_p!(tmp)
     tmp
   end
@@ -12,7 +15,12 @@ defmodule LdHost.RunTest do
   defp contract do
     %{
       claims: [
-        %{"id" => "greeting", "kind" => "check", "command" => "grep -q hello greet.txt", "timeout_seconds" => 5}
+        %{
+          "id" => "greeting",
+          "kind" => "check",
+          "command" => "grep -q hello greet.txt",
+          "timeout_seconds" => 5
+        }
       ],
       source: "hidden"
     }
@@ -30,9 +38,17 @@ defmodule LdHost.RunTest do
   test "end-to-end success: critic accept, execute, gates green, word promoted" do
     ws = workspace()
 
-    planner = fn _goal, _obs, _feedback -> {:ok, @good_envelope, %{input_tokens: 10, output_tokens: 5}} end
+    planner = fn _goal, _obs, _feedback ->
+      {:ok, @good_envelope, %{input_tokens: 10, output_tokens: 5}}
+    end
 
-    result = Run.run("write a greeting file", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 2)
+    result =
+      Run.run("write a greeting file",
+        workspace: ws,
+        contract: contract(),
+        planner_fn: planner,
+        max_episodes: 2
+      )
 
     assert result.success
     assert result.judge == "approved contract"
@@ -64,11 +80,16 @@ defmodule LdHost.RunTest do
     ws = workspace()
 
     claims_json =
-      JSON.encode!(%{claims: [%{id: "smoke", kind: "check", command: "grep -q hello greet.txt", timeout_seconds: 5}]})
+      JSON.encode!(%{
+        claims: [
+          %{id: "smoke", kind: "check", command: "grep -q hello greet.txt", timeout_seconds: 5}
+        ]
+      })
 
     episode1 = %{
       "language" => "forth",
-      "program" => ~s{S" claims.json" USE-ARTIFACT S" claims.json" WRITE-FILE DROP RUN-GATES DROP RECEIPT DROP},
+      "program" =>
+        ~s{S" claims.json" USE-ARTIFACT S" claims.json" WRITE-FILE DROP RUN-GATES DROP RECEIPT DROP},
       "artifacts" => %{"claims.json" => claims_json},
       "rationale" => "write claims first"
     }
@@ -90,7 +111,13 @@ defmodule LdHost.RunTest do
       {:ok, envelope, %{input_tokens: 1, output_tokens: 1}}
     end
 
-    result = Run.run("greet", workspace: ws, planner_fn: planner, allow_model_checks: true, max_episodes: 4)
+    result =
+      Run.run("greet",
+        workspace: ws,
+        planner_fn: planner,
+        allow_model_checks: true,
+        max_episodes: 4
+      )
 
     # Episode 1 failed its own check; the id came back as backpressure.
     feedbacks = Agent.get(feedback_log, &Enum.reverse/1)
@@ -107,7 +134,13 @@ defmodule LdHost.RunTest do
 
   test "critic rejection feeds back and duplicate resubmission is blocked" do
     ws = workspace()
-    bad = %{"language" => "forth", "program" => "MYSTERY RECEIPT", "artifacts" => %{}, "rationale" => "bad"}
+
+    bad = %{
+      "language" => "forth",
+      "program" => "MYSTERY RECEIPT",
+      "artifacts" => %{},
+      "rationale" => "bad"
+    }
 
     {:ok, feedback_log} = Agent.start_link(fn -> [] end)
 
@@ -116,7 +149,8 @@ defmodule LdHost.RunTest do
       {:ok, bad, %{input_tokens: 1, output_tokens: 1}}
     end
 
-    result = Run.run("goal", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 3)
+    result =
+      Run.run("goal", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 3)
 
     refute result.success
 
@@ -148,7 +182,9 @@ defmodule LdHost.RunTest do
     }
 
     planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
-    result = Run.run("goal", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 1)
+
+    result =
+      Run.run("goal", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 1)
 
     assert result.success
     refute File.exists?(Path.join([result.run_dir, "dictionary", "words", "BARE.fs"]))
@@ -160,11 +196,24 @@ defmodule LdHost.RunTest do
 
   test "warm dictionary: promoted word is callable next run without redefinition" do
     ws1 = workspace()
-    shared_dict = System.tmp_dir!() |> Path.join("lddictshare-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+
+    shared_dict =
+      System.tmp_dir!()
+      |> Path.join(
+        "lddictshare-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
 
     planner1 = fn _g, _o, _f -> {:ok, @good_envelope, %{}} end
 
-    r1 = Run.run("first", workspace: ws1, contract: contract(), planner_fn: planner1, dictionary_dir: shared_dict, max_episodes: 1)
+    r1 =
+      Run.run("first",
+        workspace: ws1,
+        contract: contract(),
+        planner_fn: planner1,
+        dictionary_dir: shared_dict,
+        max_episodes: 1
+      )
+
     assert r1.success
 
     # Second run: the plan CALLS the promoted word without defining it.
@@ -182,7 +231,14 @@ defmodule LdHost.RunTest do
       {:ok, reuse, %{}}
     end
 
-    r2 = Run.run("second", workspace: ws2, contract: contract(), planner_fn: planner2, dictionary_dir: shared_dict, max_episodes: 1)
+    r2 =
+      Run.run("second",
+        workspace: ws2,
+        contract: contract(),
+        planner_fn: planner2,
+        dictionary_dir: shared_dict,
+        max_episodes: 1
+      )
 
     assert r2.success
     assert File.read!(Path.join(ws2, "greet.txt")) =~ "hello again"
@@ -190,10 +246,24 @@ defmodule LdHost.RunTest do
 
   test "starved call of a promoted word rejects pre-I/O (the closed type hole)" do
     ws = workspace()
-    shared_dict = System.tmp_dir!() |> Path.join("lddicthole-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+
+    shared_dict =
+      System.tmp_dir!()
+      |> Path.join(
+        "lddicthole-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
 
     planner1 = fn _g, _o, _f -> {:ok, @good_envelope, %{}} end
-    r1 = Run.run("seed", workspace: ws, contract: contract(), planner_fn: planner1, dictionary_dir: shared_dict, max_episodes: 1)
+
+    r1 =
+      Run.run("seed",
+        workspace: ws,
+        contract: contract(),
+        planner_fn: planner1,
+        dictionary_dir: shared_dict,
+        max_episodes: 1
+      )
+
     assert r1.success
 
     ws2 = workspace()
@@ -206,7 +276,15 @@ defmodule LdHost.RunTest do
     }
 
     planner2 = fn _g, _o, _f -> {:ok, starved, %{}} end
-    r2 = Run.run("starve", workspace: ws2, contract: contract(), planner_fn: planner2, dictionary_dir: shared_dict, max_episodes: 1)
+
+    r2 =
+      Run.run("starve",
+        workspace: ws2,
+        contract: contract(),
+        planner_fn: planner2,
+        dictionary_dir: shared_dict,
+        max_episodes: 1
+      )
 
     refute r2.success
     events = File.read!(Path.join(r2.run_dir, "events.jsonl"))
@@ -214,5 +292,177 @@ defmodule LdHost.RunTest do
     assert events =~ "stack underflow at INSTALL"
     # No I/O happened: workspace untouched
     assert LdHost.Policy.snapshot(ws2) == %{}
+  end
+
+  test "seeded INSTALL is bound, not composed into the running program" do
+    ws = workspace()
+
+    dict =
+      System.tmp_dir!()
+      |> Path.join(
+        "lddictseed-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(Path.join(dict, "words"))
+
+    File.write!(
+      Path.join([dict, "words", "INSTALL.fs"]),
+      ": INSTALL ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ;\n"
+    )
+
+    program = ~s{S" greet.txt" S" greet.txt" INSTALL RUN-GATES DROP RECEIPT DROP}
+
+    envelope = %{
+      "language" => "forth",
+      "program" => program,
+      "artifacts" => %{"greet.txt" => "hello from bound vocab\n"},
+      "rationale" => "call seeded INSTALL"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
+
+    result =
+      Run.run("greet",
+        workspace: ws,
+        contract: contract(),
+        planner_fn: planner,
+        dictionary_dir: dict,
+        max_episodes: 1
+      )
+
+    assert result.success
+    assert File.read!(Path.join(ws, "greet.txt")) =~ "hello from bound vocab"
+
+    ran =
+      result.run_dir
+      |> Path.join("trace.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+      |> Enum.find(&(&1["type"] == "execution.program"))
+      |> get_in(["data", "program"])
+
+    assert ran == program
+    refute ran =~ "USE-ARTIFACT"
+    refute ran =~ "DUP"
+  end
+
+  test "starved seeded INSTALL still rejects pre-I/O via composed critic" do
+    ws = workspace()
+
+    dict =
+      System.tmp_dir!()
+      |> Path.join(
+        "lddictstarve-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(Path.join(dict, "words"))
+
+    File.write!(
+      Path.join([dict, "words", "INSTALL.fs"]),
+      ": INSTALL ( key path -- | read, write ) SWAP USE-ARTIFACT SWAP WRITE-FILE DROP ;\n"
+    )
+
+    starved = %{
+      "language" => "forth",
+      "program" => ~s{INSTALL RECEIPT DROP},
+      "artifacts" => %{},
+      "rationale" => "starved seeded call"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, starved, %{}} end
+
+    result =
+      Run.run("starve",
+        workspace: ws,
+        contract: contract(),
+        planner_fn: planner,
+        dictionary_dir: dict,
+        max_episodes: 1
+      )
+
+    refute result.success
+    events = File.read!(Path.join(result.run_dir, "events.jsonl"))
+    assert events =~ "critic.rejected"
+    assert events =~ "stack underflow at INSTALL"
+    assert LdHost.Policy.snapshot(ws) == %{}
+  end
+
+  test "CAT host-word alias is not written to the dictionary" do
+    ws = workspace()
+
+    envelope = %{
+      "language" => "forth",
+      "program" =>
+        ~s{: CAT ( path -- | read ) READ-FILE DROP ; } <>
+          ~s{S" greet.txt" USE-ARTIFACT S" greet.txt" WRITE-FILE DROP } <>
+          ~s{S" greet.txt" CAT RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"greet.txt" => "hello\n"},
+      "rationale" => "alias READ-FILE"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
+
+    result =
+      Run.run("goal", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 1)
+
+    assert result.success
+    refute File.exists?(Path.join([result.run_dir, "dictionary", "words", "CAT.fs"]))
+    refute "CAT" in result.promoted_words
+
+    events =
+      result.run_dir
+      |> Path.join("events.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+
+    evidence = Enum.filter(events, &(&1["kind"] == "dictionary.promotion_evidence"))
+
+    assert Enum.any?(evidence, fn event ->
+             event["payload"]["word"] == "CAT" and event["payload"]["eligible"] == false and
+               event["payload"]["reasons"] == ["host-word alias"]
+           end)
+  end
+
+  test "callers of quarantined aliases are not persisted" do
+    ws = workspace()
+
+    envelope = %{
+      "language" => "forth",
+      "program" =>
+        ~s{: CAT ( path -- | read ) READ-FILE DROP ; } <>
+          ~s{: CAT2 ( path -- | read ) CAT ; } <>
+          ~s{S" greet.txt" USE-ARTIFACT S" greet.txt" WRITE-FILE DROP } <>
+          ~s{S" greet.txt" CAT2 RUN-GATES DROP RECEIPT DROP},
+      "artifacts" => %{"greet.txt" => "hello\n"},
+      "rationale" => "alias caller"
+    }
+
+    planner = fn _g, _o, _f -> {:ok, envelope, %{}} end
+
+    result =
+      Run.run("goal", workspace: ws, contract: contract(), planner_fn: planner, max_episodes: 1)
+
+    assert result.success
+    dict = Path.join([result.run_dir, "dictionary", "words"])
+    refute File.exists?(Path.join(dict, "CAT.fs"))
+    refute File.exists?(Path.join(dict, "CAT2.fs"))
+    refute "CAT" in result.promoted_words
+    refute "CAT2" in result.promoted_words
+
+    events =
+      result.run_dir
+      |> Path.join("events.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+
+    evidence = Enum.filter(events, &(&1["kind"] == "dictionary.promotion_evidence"))
+
+    assert Enum.any?(evidence, fn event ->
+             event["payload"]["word"] == "CAT2" and event["payload"]["eligible"] == false and
+               event["payload"]["reasons"] == ["depends on host-word alias"]
+           end)
   end
 end

@@ -17,7 +17,10 @@ defmodule LdHost.Run do
 
   def run(goal, opts) do
     workspace = Keyword.fetch!(opts, :workspace) |> Path.expand()
-    run_dir = Keyword.get(opts, :run_dir, Path.join([workspace, ".livingdict-run", "beam-" <> stamp()]))
+
+    run_dir =
+      Keyword.get(opts, :run_dir, Path.join([workspace, ".livingdict-run", "beam-" <> stamp()]))
+
     dictionary_dir = Keyword.get(opts, :dictionary_dir, Path.join(run_dir, "dictionary"))
     max_episodes = Keyword.get(opts, :max_episodes, @default_max_episodes)
     contract = normalize_contract(Keyword.get(opts, :contract))
@@ -26,7 +29,11 @@ defmodule LdHost.Run do
     {:ok, ledger} = Ledger.start_link(run_dir)
 
     if contract do
-      {:ok, _} = Ledger.commit(ledger, "contract.approved", %{claims: length(contract.claims), source: contract.source})
+      {:ok, _} =
+        Ledger.commit(ledger, "contract.approved", %{
+          claims: length(contract.claims),
+          source: contract.source
+        })
     end
 
     {prelude, prelude_words} = Dictionary.load_prelude(dictionary_dir)
@@ -45,7 +52,12 @@ defmodule LdHost.Run do
       allowed_effects: Keyword.get(opts, :allowed_effects, ["read", "write", "exec"]),
       allowed_globs: Keyword.get(opts, :allowed_globs, ["**"]),
       forbidden_globs:
-        Keyword.get(opts, :forbidden_globs, [".livingdict-run/*", ".git/*", "node_modules/*", "dist/*"]),
+        Keyword.get(opts, :forbidden_globs, [
+          ".livingdict-run/*",
+          ".git/*",
+          "node_modules/*",
+          "dist/*"
+        ]),
       seen: MapSet.new(),
       feedback: "",
       last_report: nil,
@@ -108,10 +120,16 @@ defmodule LdHost.Run do
 
     if MapSet.member?(state.seen, fingerprint) do
       {:ok, _} =
-        Ledger.commit(state.ledger, "episode.blocked_duplicate", %{episode: episode, fingerprint: fingerprint})
+        Ledger.commit(state.ledger, "episode.blocked_duplicate", %{
+          episode: episode,
+          fingerprint: fingerprint
+        })
 
       {:continue,
-       feedback(state, "identical plan resubmitted and blocked — change the plan, the errors stand")}
+       feedback(
+         state,
+         "identical plan resubmitted and blocked — change the plan, the errors stand"
+       )}
     else
       state = %{state | seen: MapSet.put(state.seen, fingerprint)}
 
@@ -125,15 +143,27 @@ defmodule LdHost.Run do
       composed = compose(state.prelude, envelope.program)
       artifact_keys = envelope.artifacts |> Map.keys() |> Enum.sort()
 
-      case Critic.validate(composed, state.allowed_effects, state.allowed_globs, state.forbidden_globs, artifact_keys) do
+      case Critic.validate(
+             composed,
+             state.allowed_effects,
+             state.allowed_globs,
+             state.forbidden_globs,
+             artifact_keys
+           ) do
         {:reject, errors, _depth, _effects} ->
-          {:ok, _} = Ledger.commit(state.ledger, "critic.rejected", %{episode: episode, errors: errors})
+          {:ok, _} =
+            Ledger.commit(state.ledger, "critic.rejected", %{episode: episode, errors: errors})
+
           Ledger.trace(state.ledger, "preflight.rejected", %{errors: errors})
           {:continue, feedback(state, "critic rejected the plan:\n" <> Enum.join(errors, "\n"))}
 
         {:accept, depth, effects} ->
           {:ok, _} =
-            Ledger.commit(state.ledger, "critic.accepted", %{episode: episode, depth: depth, effects: effects})
+            Ledger.commit(state.ledger, "critic.accepted", %{
+              episode: episode,
+              depth: depth,
+              effects: effects
+            })
 
           execute_episode(state, episode, envelope, composed)
 
@@ -158,9 +188,13 @@ defmodule LdHost.Run do
         receipt_path: Path.join(state.run_dir, "receipt.json")
       )
 
-    vm = %Forth.VM{host: host, artifacts: envelope.artifacts}
+    vm =
+      %Forth.VM{host: host, artifacts: envelope.artifacts}
+      |> Forth.bind_vocab(Dictionary.load_vocab(state.dictionary_dir))
 
-    case interpret(vm, composed) do
+    Ledger.trace(state.ledger, "execution.program", %{program: envelope.program})
+
+    case interpret(vm, envelope.program) do
       {:trap, code, message} ->
         Ledger.trace(state.ledger, "execution.trap", %{code: code, message: message})
         {:continue, feedback(state, "execution trap [#{code}]: #{message}")}
@@ -173,7 +207,13 @@ defmodule LdHost.Run do
           })
 
         report = vm.host.last_check || Gates.run(vm.host)
-        {:ok, _} = Ledger.commit(state.ledger, "gates.measured", %{episode: episode, ok: report.ok == true, reason: report[:reason]})
+
+        {:ok, _} =
+          Ledger.commit(state.ledger, "gates.measured", %{
+            episode: episode,
+            ok: report.ok == true,
+            reason: report[:reason]
+          })
 
         state = %{state | last_report: report}
         state = promote(state, episode, vm, composed, report)
@@ -204,8 +244,13 @@ defmodule LdHost.Run do
     {promotable, quarantined} =
       Enum.split_with(candidates, fn name ->
         eligible? and Map.has_key?(contracts, name) and
-          Contracts.canonical(contracts[name]) != nil
+          Contracts.canonical(contracts[name]) != nil and
+          not Dictionary.tautology?(vm.colon[name])
       end)
+
+    {promotable, dependent} = quarantine_dependents(promotable, quarantined, vm)
+    quarantined = quarantined ++ dependent
+    dependent_set = MapSet.new(dependent)
 
     entries =
       Enum.map(promotable, fn name ->
@@ -225,14 +270,27 @@ defmodule LdHost.Run do
           episode: episode
         })
 
-      Ledger.trace(state.ledger, "dictionary.promote", %{word: name, sha256: sha, contract: contract})
+      Ledger.trace(state.ledger, "dictionary.promote", %{
+        word: name,
+        sha256: sha,
+        contract: contract
+      })
     end)
 
     Enum.each(quarantined, fn name ->
       reasons =
-        [] ++
-          if(not Map.has_key?(contracts, name), do: ["missing contract"], else: []) ++
-          if(report.ok != true, do: ["claims not discharged"], else: [])
+        cond do
+          Dictionary.tautology?(vm.colon[name]) ->
+            ["host-word alias"]
+
+          MapSet.member?(dependent_set, name) ->
+            ["depends on host-word alias"]
+
+          true ->
+            [] ++
+              if(not Map.has_key?(contracts, name), do: ["missing contract"], else: []) ++
+              if(report.ok != true, do: ["claims not discharged"], else: [])
+        end
 
       {:ok, _} =
         Ledger.commit(state.ledger, "dictionary.promotion_evidence", %{
@@ -256,6 +314,32 @@ defmodule LdHost.Run do
   end
 
   # ---- helpers ----------------------------------------------------------
+
+  defp quarantine_dependents(promotable, quarantined, vm) do
+    close_quarantine(promotable, [], MapSet.new(quarantined), vm)
+  end
+
+  defp close_quarantine(remaining, extra, banned, vm) do
+    {hit, rest} =
+      Enum.split_with(remaining, fn name ->
+        refers_to_banned?(vm.colon[name], banned)
+      end)
+
+    if hit == [] do
+      {remaining, extra}
+    else
+      close_quarantine(rest, extra ++ hit, MapSet.union(banned, MapSet.new(hit)), vm)
+    end
+  end
+
+  defp refers_to_banned?(tokens, banned) when is_list(tokens) do
+    Enum.any?(tokens, fn
+      %{kind: :word, value: value} -> MapSet.member?(banned, String.upcase(to_string(value)))
+      _ -> false
+    end)
+  end
+
+  defp refers_to_banned?(_, _), do: false
 
   defp compose("", program), do: program
   defp compose(prelude, program), do: prelude <> "\n" <> program
@@ -290,8 +374,12 @@ defmodule LdHost.Run do
 
     dictionary =
       case state.prelude_words do
-        [] -> ""
-        words -> "\nHARNESS DICTIONARY (callable colon words):\n" <> Enum.join(words, " ") <> "\n" <> state.prelude
+        [] ->
+          ""
+
+        words ->
+          "\nHARNESS DICTIONARY (callable colon words):\n" <>
+            Enum.join(words, " ") <> "\n" <> state.prelude
       end
 
     gates =
@@ -375,6 +463,7 @@ defmodule LdHost.Run do
 
       {:error, reason} when attempts > 1 ->
         Ledger.trace(state.ledger, "planner.retry", %{reason: inspect(reason), left: attempts - 1})
+
         Process.sleep((4 - attempts) * 5_000 + 5_000)
         plan_with_retry(state, observation, attempts - 1)
 
@@ -384,14 +473,19 @@ defmodule LdHost.Run do
   end
 
   defp default_planner(goal, observation, feedback) do
-    observation = if feedback == "", do: observation, else: observation <> "\nFEEDBACK:\n" <> feedback
+    observation =
+      if feedback == "", do: observation, else: observation <> "\nFEEDBACK:\n" <> feedback
+
     LdHost.Planner.plan(goal, observation)
   end
 
   defp normalize_contract(nil), do: nil
 
   defp normalize_contract(%{claims: claims} = contract) when is_list(claims) do
-    %{claims: Enum.map(claims, &LdHost.Gates.atomize_claim/1), source: Map.get(contract, :source, "approved")}
+    %{
+      claims: Enum.map(claims, &LdHost.Gates.atomize_claim/1),
+      source: Map.get(contract, :source, "approved")
+    }
   end
 
   defp normalize_contract(claims) when is_list(claims) do

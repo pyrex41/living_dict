@@ -19,7 +19,12 @@ defmodule LdHost.Forth do
   defmodule Token do
     @enforce_keys [:kind, :value, :index]
     defstruct [:kind, :value, :index]
-    @type t :: %__MODULE__{kind: :string | :number | :word, value: String.t() | integer(), index: non_neg_integer()}
+
+    @type t :: %__MODULE__{
+            kind: :string | :number | :word,
+            value: String.t() | integer(),
+            index: non_neg_integer()
+          }
   end
 
   defmodule VM do
@@ -32,12 +37,27 @@ defmodule LdHost.Forth do
   def host_words, do: @host_words
   def stack_words, do: @stack_words
 
+  @doc "Install persisted colon bodies onto the VM."
+  def bind_vocab(%VM{} = vm, rows) when is_list(rows) do
+    colon =
+      Enum.reduce(rows, vm.colon, fn
+        {name, tokens, _sig, _source}, acc -> Map.put(acc, String.upcase(name), tokens)
+        {name, tokens}, acc -> Map.put(acc, String.upcase(name), tokens)
+      end)
+
+    %{vm | colon: colon}
+  end
+
   # ---- tokenizer --------------------------------------------------------
 
   @spec tokenize(String.t()) :: [Token.t()]
   def tokenize(source) do
     toks = tok(String.graphemes(source), true, [])
-    toks |> Enum.reverse() |> Enum.with_index() |> Enum.map(fn {{kind, value}, i} -> %Token{kind: kind, value: value, index: i} end)
+
+    toks
+    |> Enum.reverse()
+    |> Enum.with_index()
+    |> Enum.map(fn {{kind, value}, i} -> %Token{kind: kind, value: value, index: i} end)
   end
 
   defp tok([], _prev_space, acc), do: acc
@@ -55,10 +75,12 @@ defmodule LdHost.Forth do
 
       (c == "S" or c == "s") and match?(["\"" | _], rest) ->
         [_dq | after_q] = rest
-        after_q = case after_q do
-          [" " | more] -> more
-          other -> other
-        end
+
+        after_q =
+          case after_q do
+            [" " | more] -> more
+            other -> other
+          end
 
         case take_string(after_q, []) do
           {:ok, chars, remaining} ->
@@ -105,10 +127,11 @@ defmodule LdHost.Forth do
   defp parse_number(raw) when raw in ["+", "-"], do: :error
 
   defp parse_number(raw) do
-    body = case raw do
-      "-" <> tail -> tail
-      _ -> raw
-    end
+    body =
+      case raw do
+        "-" <> tail -> tail
+        _ -> raw
+      end
 
     if body != "" and body =~ ~r/^\d+$/ do
       {:ok, String.to_integer(raw)}
@@ -202,25 +225,35 @@ defmodule LdHost.Forth do
     {b, vm} = pop_int(vm, op)
     {a, vm} = pop_int(vm, op)
 
-    push(vm, case op do
-      "+" -> a + b
-      "-" -> a - b
-      "*" -> a * b
-    end)
+    push(
+      vm,
+      case op do
+        "+" -> a + b
+        "-" -> a - b
+        "*" -> a * b
+      end
+    )
   end
 
   defp host_word(vm, word) do
     {args, vm} =
       case word do
-        "READ-FILE" -> one_str(vm, word)
-        "LIST-DIR" -> one_str(vm, word)
-        "SEARCH" -> one_str(vm, word)
+        "READ-FILE" ->
+          one_str(vm, word)
+
+        "LIST-DIR" ->
+          one_str(vm, word)
+
+        "SEARCH" ->
+          one_str(vm, word)
+
         "WRITE-FILE" ->
           {path, vm} = pop_str(vm, word)
           {content, vm} = pop_str(vm, word)
           {[content, path], vm}
 
-        _ -> {[], vm}
+        _ ->
+          {[], vm}
       end
 
     case LdHost.Capability.call(vm.host, word, args) do
@@ -314,10 +347,14 @@ defmodule LdHost.Forth do
 
   defp push(vm, value), do: %{vm | stack: [value | vm.stack]}
 
-  defp pop(%VM{stack: []}, word), do: raise(Error, code: "underflow", message: "stack underflow at #{word}")
+  defp pop(%VM{stack: []}, word),
+    do: raise(Error, code: "underflow", message: "stack underflow at #{word}")
+
   defp pop(%VM{stack: [top | rest]} = vm, _word), do: {top, %{vm | stack: rest}}
 
-  defp peek(%VM{stack: []}, word), do: raise(Error, code: "underflow", message: "stack underflow at #{word}")
+  defp peek(%VM{stack: []}, word),
+    do: raise(Error, code: "underflow", message: "stack underflow at #{word}")
+
   defp peek(%VM{stack: [top | _]}, _word), do: top
 
   defp pop_str(vm, word) do
