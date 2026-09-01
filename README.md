@@ -1,44 +1,62 @@
 # Living Dictionary
 
-**A coding agent that plans, then proves it.** You give it a goal. It
-negotiates the acceptance criteria with you, writes the entire change as
-one inspectable program, gets that program past a non-LLM safety critic
-before a single file is touched, executes it with the model switched off,
-and only claims success when *your* approved checks actually pass — build
-it, test it, run it, curl it.
+**A coding agent that turns a model's proposal into a checked program, then
+runs that program with the model switched off.** You give it a goal and an
+acceptance contract. The model can inspect the repository through bounded
+research tools, but it does not mutate the workspace one tool call at a time.
+Instead it emits one inspectable plan envelope: complete artifact bodies plus
+a small Forth program describing how to install and verify them.
 
-Every other coding agent is a model in a tool loop: it acts one call at a
-time, "done" means the model stopped talking, and the transcript is the
-only record. Living Dictionary inverts all three:
+If you already use Codex, Claude Code, or Pi, the easiest way to understand
+Living Dictionary is as a different control plane around the model:
 
-- **The plan is a program, not a conversation.** The model emits one
-  envelope — full file contents plus a tiny Forth control program over a
-  dependency graph of nodes. Independent nodes run in parallel waves;
-  write conflicts are impossible by construction, not detected after.
-- **A critic gates every plan before any I/O.** A deterministic,
-  non-LLM validator (Python, or Shen on the OpenResty/browser bodies)
-  rejects bad stack effects, forbidden paths, cycles, and out-of-node
-  writes. Rejection is backpressure — the errors feed the next attempt —
-  and an identical resubmitted plan is fingerprint-blocked, so the loop
-  cannot thrash.
-- **"Done" is a contract you signed, not a vibe.** Before work starts,
-  the model drafts acceptance claims — including executable `check`
-  commands — and you approve, amend, or iterate. After sign-off the
-  contract is frozen outside the model's reach. Success means those
-  checks exited 0. A run judged only by claims the model wrote itself is
-  loudly labeled as such.
-- **Every run is a replayable ledger.** Episodes, critic verdicts,
-  installs, gate results, and scheduling land in an append-only,
-  hash-sequenced event log with content-addressed snapshots. You can
-  reconstruct the workspace at any step and replay a run without a model.
-- **Skills persist as code, with types.** Accepted colon definitions
-  live in a dictionary the next run loads — executable memory, not
-  advice in a markdown file. Every persisted word carries an in-band
-  `( ins -- outs | effects )` contract: the critic abstractly interprets
-  the body against its declaration, rejects mismatches echoing both
-  renderings, and binds real arities so a starved call of a promoted
-  word is refused before any I/O. Contractless words are quarantined,
-  never promoted.
+| | Typical coding-agent loop | Living Dictionary |
+|---|---|---|
+| Model output | The next tool call or patch | A complete, executable plan envelope |
+| Before writes | Policy checked per tool call | The whole plan is statically checked by a non-LLM critic |
+| Execution | Model remains in the action loop | Host executes accepted Forth with the model off |
+| Completion | Agent decides it is finished, often after tests | Frozen approved claims must be discharged |
+| Record | Conversation and tool transcript | Hash-sequenced ledger, receipts, and workspace snapshots |
+| Learned procedure | Prompt, memory, or skill text | Typed executable words, promoted only after demonstrated reuse |
+
+This is not a claim that interactive tool loops are inherently bad. They are
+excellent for exploratory work. Living Dictionary is aimed at the boundary
+where a proposed change should become inspectable, policy-checkable, and
+measurably complete before it is trusted.
+
+### What is unusual here
+
+- **The unit of action is a program.** The model emits full file contents and
+  a tiny Forth control program over a dependency graph. Independent nodes can
+  run in parallel waves; declared write conflicts are rejected before
+  execution.
+- **Policy sees the whole proposed change.** A deterministic, non-LLM critic
+  checks stack effects, filesystem effects, allowed paths, graph cycles, and
+  node write scopes before any artifact is installed. A rejection becomes
+  structured input to the next planning episode, and identical rejected plans
+  are fingerprint-blocked.
+- **Research and authority are separate.** A bounded OODA layer may list,
+  search, and read repository evidence to formulate better questions. Those
+  tools gather context; they cannot authorize writes. Only a critic-accepted
+  plan receives host capabilities.
+- **"Done" belongs to the contract, not the model.** The model may draft
+  claims, but approved claims are frozen outside its workspace. Success means
+  the relevant builds, tests, commands, or probes actually passed. Runs judged
+  only by model-authored claims are labeled accordingly.
+- **Execution has a durable, replayable account.** Episodes, critic verdicts,
+  mutations, gate results, and scheduling events land in an append-only ledger
+  with content-addressed snapshots and receipts. You can audit what happened
+  without treating the model transcript as ground truth.
+- **Reusable skills are typed code.** Successful Forth definitions can enter
+  a dictionary loaded by later runs. Each word declares an
+  `( ins -- outs | effects )` contract that is checked against its body.
+  First persistence creates a candidate; observed reuse permits promotion.
+  Contractless definitions and aliases are quarantined rather than advertised
+  as learned skills.
+
+The model can still reason, research, fail, and replan. The architectural
+difference is that observation, authorization, execution, and judgment are
+separate stages with different owners.
 
 ## Try it
 
@@ -144,11 +162,12 @@ artifacts through the typecheck gate (`typechecked=true` is asserted in
 the manifest). The Python preflight and per-port mirrors are frozen
 legacy.
 
-## Claim — now measured
+## Results so far
 
 Same model, same sandbox, same capabilities, same budgets. Only the
 control language changes (ReAct tool loop vs Forth plan-program). Live
-numbers, full detail in [`beam/RESULTS.md`](beam/RESULTS.md):
+numbers from the August 2026 campaigns, with dates and limitations, are in
+[`beam/RESULTS.md`](beam/RESULTS.md):
 
 | benchmark | ReAct baseline (grok CLI) | cold | warm |
 |---|---|---|---|
@@ -169,6 +188,11 @@ transfer) but the 25% amortization bar is unmet — cold already
 one-shots most tasks, leaving little for a dictionary to amortize. The
 open question is now sharp: warm needs task families that take cold
 multiple episodes.
+
+The harness has changed since those runs. Do not attribute the table above to
+the newer OODA, dictionary-accounting, or cache-isolation work. The frozen
+protocol for replacing these historical numbers is
+[`docs/design/LATEST_BENCHMARK_CAMPAIGN.md`](docs/design/LATEST_BENCHMARK_CAMPAIGN.md).
 
 ### Caching and measurement
 
