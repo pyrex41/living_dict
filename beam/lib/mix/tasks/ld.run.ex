@@ -7,6 +7,7 @@ defmodule Mix.Tasks.Ld.Run do
                  [--dictionary DIR] [--max-episodes N]
                  [--allow-model-checks] [--ooda off|auto]
                  [--reasoning-effort low|medium|high|xhigh]
+                 [--cache-scope off|run|shared]
 
   `--contract` points at a JSON file `{"claims": [...]}` — the
   approved/hidden contract whose `check` commands judge success. Without
@@ -33,7 +34,8 @@ defmodule Mix.Tasks.Ld.Run do
           max_episodes: :integer,
           allow_model_checks: :boolean,
           ooda: :string,
-          reasoning_effort: :string
+          reasoning_effort: :string,
+          cache_scope: :string
         ]
       )
 
@@ -46,7 +48,8 @@ defmodule Mix.Tasks.Ld.Run do
         max_episodes: opts[:max_episodes],
         allow_model_checks: opts[:allow_model_checks],
         ooda_mode: opts[:ooda],
-        reasoning_effort: opts[:reasoning_effort]
+        reasoning_effort: opts[:reasoning_effort],
+        cache_scope: opts[:cache_scope]
       )
 
     result = LdHost.Run.run(goal, run_opts)
@@ -61,6 +64,10 @@ defmodule Mix.Tasks.Ld.Run do
     )
 
     IO.puts("tokens: in #{result.tokens.input_tokens} / out #{result.tokens.output_tokens}")
+
+    IO.puts(
+      "cache: #{result.cache_scope} / provider #{result.tokens.cached_tokens} tokens / evidence #{result.evidence_cache_hits} hits"
+    )
 
     IO.puts(
       if result.success, do: "SUCCESS — claims discharged", else: "FAILED — claims not discharged"

@@ -17,6 +17,7 @@ defmodule LdHost.CLI do
     * `LD_DICTIONARY` — dictionary directory for warm-start/promotion
     * `LD_OODA_MODE` — `off` (default) or opt-in `auto`
     * `LD_REASONING_EFFORT` — fixed `low`, `medium`, `high`, or `xhigh`
+    * `LD_CACHE_SCOPE` — `off`, `run` (default), or opt-in `shared`
 
   Prints exactly ONE JSON line with the run summary, then halts with an
   HONEST exit code: 0 iff the claims discharged, 1 otherwise. Exit-0
@@ -45,7 +46,8 @@ defmodule LdHost.CLI do
         dictionary_dir: System.get_env("LD_DICTIONARY"),
         allow_model_checks: parse_truthy(System.get_env("LD_ALLOW_MODEL_CHECKS")),
         ooda_mode: System.get_env("LD_OODA_MODE"),
-        reasoning_effort: System.get_env("LD_REASONING_EFFORT")
+        reasoning_effort: System.get_env("LD_REASONING_EFFORT"),
+        cache_scope: System.get_env("LD_CACHE_SCOPE")
       )
 
     result = LdHost.Run.run(goal, opts)
@@ -65,6 +67,9 @@ defmodule LdHost.CLI do
         research_tool_calls: result.research_tool_calls,
         research_evidence_bytes: result.research_evidence_bytes,
         unresolved_questions: result.unresolved_questions,
+        cache_scope: result.cache_scope,
+        evidence_cache_hits: result.evidence_cache_hits,
+        evidence_cache_misses: result.evidence_cache_misses,
         engine: LdHost.Critic.engine(),
         run_dir: result.run_dir
       })
@@ -88,7 +93,8 @@ defmodule LdHost.CLI do
         :run_dir,
         :allow_model_checks,
         :ooda_mode,
-        :reasoning_effort
+        :reasoning_effort,
+        :cache_scope
       ],
       [workspace: Path.expand(workspace)],
       fn key, opts ->

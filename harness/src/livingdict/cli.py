@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import re
+import secrets
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -468,6 +469,7 @@ def run_job(
     claims: Path | None = None,
     run_dir: Path | None = None,
     planner_cmd: list[str] | None = None,
+    cache_scope: str = "run",
     wave_workers: int = 4,
     serial: bool = False,
     allowed_globs: tuple[str, ...] | None = None,
@@ -487,6 +489,12 @@ def run_job(
     run_dir.mkdir(parents=True, exist_ok=True)
     claims_label = "approved" if contract is not None else None
     receipt_fields = dict(receipt_extra or {})
+    if receipt_fields.get("benchmark_mode"):
+        cache_scope = "run"
+    if cache_scope not in {"off", "run", "shared"}:
+        raise CLIError(f"invalid cache scope: {cache_scope}")
+    receipt_fields.setdefault("cache_scope", cache_scope)
+    cache_run_id = secrets.token_hex(16)
     receipt_fields.setdefault("claims_source", claims_source(workspace, claims, claims_label))
     if grant_mode_require() and not grant_verified:
         return _finish(
@@ -574,6 +582,12 @@ def run_job(
             "run_dir": str(run_dir),
             "workspace": str(workspace),
         }
+        # Cache controls belong to the built-in live provider adapter, not the
+        # stable canned-planner observation contract used by deterministic
+        # tests and third-party planner commands.
+        if planner_cmd is None:
+            observation["cache_scope"] = cache_scope
+            observation["cache_run_id"] = cache_run_id
         if frozen_contract.is_file():
             observation["contract"] = json.loads(frozen_contract.read_text(encoding="utf-8"))
         if state.last_failure is not None:
@@ -928,6 +942,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="mark the receipt as benchmark-driven; native verification remains authoritative",
     )
     parser.add_argument("--audit-gates", action="store_true", help="ask the planner to audit failed gates")
+    parser.add_argument(
+        "--cache-scope",
+        choices=("off", "run", "shared"),
+        default="run",
+        help="provider cache scope; benchmark mode always forces run",
+    )
     parser.add_argument("--run-dir", type=Path, help="job state directory (default: CWD/.livingdict-run)")
     parser.add_argument(
         "--planner-cmd",
@@ -979,6 +999,7 @@ def main(argv: list[str] | None = None) -> int:
             claims=args.claims,
             run_dir=args.run_dir,
             planner_cmd=planner_cmd,
+            cache_scope=args.cache_scope,
             wave_workers=args.wave_workers,
             serial=args.serial,
             receipt_extra={"benchmark_mode": True, "audit_gates": True} if args.benchmark or args.audit_gates else None,

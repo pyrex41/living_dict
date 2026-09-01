@@ -1,7 +1,7 @@
 defmodule LdHost.OODATest do
   use ExUnit.Case
 
-  alias LdHost.OODA
+  alias LdHost.{EvidenceCache, OODA}
 
   defp workspace do
     path = Path.join(System.tmp_dir!(), "ld-ooda-#{System.unique_integer([:positive])}")
@@ -72,5 +72,21 @@ defmodule LdHost.OODATest do
     File.ln_s!(outside, Path.join(ws, "src/link.py"))
     manifest = OODA.manifest(ws, allowed_globs: ["src/*.py"], approved_contract: true)
     refute Enum.any?(manifest.files, &(&1.path == "src/link.py"))
+  end
+
+  test "run evidence cache is content addressed and invalidates on tree change" do
+    ws = workspace()
+    run_dir = Path.join(ws, ".run")
+    manifest = OODA.manifest(ws, allowed_globs: ["src/*.py"], approved_contract: true)
+    args = %{"path" => "src/app.py", "start_line" => 1, "end_line" => 2}
+    result = %{"path" => "src/app.py", "text" => "cached"}
+
+    assert :miss = EvidenceCache.get(:run, run_dir, manifest, "read_lines", args)
+    assert :ok = EvidenceCache.put(:run, run_dir, manifest, "read_lines", args, result)
+    assert {:hit, ^result} = EvidenceCache.get(:run, run_dir, manifest, "read_lines", args)
+
+    File.write!(Path.join(ws, "src/app.py"), "def answer():\n    return 42\n")
+    changed = OODA.manifest(ws, allowed_globs: ["src/*.py"], approved_contract: true)
+    assert :miss = EvidenceCache.get(:run, run_dir, changed, "read_lines", args)
   end
 end

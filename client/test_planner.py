@@ -14,6 +14,9 @@ from planner import (
     parse_stream_chunk,
     repair_context,
     GATE_AUDIT_SYSTEM,
+    _chat_request,
+    normalize_cache_scope,
+    provider_cache_key,
 )
 
 
@@ -114,6 +117,30 @@ class PlannerParseTests(unittest.TestCase):
         self.assertIn('S" fizzbuzz.py" WRITE-FILE', out)
         already = 'S" fizzbuzz.py" USE-ARTIFACT S" fizzbuzz.py" WRITE-FILE'
         self.assertEqual(imply_artifact_writes(already, {"fizzbuzz.py": "x"}), already)
+
+    def test_provider_cache_keys_are_scoped_and_hashed(self) -> None:
+        first = provider_cache_key("run", run_id="a", phase="planner", system=SYSTEM)
+        again = provider_cache_key("run", run_id="a", phase="planner", system=SYSTEM)
+        other = provider_cache_key("run", run_id="b", phase="planner", system=SYSTEM)
+        shared = provider_cache_key("shared", run_id=None, phase="planner", system=SYSTEM)
+        self.assertEqual(first, again)
+        self.assertNotEqual(first, other)
+        self.assertTrue(shared and shared.startswith("ld-"))
+        self.assertIsNone(provider_cache_key("off", run_id="a", phase="planner", system=SYSTEM))
+
+    def test_xai_affinity_header_is_only_sent_when_key_exists(self) -> None:
+        payload = {"model": "grok-4.6", "messages": []}
+        request = _chat_request(payload, "secret", "ld-test")
+        headers = {key.lower(): value for key, value in request.header_items()}
+        self.assertEqual(headers["x-grok-conv-id"], "ld-test")
+        request = _chat_request(payload, "secret")
+        headers = {key.lower(): value for key, value in request.header_items()}
+        self.assertNotIn("x-grok-conv-id", headers)
+
+    def test_cache_scope_validation(self) -> None:
+        self.assertEqual(normalize_cache_scope("RUN"), "run")
+        with self.assertRaises(Exception):
+            normalize_cache_scope("global")
 
 
 class StreamParseTests(unittest.TestCase):

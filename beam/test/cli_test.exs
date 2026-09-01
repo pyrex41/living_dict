@@ -25,11 +25,13 @@ defmodule LdHost.CLITest do
       opts =
         CLI.run_opts(System.tmp_dir!(),
           allow_model_checks: true,
-          dictionary_dir: "/some/dictionary"
+          dictionary_dir: "/some/dictionary",
+          cache_scope: "shared"
         )
 
       assert opts[:allow_model_checks] == true
       assert opts[:dictionary_dir] == "/some/dictionary"
+      assert opts[:cache_scope] == "shared"
     end
 
     test "nil extras are dropped, keeping run defaults" do

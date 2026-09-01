@@ -15,6 +15,8 @@ defmodule LdHost.Planner do
   @default_endpoint "https://api.x.ai/v1/chat/completions"
   @default_model "grok-4.6"
 
+  alias LdHost.{CachePolicy, Policy}
+
   @doc """
   Model resolved at RUNTIME (not compile time): `LIVINGDICT_MODEL` env,
   else #{inspect(@default_model)}. Compile-time baking would freeze the
@@ -82,25 +84,7 @@ defmodule LdHost.Planner do
   """
   def plan(goal, observation, opts \\ []) do
     with {:ok, token} <- credentials() do
-      messages = [
-        %{role: "system", content: Keyword.get(opts, :system, @system)},
-        # Goal and observation carry arbitrary workspace-derived bytes
-        # (file names, command output); scrub invalid UTF-8 or the JSON
-        # encoder rejects the whole request (observed: a stray 0xA3
-        # killed every episode of a Terminal-Bench run).
-        %{role: "user", content: sanitize("GOAL:\n#{goal}\n\n#{observation}")}
-      ]
-
-      body = %{model: Keyword.get(opts, :model, model()), messages: messages, temperature: 0.2}
-
-      body =
-        case Keyword.get(opts, :reasoning_effort) do
-          effort when effort in ~w(low medium high xhigh) ->
-            Map.put(body, :reasoning_effort, effort)
-
-          _ ->
-            body
-        end
+      {body, request_meta, headers} = request_shape(goal, observation, opts)
 
       # Hard episodes can legitimately reason for minutes; a tight
       # receive_timeout guillotines exactly the calls that matter most
@@ -112,7 +96,7 @@ defmodule LdHost.Planner do
       case Req.post(endpoint(),
              json: body,
              auth: {:bearer, token},
-             headers: cache_headers(opts),
+             headers: headers,
              receive_timeout: 600_000,
              retry: false
            ) do
@@ -132,7 +116,12 @@ defmodule LdHost.Planner do
             response_bytes: byte_size(JSON.encode!(response)),
             request_sha256: sha256(request_json),
             endpoint_host: endpoint_host(endpoint()),
-            reasoning_effort: Keyword.get(opts, :reasoning_effort, "high")
+            reasoning_effort: Keyword.get(opts, :reasoning_effort, "high"),
+            cache_scope: request_meta.cache_scope,
+            cache_phase: "planner",
+            cache_key_fingerprint: request_meta.cache_key_fingerprint,
+            message_prefix_sha256: request_meta.message_prefix_sha256,
+            tool_schema_sha256: nil
           }
 
           case extract_json_object(text) do
@@ -149,10 +138,67 @@ defmodule LdHost.Planner do
     end
   end
 
-  defp cache_headers(opts) do
-    case Keyword.get(opts, :cache_key) do
+  @doc false
+  def request_shape(goal, observation, opts \\ []) do
+    system = Keyword.get(opts, :system, @system)
+    selected_model = Keyword.get(opts, :model, model())
+    scope = CachePolicy.normalize(Keyword.get(opts, :cache_scope))
+
+    # Goal and observation are separate messages so changing workspace state
+    # does not invalidate the stable system+goal prefix.
+    messages = [
+      %{role: "system", content: system},
+      %{role: "user", content: sanitize("GOAL:\n#{goal}")},
+      %{role: "user", content: sanitize("OBSERVATION:\n#{observation}")}
+    ]
+
+    body = %{model: selected_model, messages: messages, temperature: 0.2}
+
+    body =
+      case Keyword.get(opts, :reasoning_effort) do
+        effort when effort in ~w(low medium high xhigh) ->
+          Map.put(body, :reasoning_effort, effort)
+
+        _ ->
+          body
+      end
+
+    schema = Policy.sha256_hex(system)
+
+    key =
+      Keyword.get(opts, :cache_key) ||
+        cache_key(scope, opts, selected_model, schema)
+
+    meta = %{
+      cache_scope: Atom.to_string(scope),
+      cache_key_fingerprint: CachePolicy.fingerprint(key),
+      message_prefix_sha256: Policy.sha256_hex(JSON.encode!(Enum.take(messages, 2)))
+    }
+
+    {body, meta, cache_headers(key)}
+  end
+
+  defp cache_headers(key) do
+    case key do
       key when is_binary(key) and key != "" -> [{"x-grok-conv-id", key}]
       _ -> []
+    end
+  end
+
+  defp cache_key(:off, _opts, _model, _schema), do: nil
+
+  defp cache_key(scope, opts, model, schema) do
+    case Keyword.get(opts, :run_id) do
+      run_id when is_binary(run_id) and run_id != "" ->
+        CachePolicy.routing_key(scope,
+          run_id: run_id,
+          phase: "planner",
+          model: model,
+          schema: schema
+        )
+
+      _ ->
+        nil
     end
   end
 

@@ -121,20 +121,13 @@ defmodule LdHost.OODA do
   def tool(manifest, name, args, budget) do
     with :ok <- budget_available(budget),
          {:ok, result} <- execute_tool(manifest, name, args),
-         encoded = JSON.encode!(result),
-         :ok <- result_fits(encoded, budget) do
-      digest = Policy.sha256_hex(encoded)
-      evidence = Map.put(budget.evidence, digest, result)
-
-      {:ok, result,
-       %{
-         budget
-         | calls_left: budget.calls_left - 1,
-           bytes_left: budget.bytes_left - byte_size(encoded),
-           evidence: evidence
-       }}
+         {:ok, result, budget} <- accept_result(result, budget) do
+      {:ok, result, budget}
     end
   end
+
+  @doc "Account for a cached tool result under the same bounds as a live read."
+  def accept_cached(result, budget), do: accept_result(result, budget)
 
   def selected_sources(manifest, brief) do
     recommended = brief["recommended_files"] || brief[:recommended_files] || []
@@ -341,6 +334,23 @@ defmodule LdHost.OODA do
   defp maybe_reason(reasons, false, _), do: reasons
   defp budget_available(%{calls_left: n, bytes_left: b}) when n > 0 and b > 0, do: :ok
   defp budget_available(_), do: {:error, "research budget exhausted"}
+
+  defp accept_result(result, budget) do
+    encoded = JSON.encode!(result)
+
+    with :ok <- budget_available(budget),
+         :ok <- result_fits(encoded, budget) do
+      digest = Policy.sha256_hex(encoded)
+
+      {:ok, result,
+       %{
+         budget
+         | calls_left: budget.calls_left - 1,
+           bytes_left: budget.bytes_left - byte_size(encoded),
+           evidence: Map.put(budget.evidence, digest, result)
+       }}
+    end
+  end
 
   defp result_fits(data, %{bytes_left: b})
        when byte_size(data) <= b and byte_size(data) <= @result_bytes, do: :ok

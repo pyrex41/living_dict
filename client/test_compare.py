@@ -139,6 +139,7 @@ class ArgvTests(unittest.TestCase):
         self.assertIn("--max-turns", argv)
         self.assertIn("4", argv)
         self.assertIn("--run-dir", argv)
+        self.assertEqual(argv[argv.index("--cache-scope") + 1], "run")
         joined = " ".join(argv)
         self.assertNotIn("http://", joined)
         self.assertNotIn("/think", joined)

@@ -170,6 +170,24 @@ one-shots most tasks, leaving little for a dictionary to amortize. The
 open question is now sharp: warm needs task families that take cold
 multiple episodes.
 
+### Caching and measurement
+
+Provider prompt caching is treated as an execution optimization, not a source
+of benchmark state. Live runs default to `--cache-scope run`: each invocation
+gets a fresh private routing identity, while stable system/goal/tool prefixes
+can still be reused across episodes inside that run. Headline benchmark paths
+force this scope. `shared` is an explicit production mode for cross-run prefix
+reuse; `off` removes Living Dictionary's provider-affinity hint, although a
+provider may still cache an identical prefix opportunistically.
+
+The OODA research layer also caches bounded, read-only evidence by workspace
+content hash. It never caches planner envelopes, critic decisions, checks,
+receipts, credentials, or authorization. Receipts and ledgers expose cache
+scope, cached-token counts, evidence hits/misses, and timing so warm-provider
+effects can be reported separately from task correctness. Detailed semantics
+and the metadata-only request recorder are documented in
+[`docs/HARNESS.md`](docs/HARNESS.md#cache-isolation).
+
 ## Status
 
 - Eval suite vendored; oracle 40/40, suite tests green.
@@ -204,6 +222,8 @@ Python 3.11+, `luajit`, and a shen-lua checkout (see [`openresty/README.md`](ope
 # BEAM body (Elixir 1.18+/OTP 27+; brew install elixir)
 make beam-test             # 50+ ExUnit tests
 cd beam && mix ld.run --goal "..." --cwd PATH   # headless; exit 0 iff claims discharged
+cd beam && mix ld.run --goal "..." --cwd PATH --cache-scope run    # isolated default
+cd beam && mix ld.run --goal "..." --cwd PATH --cache-scope shared # production optimization
 cd beam && mix ld.demo --tasks graph-01,graph-02            # arms race, vendored eval
 cd beam && mix ld.polyglot --langs rust,go,cpp --arms cold,warm  # Aider Polyglot tracks
 make critic-erl            # typed Shen -> shen-erl BEAM critic (via yggdrasil check)

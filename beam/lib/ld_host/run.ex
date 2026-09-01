@@ -13,6 +13,7 @@ defmodule LdHost.Run do
 
   alias LdHost.{
     Critic,
+    CachePolicy,
     Contracts,
     Dictionary,
     Envelope,
@@ -38,6 +39,12 @@ defmodule LdHost.Run do
     planner_fn = Keyword.get(opts, :planner_fn)
     ooda_mode = normalize_ooda(Keyword.get(opts, :ooda_mode, :off))
     reasoning_effort = normalize_effort(Keyword.get(opts, :reasoning_effort))
+    cache_scope = CachePolicy.normalize(Keyword.get(opts, :cache_scope))
+
+    cache_run_id =
+      Keyword.get_lazy(opts, :cache_run_id, fn ->
+        Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+      end)
 
     if ooda_mode == :auto and reasoning_effort do
       raise ArgumentError, "ooda auto conflicts with fixed reasoning_effort"
@@ -77,6 +84,10 @@ defmodule LdHost.Run do
       research_tool_calls: 0,
       research_evidence_bytes: 0,
       unresolved_questions: [],
+      cache_scope: cache_scope,
+      cache_run_id: cache_run_id,
+      evidence_cache_hits: 0,
+      evidence_cache_misses: 0,
       prelude: prelude,
       prelude_words: prelude_words,
       allowed_effects: Keyword.get(opts, :allowed_effects, ["read", "write", "exec"]),
@@ -127,6 +138,9 @@ defmodule LdHost.Run do
       research_tool_calls: elem(episode_result, 1).research_tool_calls,
       research_evidence_bytes: elem(episode_result, 1).research_evidence_bytes,
       unresolved_questions: elem(episode_result, 1).unresolved_questions,
+      cache_scope: elem(episode_result, 1).cache_scope,
+      evidence_cache_hits: elem(episode_result, 1).evidence_cache_hits,
+      evidence_cache_misses: elem(episode_result, 1).evidence_cache_misses,
       # Reuse-proven this run, not first persist (candidates stay off this list).
       promoted_words: elem(episode_result, 1).promoted_words,
       run_dir: run_dir
@@ -650,7 +664,9 @@ defmodule LdHost.Run do
 
   defp research_observation(state, manifest, episode, research_goal) do
     case state.research_fn.(research_goal, manifest,
-           run_id: Path.basename(state.run_dir),
+           run_id: state.cache_run_id,
+           run_dir: state.run_dir,
+           cache_scope: state.cache_scope,
            emit: fn type, data ->
              Ledger.trace(state.ledger, type, Map.put(data, :episode, episode))
            end
@@ -836,7 +852,10 @@ defmodule LdHost.Run do
       %{
         state
         | model_calls: state.model_calls + calls,
-          tokens: add_token_usage(state.tokens, telemetry)
+          tokens: add_token_usage(state.tokens, telemetry),
+          evidence_cache_hits: state.evidence_cache_hits + (telemetry[:evidence_cache_hits] || 0),
+          evidence_cache_misses:
+            state.evidence_cache_misses + (telemetry[:evidence_cache_misses] || 0)
       }
     end
   end
@@ -894,7 +913,8 @@ defmodule LdHost.Run do
 
     LdHost.Planner.plan(state.goal, observation,
       reasoning_effort: state.current_effort,
-      cache_key: Path.basename(state.run_dir)
+      run_id: state.cache_run_id,
+      cache_scope: state.cache_scope
     )
   end
 

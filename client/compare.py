@@ -309,6 +309,8 @@ def livingdict_argv(prompt: str, cwd: Path, *, max_turns: int, run_dir: Path) ->
         str(max_turns),
         "--run-dir",
         str(run_dir),
+        "--cache-scope",
+        "run",
     ]
 
 

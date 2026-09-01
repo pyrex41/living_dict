@@ -107,6 +107,32 @@ to be the thing that creates the job stack. The host owns that.
 To score this loop against grok headless and pi headless on the same
 prompt, see [`COMPARE.md`](COMPARE.md).
 
+## Cache isolation
+
+Live model drivers accept `--cache-scope off|run|shared` (`run` by default).
+Benchmark mode always forces `run` and allocates a fresh private routing id.
+`shared` is an explicit production optimization; it is never used for a
+headline benchmark. `off` omits provider affinity hints but cannot promise a
+cold provider cache because xAI may still reuse an exact prefix
+opportunistically.
+
+Provider caching is exact-prefix KV reuse, not response reuse. Stable system,
+goal, tool schemas, assistant reasoning, tool calls, and tool results are
+preserved and later turns append messages. Research and planner phases use
+different hashed routing ids. Ledgers record cached tokens and routing-key
+fingerprints, never routing ids or prompt text.
+
+OODA additionally caches bounded read-only tool results. Run entries remain in
+the run directory; shared entries use the platform cache directory. Keys cover
+the workspace manifest, canonical tool arguments, and cache format version.
+Planner envelopes, critic decisions, checks, receipts, and credentials are
+never cached.
+
+For request-shape audits, run `tools/llm_cache_recorder.py --ledger PATH` and
+point `LIVINGDICT_PLANNER_ENDPOINT` (BEAM) or `LIVINGDICT_API_BASE` (Python) at
+its listener. The recorder retains hashes, sizes, timing, and provider usage
+only; authorization and plaintext messages are not written.
+
 ## What “works” means
 
 You can type any goal. The first episode does not reject itself.

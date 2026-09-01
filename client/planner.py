@@ -9,10 +9,12 @@ Auth (highest wins):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import stat
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -381,22 +383,27 @@ def bearer_token() -> tuple[str, str]:
     return token, "oauth"
 
 
-def _chat_request(payload: dict[str, Any], token: str) -> urllib.request.Request:
+def _chat_request(
+    payload: dict[str, Any], token: str, cache_key: str | None = None
+) -> urllib.request.Request:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    if cache_key:
+        headers["x-grok-conv-id"] = cache_key
     return urllib.request.Request(
         f"{API_BASE.rstrip('/')}/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
+        headers=headers,
         method="POST",
     )
 
 
-def _open_chat(payload: dict[str, Any], token: str, source: str):
+def _open_chat(payload: dict[str, Any], token: str, source: str, cache_key: str | None):
     try:
-        return urllib.request.urlopen(_chat_request(payload, token), timeout=180)
+        return urllib.request.urlopen(_chat_request(payload, token, cache_key), timeout=180)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:400]
         if exc.code == 401 and source == "oauth":
@@ -404,7 +411,9 @@ def _open_chat(payload: dict[str, Any], token: str, source: str):
             if found:
                 path, rec_key, rec = found
                 token = _refresh_oauth(path, rec_key, rec)
-                return urllib.request.urlopen(_chat_request(payload, token), timeout=180)
+                return urllib.request.urlopen(
+                    _chat_request(payload, token, cache_key), timeout=180
+                )
             raise PlannerError(f"xAI 401: {detail}") from exc
         raise PlannerError(f"xAI HTTP {exc.code}: {detail}") from exc
 
@@ -467,14 +476,48 @@ def _consume_stream(resp) -> tuple[str, dict[str, Any]]:
     return "".join(content), usage
 
 
-def complete_json(system: str, user: str) -> tuple[dict[str, Any], dict[str, int]]:
+def normalize_cache_scope(value: str | None) -> str:
+    scope = (value or os.environ.get("LIVINGDICT_CACHE_SCOPE") or "run").strip().lower()
+    if scope not in {"off", "run", "shared"}:
+        raise PlannerError(f"invalid cache scope: {scope}")
+    return scope
+
+
+def provider_cache_key(
+    scope: str, *, run_id: str | None, phase: str, system: str
+) -> str | None:
+    if scope == "off" or (scope == "run" and not run_id):
+        return None
+    schema = hashlib.sha256(system.encode("utf-8")).hexdigest()
+    identity = (
+        f"run\0{run_id}\0{MODEL}\0chat-completions\0{phase}\0{schema}"
+        if scope == "run"
+        else f"shared\0{MODEL}\0chat-completions\0{phase}\0{schema}"
+    )
+    return "ld-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def complete_json(
+    system: str,
+    user: str,
+    *,
+    goal: str | None = None,
+    cache_scope: str | None = None,
+    run_id: str | None = None,
+    phase: str = "planner",
+) -> tuple[dict[str, Any], dict[str, Any]]:
     token, source = bearer_token()
+    scope = normalize_cache_scope(cache_scope)
+    cache_key = provider_cache_key(scope, run_id=run_id, phase=phase, system=system)
+    messages = [{"role": "system", "content": system}]
+    if goal is not None:
+        messages.append({"role": "user", "content": f"GOAL:\n{goal}"})
+        messages.append({"role": "user", "content": f"OBSERVATION:\n{user}"})
+    else:
+        messages.append({"role": "user", "content": user})
     payload = {
         "model": MODEL,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
+        "messages": messages,
         "response_format": {"type": "json_object"},
         "reasoning_effort": os.environ.get("LIVINGDICT_REASONING", "low"),
     }
@@ -482,7 +525,8 @@ def complete_json(system: str, user: str) -> tuple[dict[str, Any], dict[str, int
     if stream:
         payload["stream"] = True
         payload["stream_options"] = {"include_usage": True}
-    resp = _open_chat(payload, token, source)
+    started = time.monotonic()
+    resp = _open_chat(payload, token, source, cache_key)
     if stream:
         with resp:
             content, usage = _consume_stream(resp)
@@ -496,11 +540,24 @@ def complete_json(system: str, user: str) -> tuple[dict[str, Any], dict[str, int
         usage = raw.get("usage") or {}
     if not content:
         raise PlannerError("xAI returned no content")
-    telemetry = {
+    prompt_details = usage.get("prompt_tokens_details") or {}
+    completion_details = usage.get("completion_tokens_details") or {}
+    prefix = json.dumps(messages[:2], ensure_ascii=False, sort_keys=True)
+    telemetry: dict[str, Any] = {
         "input_tokens": int(usage.get("prompt_tokens") or 0),
         "output_tokens": int(usage.get("completion_tokens") or 0),
+        "reasoning_tokens": int(completion_details.get("reasoning_tokens") or 0),
+        "cached_tokens": int(prompt_details.get("cached_tokens") or 0),
+        "total_tokens": int(usage.get("total_tokens") or 0),
+        "duration_ms": round((time.monotonic() - started) * 1000),
         "model": MODEL,
         "auth": source,
+        "cache_scope": scope,
+        "cache_phase": phase,
+        "cache_key_fingerprint": (
+            hashlib.sha256(cache_key.encode("utf-8")).hexdigest() if cache_key else None
+        ),
+        "message_prefix_sha256": hashlib.sha256(prefix.encode("utf-8")).hexdigest(),
     }
     return extract_json_object(content), telemetry
 
@@ -512,7 +569,9 @@ def plan(
     dictionary: Path | None = None,
     episode: int = 1,
     run_dir: Path | None = None,
-) -> tuple[dict[str, Any], dict[str, int]]:
+    cache_scope: str | None = None,
+    cache_run_id: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     goal = goal.strip()
     if not goal:
         raise PlannerError("empty goal")
@@ -521,7 +580,6 @@ def plan(
     ensure_job_files(job_root, goal, episode)
     observation = observe_workspace(workspace)
     user = (
-        f"GOAL:\n{goal}\n\n"
         f"PRODUCT workspace {workspace}:\n{observation}\n\n"
         f"HARNESS dictionary {dictionary or '(none)'}:\n{observe_dictionary(dictionary)}\n\n"
         f"BACKPRESSURE discharge {workspace / '.sb' / 'discharge_report.json'}:\n"
@@ -534,7 +592,14 @@ def plan(
         user += f"\n\nJOB (run dir, not product) {run_dir}:\n{observe_workspace(Path(run_dir))}"
     if extra:
         user += f"\n\nCONSTRAINTS:\n{extra}"
-    raw, telemetry = complete_json(SYSTEM, user)
+    raw, telemetry = complete_json(
+        SYSTEM,
+        user,
+        goal=goal,
+        cache_scope=cache_scope,
+        run_id=cache_run_id or (run_dir.name if run_dir is not None else None),
+        phase="planner",
+    )
     envelope = normalize_envelope(raw)
     return envelope, telemetry
 
@@ -624,7 +689,18 @@ def main(argv: list[str] | None = None) -> int:
     else:
         episode = 1
         run_dir = None
-    envelope, telemetry = plan(goal, args.workspace, extra, dictionary, episode, run_dir)
+    cache_scope = str(payload.get("cache_scope") or "run") if args.stdin else "run"
+    cache_run_id = str(payload.get("cache_run_id") or "") if args.stdin else ""
+    envelope, telemetry = plan(
+        goal,
+        args.workspace,
+        extra,
+        dictionary,
+        episode,
+        run_dir,
+        cache_scope,
+        cache_run_id or None,
+    )
     envelope["_telemetry"] = telemetry
     print(json.dumps(envelope, indent=2, sort_keys=True))
     return 0

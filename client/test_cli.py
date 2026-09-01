@@ -24,6 +24,7 @@ class CliEntryTests(unittest.TestCase):
         self.assertIn("--planner-cmd", proc.stdout)
         self.assertIn("--run-dir", proc.stdout)
         self.assertIn("--cwd", proc.stdout)
+        self.assertIn("--cache-scope", proc.stdout)
 
     def test_bin_help(self) -> None:
         proc = subprocess.run(
