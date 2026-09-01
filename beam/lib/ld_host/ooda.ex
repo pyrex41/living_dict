@@ -9,7 +9,11 @@ defmodule LdHost.OODA do
 
   alias LdHost.Policy
 
-  @direct_files 4
+  # Count is only a guard against context fan-out; bytes are the stronger
+  # bound.  A small module graph commonly includes an __init__ plus several
+  # tiny nodes (graph-08 has five writable files), and should not pay for a
+  # research loop solely because it crossed an overly tight count threshold.
+  @direct_files 8
   @direct_bytes 32 * 1024
   @result_bytes 16 * 1024
   @evidence_bytes 64 * 1024

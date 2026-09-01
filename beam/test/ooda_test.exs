@@ -17,6 +17,20 @@ defmodule LdHost.OODATest do
     assert OODA.direct_context(manifest) =~ "return 41"
   end
 
+  test "a small five-file module graph stays direct under the byte cap" do
+    ws = workspace()
+
+    for name <- ~w(__init__ prepare compute finalize registry) do
+      File.write!(Path.join(ws, "src/#{name}.py"), "NAME = #{inspect(name)}\n")
+    end
+
+    manifest =
+      OODA.manifest(ws, allowed_globs: ["src/*.py"], approved_contract: true)
+
+    assert length(manifest.writable_files) == 6
+    assert %{route: :direct, effort: "low"} = OODA.orient(manifest)
+  end
+
   test "broad scope invokes research and sensitive files stay out of the manifest" do
     ws = workspace()
     File.write!(Path.join(ws, ".env"), "TOKEN=do-not-read")
