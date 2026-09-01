@@ -4,14 +4,20 @@ defmodule LdHost.DispatcherTest do
   alias LdHost.{Dispatcher, Ledger, Progress, Space}
 
   defp tmp(prefix) do
-    dir = System.tmp_dir!() |> Path.join("#{prefix}-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}")
+    dir =
+      System.tmp_dir!()
+      |> Path.join(
+        "#{prefix}-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
     File.mkdir_p!(dir)
     dir
   end
 
   defp orchestrator do
-    {:ok, space} = Space.start_link([])
     {:ok, ledger} = Ledger.start_link(tmp("ldorch"))
+    record = fn kind, payload -> Ledger.trace(ledger, kind, payload) end
+    {:ok, space} = Space.start_link(record: record)
     {:ok, dispatcher} = Dispatcher.start_link(space: space, ledger: ledger)
     %{space: space, ledger: ledger, dispatcher: dispatcher}
   end
@@ -27,6 +33,15 @@ defmodule LdHost.DispatcherTest do
     }
 
     fn _goal, _obs, _feedback -> {:ok, envelope, %{input_tokens: 1, output_tokens: 1}} end
+  end
+
+  defp trace_events(ledger) do
+    ledger
+    |> then(&:sys.get_state(&1).run_dir)
+    |> Path.join("trace.jsonl")
+    |> File.read!()
+    |> String.split("\n", trim: true)
+    |> Enum.map(&JSON.decode!/1)
   end
 
   test "obligation lifecycle: out -> take -> jido agent runs the loop -> ack + ledger" do
@@ -45,7 +60,11 @@ defmodule LdHost.DispatcherTest do
         "id" => "ob-1",
         "goal" => "write an output file",
         "workspace" => ws,
-        "contract" => %{"claims" => [%{"id" => "out", "kind" => "check", "command" => "grep -q obligation out.txt"}]}
+        "contract" => %{
+          "claims" => [
+            %{"id" => "out", "kind" => "check", "command" => "grep -q obligation out.txt"}
+          ]
+        }
       })
 
     assert_receive {:ld_progress, {:obligation, "ob-1"}, :spawned}, 2_000
@@ -57,17 +76,22 @@ defmodule LdHost.DispatcherTest do
     assert Space.leased_count(space) == 0
     assert Space.bag_size(space) == 0
 
-    ledger_dir = :sys.get_state(ledger).run_dir
-    trace = File.read!(Path.join(ledger_dir, "trace.jsonl"))
-    assert trace =~ "obligation.spawned"
-    assert trace =~ "obligation.completed"
-    assert trace =~ "space.ack" == false or true
+    events = trace_events(ledger)
+    types = Enum.map(events, & &1["type"])
+    assert "obligation.spawned" in types
+    assert "obligation.completed" in types
+    assert "space.ack" in types
+    refute "space.lease_expired" in types
+    spawned_at = Enum.find_index(types, &(&1 == "obligation.spawned"))
+    completed_at = Enum.find_index(types, &(&1 == "obligation.completed"))
+    assert spawned_at < completed_at
   end
 
   test "deny-by-default: goalless and workspaceless obligations are refused, not looped" do
     %{space: space, ledger: ledger} = orchestrator()
 
-    {:ok, _} = Space.out(space, %{"kind" => "obligation", "id" => "ob-bad", "workspace" => "/nope/nothing"})
+    {:ok, _} =
+      Space.out(space, %{"kind" => "obligation", "id" => "ob-bad", "workspace" => "/nope/nothing"})
 
     ledger_dir = :sys.get_state(ledger).run_dir
 
@@ -78,6 +102,9 @@ defmodule LdHost.DispatcherTest do
 
     assert Space.bag_size(space) == 0
     assert Space.leased_count(space) == 0
+    events = File.read!(Path.join(ledger_dir, "trace.jsonl"))
+    assert events =~ "space.ack"
+    refute events =~ "space.lease_expired"
   end
 
   test "two obligations run concurrently in disjoint workspaces" do
@@ -91,11 +118,19 @@ defmodule LdHost.DispatcherTest do
     ws2 = tmp("ldc2")
     Progress.subscribe(:all)
 
-    contract = %{"claims" => [%{"id" => "out", "kind" => "check", "command" => "test -s out.txt"}]}
+    contract = %{
+      "claims" => [%{"id" => "out", "kind" => "check", "command" => "test -s out.txt"}]
+    }
 
     for {id, ws} <- [{"ob-a", ws1}, {"ob-b", ws2}] do
       {:ok, _} =
-        Space.out(space, %{"kind" => "obligation", "id" => id, "goal" => "g", "workspace" => ws, "contract" => contract})
+        Space.out(space, %{
+          "kind" => "obligation",
+          "id" => id,
+          "goal" => "g",
+          "workspace" => ws,
+          "contract" => contract
+        })
     end
 
     assert_receive {:ld_progress, {:obligation, _}, {:completed, _}}, 15_000
