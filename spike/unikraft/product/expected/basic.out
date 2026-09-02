@@ -1,0 +1,8 @@
+OK
+OK
+VALUE a 1
+MISSING absent
+KEY a 1
+KEY b 2
+OK
+HALT

@@ -1,0 +1,2 @@
+$(eval $(call addlib,appkv_machine))
+APPKV_MACHINE_SRCS-y += $(APPKV_MACHINE_BASE)/main.c

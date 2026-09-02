@@ -1,0 +1,12 @@
+runtime = "kraft/qemu-tcg-x86_64"
+entrypoint = "initrd-fixture"
+ports = []
+
+[determinism]
+state = "guest-memory-only"
+semantic_output = "stdout:first-response-through-HALT"
+fresh_boots = 3
+
+[capabilities]
+allowed = ["read-only-initrd-input", "stdout", "heap"]
+forbidden = ["clock", "random", "network", "host-filesystem", "threads"]

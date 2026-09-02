@@ -1,0 +1,16 @@
+package livingdict:durable@0.1.0;
+
+interface capabilities {
+  virtual-time: func() -> u64;
+  seeded-random: func(length: u32) -> list<u8>;
+  external-effect: func(name: string, idempotency-key: string, payload: list<u8>) -> result<list<u8>, string>;
+}
+
+world product {
+  import capabilities;
+  export init: func(seed: u64);
+  export handle: func(frame: list<u8>) -> result<list<u8>, string>;
+  export snapshot: func() -> list<u8>;
+  export restore: func(state: list<u8>) -> result<_, string>;
+  export state-hash: func() -> list<u8>;
+}

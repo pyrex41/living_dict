@@ -1,0 +1,19 @@
+[package]
+name="kv-component"
+version.workspace=true
+edition.workspace=true
+[dependencies]
+ld-guest-sdk={path="../../guest-sdk"}
+serde.workspace=true
+serde_json.workspace=true
+sha2.workspace=true
+wit-bindgen.workspace=true
+[lib]
+crate-type=["cdylib","rlib"]
+
+[package.metadata.component]
+package = "livingdict:durable"
+
+[package.metadata.component.target]
+path = "../../wit"
+world = "product"

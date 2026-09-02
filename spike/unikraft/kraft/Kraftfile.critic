@@ -1,0 +1,19 @@
+spec: v0.6
+
+name: ld-critic
+
+unikraft:
+  version: stable
+  kconfig:
+    CONFIG_LIBUKRANDOM: n
+    CONFIG_LIBLWIP: n
+    CONFIG_LIBUKSCHEDCOOP: n
+
+targets:
+  - name: qemu-x86_64
+    architecture: x86_64
+    platform: qemu
+
+# Console-framed Lua/Shen validate. No network, no RNG, no scheduler.
+# Guest is luajit + openresty/lua/forth.lua validate. No Python.
+command: ["/ld-critic"]

@@ -1,0 +1,6 @@
+PUT b 2
+PUT a 1
+GET a
+GET absent
+DUMP
+HALT

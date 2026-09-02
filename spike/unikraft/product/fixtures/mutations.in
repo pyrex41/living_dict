@@ -1,0 +1,7 @@
+PUT z old
+PUT z new
+PUT aa first
+DELETE z
+GET z
+DUMP
+HALT

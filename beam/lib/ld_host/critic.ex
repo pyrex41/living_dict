@@ -78,7 +78,8 @@ defmodule LdHost.Critic do
   def validate(program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys, catalog) do
     GenServer.call(
       __MODULE__,
-      {:validate, program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys, catalog},
+      {:validate, program, allowed_effects, allowed_globs, forbidden_globs, artifact_keys,
+       catalog},
       30_000
     )
   end
@@ -89,7 +90,9 @@ defmodule LdHost.Critic do
 
   def lua_artifact, do: Path.join([repo_root(), "openresty", "dist", "critic", "app.lua"])
   def js_artifact, do: Path.join([repo_root(), "browser", "dist", "critic", "app.js"])
-  def beam_artifact, do: Path.join([repo_root(), "openresty", "dist", "critic-erl", "app-erlang", "ebin"])
+
+  def beam_artifact,
+    do: Path.join([repo_root(), "openresty", "dist", "critic-erl", "app-erlang", "ebin"])
 
   # Artifact resolution order: explicit opt -> env var -> the app's priv
   # dir (a mix release ships the artifacts there) -> the dev checkout's
@@ -128,7 +131,10 @@ defmodule LdHost.Critic do
       with {:error, beam_reason} <- boot_beam(resolve_beam_artifact(opts)),
            {:error, luerl_reason} <- boot_luerl(Keyword.get(opts, :lua_artifact, lua_artifact())),
            {:error, node_reason} <- boot_node(resolve_js_artifact(opts)) do
-        %{engine: :none, error: "beam: #{beam_reason}; luerl: #{luerl_reason}; node: #{node_reason}"}
+        %{
+          engine: :none,
+          error: "beam: #{beam_reason}; luerl: #{luerl_reason}; node: #{node_reason}"
+        }
       else
         {:ok, :beam} -> %{engine: :beam}
         {:ok, lua} -> %{engine: :luerl, lua: lua}
@@ -228,7 +234,11 @@ defmodule LdHost.Critic do
     handle_call({:validate, program, effects, globs, forbidden, artifacts, []}, from, state)
   end
 
-  def handle_call({:validate, program, effects, globs, forbidden, artifacts, catalog}, _from, %{engine: :beam} = state) do
+  def handle_call(
+        {:validate, program, effects, globs, forbidden, artifacts, catalog},
+        _from,
+        %{engine: :beam} = state
+      ) do
     tokens = apply(:kl_validate, :"tokenise-program", [shen_str(program)])
     rows = shen_catalog(catalog)
 
@@ -246,8 +256,11 @@ defmodule LdHost.Critic do
   rescue
     e -> {:reply, {:reject, ["critic error: #{Exception.message(e)}"], 0, []}, state}
   catch
-    {:simple_error, message} -> {:reply, {:reject, [to_string(message)], 0, []}, state}
-    kind, val -> {:reply, {:reject, ["critic error: #{kind} #{inspect(val, limit: 3)}"], 0, []}, state}
+    {:simple_error, message} ->
+      {:reply, {:reject, [to_string(message)], 0, []}, state}
+
+    kind, val ->
+      {:reply, {:reject, ["critic error: #{kind} #{inspect(val, limit: 3)}"], 0, []}, state}
   end
 
   def handle_call({:validate, _p, _e, _g, _f, _a, catalog}, _from, %{engine: engine} = state)
@@ -255,18 +268,29 @@ defmodule LdHost.Critic do
     {:reply, {:error, "catalog validate requires the beam critic"}, state}
   end
 
-  def handle_call({:validate, program, effects, globs, forbidden, artifacts, _catalog}, _from, %{engine: :luerl} = state) do
+  def handle_call(
+        {:validate, program, effects, globs, forbidden, artifacts, _catalog},
+        _from,
+        %{engine: :luerl} = state
+      ) do
     args = [program, effects, globs, forbidden, artifacts]
 
     case :luerl.call_function([:ld_validate], args, state.lua) do
-      {:ok, [result], lua} -> {:reply, decode_lua(result), %{state | lua: lua}}
-      {:error, reason, _lua} -> {:reply, {:reject, ["critic error: #{inspect(reason)}"], 0, []}, state}
+      {:ok, [result], lua} ->
+        {:reply, decode_lua(result), %{state | lua: lua}}
+
+      {:error, reason, _lua} ->
+        {:reply, {:reject, ["critic error: #{inspect(reason)}"], 0, []}, state}
     end
   rescue
     e -> {:reply, {:reject, ["critic error: #{Exception.message(e)}"], 0, []}, state}
   end
 
-  def handle_call({:validate, program, effects, globs, forbidden, artifacts, _catalog}, _from, %{engine: :node} = state) do
+  def handle_call(
+        {:validate, program, effects, globs, forbidden, artifacts, _catalog},
+        _from,
+        %{engine: :node} = state
+      ) do
     id = state.next_id
 
     request =
@@ -369,6 +393,9 @@ defmodule LdHost.Critic do
   defp decode_lua(other), do: {:error, "unexpected critic result: #{inspect(other)}"}
 
   defp plain(value) when is_list(value), do: Enum.map(value, fn {_k, v} -> plain(v) end)
-  defp plain(value) when is_float(value), do: if(value == trunc(value), do: trunc(value), else: value)
+
+  defp plain(value) when is_float(value),
+    do: if(value == trunc(value), do: trunc(value), else: value)
+
   defp plain(value), do: value
 end

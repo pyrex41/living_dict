@@ -29,6 +29,27 @@ defmodule LdHost.Cmd do
     collect(port, os_pid, [], timeout_ms)
   end
 
+  @doc "Run a literal executable and argv without a shell."
+  def exec(executable, argv, cwd, timeout_ms) do
+    port =
+      Port.open({:spawn_executable, executable}, [
+        :binary,
+        :exit_status,
+        :stderr_to_stdout,
+        :hide,
+        args: argv,
+        cd: cwd
+      ])
+
+    os_pid =
+      case Port.info(port, :os_pid) do
+        {:os_pid, pid} -> pid
+        _ -> nil
+      end
+
+    collect(port, os_pid, [], timeout_ms)
+  end
+
   defp collect(port, os_pid, acc, timeout_ms) do
     started = System.monotonic_time(:millisecond)
 
@@ -41,7 +62,9 @@ defmodule LdHost.Cmd do
         %{output: truncate(acc), returncode: code, timed_out: false}
     after
       timeout_ms ->
-        if os_pid, do: System.cmd("kill", ["-9", Integer.to_string(os_pid)], stderr_to_stdout: true)
+        if os_pid,
+          do: System.cmd("kill", ["-9", Integer.to_string(os_pid)], stderr_to_stdout: true)
+
         safe_close(port)
         %{output: truncate(acc), returncode: nil, timed_out: true}
     end
