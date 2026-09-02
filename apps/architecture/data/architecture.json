@@ -24,6 +24,7 @@
     {"name":"Ledger + receipts","when":"Every run","hot":true,"role":"Records decisions, mutations, and state hashes.","source":"beam/lib/ld_host/ledger.ex"},
     {"name":"OODA research","when":"When --ooda auto","hot":false,"role":"Bounded read-only context gathering; can be disabled.","source":"beam/lib/ld_host/research.ex"},
     {"name":"Warm dictionary","when":"When a dictionary is supplied","hot":false,"role":"Loads typed words; measured use is distinct from planner mention.","source":"beam/lib/ld_host/dictionary.ex"},
+    {"name":"Durable Wasm components","when":"Approved wasm-durable-v1 claim","hot":false,"role":"Runs product logic in constrained Rust components; verifies replay, recovery, forks, effects, and evidence.","source":"spike/wasm/executor/src/lib.rs"},
     {"name":"Linda + Jido obligations","when":"Demo / benchmark orchestration","hot":false,"role":"Real leased work coordination, not the direct ld.run hot path.","source":"beam/lib/ld_host/obligation.ex"},
     {"name":"OpenResty + browser bodies","when":"Alternate deployments","hot":false,"role":"Portability proofs sharing critic/ABI—not three layers per run.","source":"docs/ARCHITECTURE.md"}
   ]
