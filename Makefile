@@ -11,7 +11,7 @@ ifneq ($(wildcard $(SHENSCRIPT)),)
 YGGDRASIL_HOST ?= node $(SHENSCRIPT)
 endif
 
-.PHONY: eval-test eval-oracle harness-test openresty-test eval-resty-config-01 openresty-serve think-config-01 client-test livingdict client-web test browser-test browser-shake browser-serve architecture-dev architecture-build compare compare-dry scudcheck pack-critic critic-suite beam-deps beam-test beam-run
+.PHONY: eval-test eval-oracle harness-test openresty-test eval-resty-config-01 openresty-serve think-config-01 client-test livingdict client-web test browser-test browser-shake critic-js-nix critic-erl-nix browser-serve architecture-dev architecture-build compare compare-dry scudcheck pack-critic critic-suite beam-deps beam-test beam-run unikraft-spike wasm-test durable-gate
 
 eval-test:
 	cd eval && python3 -m unittest discover -s tests -v
@@ -24,6 +24,9 @@ harness-test:
 
 openresty-test:
 	luajit openresty/selftest.lua
+
+unikraft-spike:
+	$(MAKE) -C spike/unikraft test
 
 eval-resty-config-01:
 	cd eval && LIVINGDICT_ENVELOPE="$(ENVELOPE_CONFIG_01)" python3 -m ldeval run \
@@ -56,7 +59,7 @@ compare:
 client-web:
 	cd client/web && npm install && npm run build
 
-test: eval-test harness-test openresty-test critic-suite beam-test scudcheck
+test: eval-test harness-test openresty-test critic-suite beam-test scudcheck unikraft-spike
 
 scudcheck:
 	@if ! command -v go >/dev/null 2>&1; then echo "skip scudcheck: go not found"; exit 0; fi
@@ -80,6 +83,20 @@ browser-shake:
 	@grep -q 'typechecked=true' browser/dist/critic/yggdrasil.manifest.txt
 	@echo "shaken js -> browser/dist/critic/app.js"
 	@echo "shaken lua -> openresty/dist/critic/app.lua"
+
+critic-js-nix:
+	mkdir -p browser/dist/critic
+	nix run path:./tools/critic -- shen/critic/validate.shen browser/dist/critic
+	@grep -q 'needs-eval=false' browser/dist/critic/yggdrasil.manifest.txt
+	@grep -q 'typechecked=true' browser/dist/critic/yggdrasil.manifest.txt
+	@echo "pinned shaken js -> browser/dist/critic/app.js"
+
+critic-erl-nix:
+	mkdir -p openresty/dist/critic-erl
+	nix run path:./tools/critic#erlang-critic -- shen/critic/validate.shen openresty/dist/critic-erl
+	@grep -q 'needs-eval=false' openresty/dist/critic-erl/yggdrasil.manifest.txt
+	@grep -q 'typechecked=true' openresty/dist/critic-erl/yggdrasil.manifest.txt
+	@echo "pinned shaken erlang -> openresty/dist/critic-erl/app-erlang"
 
 # suite.shen is a mechanical pack: header + validate.shen + suite-tests.shen.
 # Never edit it by hand; repack after touching either source.
@@ -124,6 +141,12 @@ beam-test:
 beam-run:
 	@test -n "$(GOAL)" || (echo 'usage: make beam-run GOAL="..." [CWD=path] [CONTRACT=claims.json]'; exit 2)
 	cd beam && mix ld.run --goal "$(GOAL)" $(if $(CWD),--cwd "$(CWD)") $(if $(CONTRACT),--contract "$(CONTRACT)")
+
+wasm-test:
+	$(MAKE) -C spike/wasm test
+
+durable-gate:
+	$(MAKE) -C spike/wasm durable-gate
 
 # Native BEAM critic: typed Shen -> shen-erl BEAM modules (loads into beam/).
 critic-erl:

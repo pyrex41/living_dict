@@ -1,0 +1,12 @@
+spec: v0.6
+name: livingdict-kv
+unikraft:
+  version: stable
+  kconfig:
+    - CONFIG_LIBUKLIBC=y
+    - CONFIG_LIBUKALLOC=y
+    - CONFIG_LIBUKALLOCBBUDDY=y
+    - CONFIG_LIBUKBOOT=y
+    - CONFIG_LIBUKDEBUG=y
+targets:
+  - qemu/x86_64

@@ -1,0 +1,19 @@
+schema = "livingdict.machine/v1"
+profile = "wasm-durable-v1"
+component_package = "order-component"
+component = "target/wasm32-unknown-unknown/release/order_component.wasm"
+world = "livingdict:durable/product@0.1.0"
+scenarios = ["scenarios/order.json"]
+[limits]
+fuel=10000000
+memory_bytes=16777216
+max_invocations=1000
+max_frame_bytes=65536
+max_log_bytes=8388608
+[capabilities]
+clock="virtual"
+random="seeded"
+filesystem="none"
+network="none"
+environment="none"
+threads="forbidden"

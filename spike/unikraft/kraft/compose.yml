@@ -1,0 +1,25 @@
+# Logical compose of organs. kraft compose is the long-term runner;
+# today the in-process Sequencer is the same topology.
+services:
+  seq:
+    # Lives on the Linux/macOS side in this spike (kernel.py).
+    role: sequencer
+  critic:
+    kraftfile: Kraftfile.critic
+  host:
+    kraftfile: Kraftfile.host
+  store:
+    kraftfile: Kraftfile.store
+  gates:
+    # Not a unikernel until RUN-GATES is hermetic on the host.
+    role: hermetic-hash
+links:
+  - planner -> seq : plan
+  - seq -> critic : plan
+  - critic -> seq : verdict
+  - seq -> host : execute
+  - host -> store : intern
+  - store -> host : interned
+  - host -> seq : applied
+  - seq -> gates : measure
+  - gates -> seq : report

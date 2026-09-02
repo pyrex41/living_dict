@@ -1,0 +1,19 @@
+spec: v0.6
+
+name: ld-host
+
+unikraft:
+  version: stable
+  kconfig:
+    CONFIG_LIBUKRANDOM: n
+    CONFIG_LIBLWIP: n
+    CONFIG_LIBUKSCHEDCOOP: n
+
+targets:
+  - name: qemu-x86_64
+    architecture: x86_64
+    platform: qemu
+
+# Forth VM + capability words. Workspace bytes arrive as intern/apply
+# messages; the guest never mounts the planner's filesystem.
+command: ["/ld-host"]

@@ -1,0 +1,4 @@
+/target/
+/.livingdict-run/
+/guests/kv/src/bindings.rs
+/guests/order/src/bindings.rs

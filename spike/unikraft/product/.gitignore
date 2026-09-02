@@ -1,0 +1,4 @@
+/build/
+/loader/rootfs/
+/.config*
+/.unikraft/

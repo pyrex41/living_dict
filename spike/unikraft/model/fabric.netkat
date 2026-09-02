@@ -1,0 +1,32 @@
+# Living Dictionary organ fabric.
+# Each clause is one hop: filter on (sw, kind, dst) then move sw along a
+# physical link. Packets that match nothing are drop.
+# Isolation is program equivalence: banned (src, kind, dst) reachability ≡ drop.
+
+# planner may only hand a plan to the sequencer
+plan_in := sw = planner ; kind = plan ; dst = seq ; sw <- seq
+
+# sequencer may ask the critic to validate, never to execute
+to_critic := sw = seq ; kind = plan ; dst = critic ; sw <- critic
+
+# critic talks only to the sequencer
+verdict := sw = critic ; kind = verdict ; dst = seq ; sw <- seq
+
+# execute is sequencer → host. critic cannot emit this hop.
+execute := sw = seq ; kind = execute ; dst = host ; sw <- host
+
+# intern is host → store. planner and critic cannot emit this hop.
+intern := sw = host ; kind = intern ; dst = store ; sw <- store
+interned := sw = store ; kind = interned ; dst = host ; sw <- host
+
+# host reports applied artifacts back to the sequencer
+applied := sw = host ; kind = applied ; dst = seq ; sw <- seq
+
+# gates see a tree hash, not a workspace path
+measure := sw = seq ; kind = measure ; dst = gates ; sw <- gates
+report := sw = gates ; kind = report ; dst = seq ; sw <- seq
+
+# sequencer may ack the planner (unused by the spike, reserved)
+ack := sw = seq ; kind = ack ; dst = planner ; sw <- planner
+
+forward := plan_in + to_critic + verdict + execute + intern + interned + applied + measure + report + ack

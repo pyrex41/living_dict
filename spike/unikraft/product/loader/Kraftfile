@@ -1,0 +1,5 @@
+spec: v0.6
+name: livingdict-kv-loader
+runtime: unikraft.org/base:latest
+rootfs: ./rootfs
+cmd: ["/ld-kv"]

@@ -1,0 +1,17 @@
+spec: v0.6
+
+name: ld-store
+
+unikraft:
+  version: stable
+  kconfig:
+    CONFIG_LIBUKRANDOM: n
+    CONFIG_LIBLWIP: n
+    CONFIG_LIBUKSCHEDCOOP: n
+
+targets:
+  - name: qemu-x86_64
+    architecture: x86_64
+    platform: qemu
+
+command: ["/ld-store"]

@@ -38,3 +38,7 @@ beam/_build/
 beam/deps/
 beam/runs/
 erl_crash.dump
+result
+result-*
+.direnv/
+spike/unikraft/unikraft/

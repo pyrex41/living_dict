@@ -20,7 +20,7 @@ defmodule LdHost.Gates do
     absent.
   """
 
-  alias LdHost.{Host, Cmd, Policy}
+  alias LdHost.{Host, Cmd, Policy, RuntimeProfiles}
 
   def run(%Host{} = host, opts \\ []) do
     persist? = Keyword.get(opts, :persist?, true)
@@ -87,7 +87,10 @@ defmodule LdHost.Gates do
       any: needles(claim["any"] || claim["must"]),
       min_bytes: int_or(claim["min_bytes"], 0),
       timeout_seconds: int_or(claim["timeout_seconds"], 60),
-      depends_on: List.wrap(claim["depends_on"] || []) |> Enum.map(&to_string/1)
+      depends_on: List.wrap(claim["depends_on"] || []) |> Enum.map(&to_string/1),
+      profile: claim["profile"] && to_string(claim["profile"]),
+      config: claim["config"] && to_string(claim["config"]),
+      must: List.wrap(claim["must"] || []) |> Enum.map(&to_string/1)
     }
   end
 
@@ -189,6 +192,20 @@ defmodule LdHost.Gates do
     end
   end
 
+  defp measure_claim(_host, %{kind: "runtime"} = claim, _failed, false, _advisory) do
+    %{
+      id: claim.id,
+      passed: false,
+      kind: "runtime",
+      reason: "runtime claims execute only under an approved or hidden contract"
+    }
+  end
+
+  defp measure_claim(host, %{kind: "runtime"} = claim, _failed, true, _advisory) do
+    %{id: claim.id, kind: "runtime"}
+    |> Map.merge(RuntimeProfiles.run(host.workspace, claim))
+  end
+
   defp measure_claim(host, claim, _failed, _allow, _advisory) do
     cond do
       claim.any == [] ->
@@ -253,6 +270,8 @@ defmodule LdHost.Gates do
     end
   end
 
-  defp timed_out?(%{claims: claims}) when is_list(claims), do: Enum.any?(claims, &(&1[:timed_out] == true))
+  defp timed_out?(%{claims: claims}) when is_list(claims),
+    do: Enum.any?(claims, &(&1[:timed_out] == true))
+
   defp timed_out?(_), do: false
 end
