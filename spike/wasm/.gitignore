@@ -2,3 +2,4 @@
 /.livingdict-run/
 /guests/kv/src/bindings.rs
 /guests/order/src/bindings.rs
+/guests/bad-snapshot/src/bindings.rs

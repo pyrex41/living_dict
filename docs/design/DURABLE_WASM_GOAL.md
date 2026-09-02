@@ -1,11 +1,14 @@
 # Durable Wasm Execution Profile for Living Dictionary
 
 > **Status (2026-09-02):** this is the record of what shipped in PR #14.
-> The phase plan that follows it, and the corrections to the claims below
-> (host-derived effect identity is not yet implemented; checkpoints do not
-> yet capture host state; fault injection is not yet a process kill), are in
-> [`DURABLE_SYSTEM_PLAN.md`](DURABLE_SYSTEM_PLAN.md), answering
-> [`reviews/durable-runtime.md`](reviews/durable-runtime.md).
+> Several claims below were ahead of that implementation (host-derived
+> effect identity, host-state checkpoints, process-kill fault injection).
+> They are now implemented; the current runtime is described in
+> [`../../spike/wasm/README.md`](../../spike/wasm/README.md) and the plan
+> that drove the change is [`DURABLE_SYSTEM_PLAN.md`](DURABLE_SYSTEM_PLAN.md),
+> answering [`reviews/durable-runtime.md`](reviews/durable-runtime.md).
+> The WIT world is now `livingdict:durable/product@0.2.0` and the oplog is
+> `ld.oplog/v2`.
 
 ## Goal
 

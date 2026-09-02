@@ -1,5 +1,5 @@
 [workspace]
-members = ["executor", "ld-wasm", "guest-sdk", "guests/kv", "guests/order"]
+members = ["executor", "ld-wasm", "guest-sdk", "guests/kv", "guests/order", "guests/bad-snapshot"]
 resolver = "2"
 
 [workspace.package]

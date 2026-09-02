@@ -1,6 +1,7 @@
 # From one durable component to a checked deterministic system
 
-Status: plan, revision 2. Supersedes the phase ordering in
+Status: plan, revision 2, with Phases 1 and 2 landed (see section 0).
+Supersedes the phase ordering in
 [`DURABLE_WASM_GOAL.md`](DURABLE_WASM_GOAL.md) (which remains the record of
 what `wasm-durable-v1` shipped in PR #14) and the "what to port" list in
 [`UNIKRAFT.md`](UNIKRAFT.md). Written against `main` at `c67513d` in answer to
@@ -13,6 +14,36 @@ architecture, components, implementation, and evidence form one checked
 refinement chain. This document turns the review into work items with file
 targets, gates, and exit conditions, and records where the plan departs from
 the review's suggestions.
+
+## 0. Status after the execution pass
+
+Landed on this branch, verified by `make -C spike/wasm durable-gate`,
+`cargo test --workspace --locked`, and the BEAM tests (`jcs_test`,
+`substrates_test`, `elaborate_test`, `runtime_evidence_test`, `gates_test`
+including the `:durable` end-to-end case):
+
+| item | state |
+|---|---|
+| 1a whole-machine checkpoint (guest bytes + clock, RNG position, event/effect cursors); order guest observes both after the checkpoint | done, `spike/wasm/executor/src/lib.rs` (`HostState`, `Checkpoint`) |
+| 1b write-ahead intent/commit journal, out-of-process provider with its own chained call log, six-point kill matrix with `ld-wasm resume` in a fresh process | done, `executor/src/provider.rs`, `spike/wasm/Makefile` `kill-matrix` |
+| 1c host-derived effect keys `(run, branch, component, event, effect)`; guest key is metadata; WIT world `0.2.0` | done |
+| 1d host-hashed snapshots, restore-and-resnapshot round trips at checkpoint and exit, `guests/bad-snapshot` negative fixture rejected by the gate | done |
+| 1e explicit Wasmtime profile (NaN canonicalization, relaxed SIMD off and deterministic, memory64/multi-memory off, epochs off, Cranelift speed), receipt `engine` attestation, allowlisted in BEAM | done; threads and parallel compilation are compiled out and recorded as such |
+| 1f independent verifier in BEAM | done, `beam/lib/ld_host/runtime_evidence.ex` re-derives every property; `RuntimeProfiles` passes a claim only on verified properties |
+| 1g positive BEAM test, revalidation from files, greedy-claim rejection, gates in `make test` | done; `beam-durable-e2e` target; `make test` now runs `wasm-test` and `durable-gate` and fails loudly without the toolchain |
+| 2a `ld-system/v1` manifest and schema doc | done, `beam/lib/ld_host/system_manifest.ex`, `docs/design/schema/ld-system-v1.md`, `examples/orders/ld-system.json` |
+| 2b substrate capability vectors with per-dimension lattice; `unikraft-confined-transducer-experimental` registered and not claim-capable; claims carry `requires` | done, `beam/lib/ld_host/substrates.ex` |
+| 2c substrate behaviour interface | not done; the kernel (Phase 3) is its first consumer |
+| 2d elaborator producing canonical derivations and obligations | done in Elixir (`beam/lib/ld_host/elaborate.ex`, `mix ld.elaborate`); Shen port pending, see section 9 |
+| Phases 3 to 6 | not started |
+
+Phase 2 exit condition holds: the orders manifest is accepted with a stable
+derivation hash, and moving the payment broker to the experimental profile
+is rejected naming `payment.external_effects`.
+
+Not reproduced here: the Unikraft QEMU gate (`make -C spike/unikraft
+product-gate`) needs Nix and Kraft, which this environment does not have.
+Its rename to experimental is text and registry only.
 
 ## 1. What shipped, and what the review found
 
@@ -407,6 +438,11 @@ traces normalized into the choice-log schema) follows.
   parallel path.
 - **Bit-identical Shen derivations.** The review leaves the choice open; this
   plan closes it in favour of bytes, to match the ledger.
+- **The elaborator landed in Elixir first.** The Shen toolchain (nix,
+  shen-erl) was not available in the execution environment, so
+  `LdHost.Elaborate` carries the judgments with fixed rule order and
+  canonical output. Porting it to `shen/critic` keeps the same derivation
+  schema; until then Shen remains the plan-level critic only.
 
 ## 10. Not in this plan
 
@@ -424,11 +460,12 @@ a planner concern and is not scheduled here.
 
 ```sh
 nix develop ./spike/wasm --command cargo test --workspace --locked
-make -C spike/wasm durable-gate          # kill matrix, provider counts, bad-snapshot rejection
-make -C beam ld.durable-e2e               # approved runtime claim, canned planner, BEAM verdict
-make -C spike/unikraft product-gate       # renamed experimental; not a claim backend
+make durable-gate            # kill matrix, provider counts, bad-snapshot rejection
+make beam-durable-e2e        # approved runtime claim through Gates, BEAM verdict from files
+make elaborate-example       # orders manifest -> ld.derivation/v1
+make -C spike/unikraft product-gate       # experimental; not a claim backend
 make -C spike/unikraft test
-make test                                 # now includes wasm-test and durable-gate
+make test                                 # includes wasm-test and durable-gate
 ```
 
 Launch form for the next execution pass:

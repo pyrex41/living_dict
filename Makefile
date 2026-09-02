@@ -11,7 +11,7 @@ ifneq ($(wildcard $(SHENSCRIPT)),)
 YGGDRASIL_HOST ?= node $(SHENSCRIPT)
 endif
 
-.PHONY: eval-test eval-oracle harness-test openresty-test eval-resty-config-01 openresty-serve think-config-01 client-test livingdict client-web test browser-test browser-shake critic-js-nix critic-erl-nix browser-serve architecture-dev architecture-build compare compare-dry scudcheck pack-critic critic-suite beam-deps beam-test beam-run unikraft-spike wasm-test durable-gate
+.PHONY: eval-test eval-oracle harness-test openresty-test eval-resty-config-01 openresty-serve think-config-01 client-test livingdict client-web test browser-test browser-shake critic-js-nix critic-erl-nix browser-serve architecture-dev architecture-build compare compare-dry scudcheck pack-critic critic-suite beam-deps beam-test beam-run unikraft-spike wasm-toolchain wasm-test durable-gate beam-durable-e2e elaborate-example
 
 eval-test:
 	cd eval && python3 -m unittest discover -s tests -v
@@ -59,7 +59,7 @@ compare:
 client-web:
 	cd client/web && npm install && npm run build
 
-test: eval-test harness-test openresty-test critic-suite beam-test scudcheck unikraft-spike
+test: eval-test harness-test openresty-test critic-suite beam-test scudcheck unikraft-spike wasm-test durable-gate
 
 scudcheck:
 	@if ! command -v go >/dev/null 2>&1; then echo "skip scudcheck: go not found"; exit 0; fi
@@ -142,11 +142,29 @@ beam-run:
 	@test -n "$(GOAL)" || (echo 'usage: make beam-run GOAL="..." [CWD=path] [CONTRACT=claims.json]'; exit 2)
 	cd beam && mix ld.run --goal "$(GOAL)" $(if $(CWD),--cwd "$(CWD)") $(if $(CONTRACT),--contract "$(CONTRACT)")
 
-wasm-test:
+# The durable Wasm runtime is a release blocker: these do not skip when the
+# toolchain is missing, they fail and say what is missing (rustup toolchain
+# from spike/wasm/rust-toolchain.toml plus cargo-component 0.21.1, or
+# `nix develop ./spike/wasm`).
+wasm-toolchain:
+	@command -v cargo >/dev/null 2>&1 || { echo 'wasm: cargo not found (see spike/wasm/rust-toolchain.toml or nix develop ./spike/wasm)'; exit 1; }
+	@cargo component --version >/dev/null 2>&1 || { echo 'wasm: cargo-component not found (cargo install cargo-component --locked)'; exit 1; }
+
+wasm-test: wasm-toolchain
 	$(MAKE) -C spike/wasm test
 
-durable-gate:
+# Positive runs, the bad-snapshot rejection, and the six-point kill matrix.
+durable-gate: wasm-toolchain
 	$(MAKE) -C spike/wasm durable-gate
+
+# Approved wasm-durable-v1 claim driven through BEAM's gate, verified from
+# evidence files by LdHost.RuntimeEvidence. Needs `make durable-gate` first.
+beam-durable-e2e:
+	cd beam && mix test --include durable test/gates_test.exs
+
+# Elaborate the example system manifest into a canonical derivation.
+elaborate-example:
+	cd beam && mix ld.elaborate --manifest ../examples/orders/ld-system.json
 
 # Native BEAM critic: typed Shen -> shen-erl BEAM modules (loads into beam/).
 critic-erl:

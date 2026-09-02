@@ -20,5 +20,5 @@
   "checkpoint_index": 2,
   "replay_count": 3,
   "providers": {},
-  "expected_properties": ["replay-stable","checkpoint-recovered","state-hash-stable","fork-diverged"]
+  "expected_properties": ["replay-stable","checkpoint-recovered","state-hash-stable","fork-diverged","guest-hash-discriminates"]
 }

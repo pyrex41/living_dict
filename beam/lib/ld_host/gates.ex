@@ -90,6 +90,7 @@ defmodule LdHost.Gates do
       depends_on: List.wrap(claim["depends_on"] || []) |> Enum.map(&to_string/1),
       profile: claim["profile"] && to_string(claim["profile"]),
       config: claim["config"] && to_string(claim["config"]),
+      requires: if(is_map(claim["requires"]), do: claim["requires"], else: %{}),
       must: List.wrap(claim["must"] || []) |> Enum.map(&to_string/1)
     }
   end

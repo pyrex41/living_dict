@@ -10,13 +10,16 @@
   "parent": [
     {"v":1,"op":"charge"},
     {"v":1,"op":"receipt"},
+    {"v":1,"op":"audit","advance_ms":250},
     {"v":1,"op":"status"}
   ],
   "fork": [
     {"v":1,"op":"charge-declined"},
+    {"v":1,"op":"audit"},
     {"v":1,"op":"status"}
   ],
   "checkpoint_index": 3,
+  "kill_effect": "payment.charge",
   "replay_count": 3,
   "providers": {
     "inventory.reserve": [{"reserved":true}],
@@ -24,5 +27,5 @@
     "payment.charge.declined": [{"approved":false}],
     "receipt.send": [{"sent":true}]
   },
-  "expected_properties": ["replay-stable","checkpoint-recovered","state-hash-stable","fork-diverged","effects-exactly-once"]
+  "expected_properties": ["replay-stable","checkpoint-recovered","state-hash-stable","fork-diverged","effects-exactly-once","guest-hash-discriminates"]
 }

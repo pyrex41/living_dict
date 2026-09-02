@@ -48,6 +48,87 @@ defmodule LdHost.GatesTest do
     assert [%{passed: false, reason: "unknown runtime profile: ../../evil"}] = approved.claims
   end
 
+  test "runtime claims are matched against the substrate's capability vector before dispatch" do
+    ws = workspace()
+
+    unmet =
+      Gates.atomize_claim(%{
+        id: "needs-global",
+        kind: "runtime",
+        profile: "wasm-durable-v1",
+        config: "machine.toml",
+        requires: %{"global_checkpoint" => "supported", "clock" => "logical"}
+      })
+
+    report = Gates.run(host(ws, contract: %{claims: [unmet]}), persist?: false)
+    assert [%{passed: false, reason: reason}] = report.claims
+    assert reason =~ "does not satisfy requires"
+    assert reason =~ "global_checkpoint"
+    refute reason =~ "clock needs"
+
+    experimental =
+      Gates.atomize_claim(%{
+        id: "uk",
+        kind: "runtime",
+        profile: "unikraft-confined-transducer-experimental",
+        config: "machine.toml"
+      })
+
+    report = Gates.run(host(ws, contract: %{claims: [experimental]}), persist?: false)
+    assert [%{passed: false, reason: reason}] = report.claims
+    assert reason =~ "experimental and cannot back a claim"
+  end
+
+  @wasm Path.expand("../../spike/wasm", __DIR__)
+
+  # Requires `make -C spike/wasm build` (cargo + cargo-component). Run with
+  # `mix test --include durable` or `make beam-durable-e2e`.
+  @tag :durable
+  test "an approved wasm-durable-v1 claim runs the executor and passes only on independently verified evidence" do
+    assert File.regular?(Path.join(@wasm, "target/release/ld-wasm")), "build spike/wasm first"
+
+    claim =
+      Gates.atomize_claim(%{
+        id: "durable-order",
+        kind: "runtime",
+        profile: "wasm-durable-v1",
+        config: "order.machine.toml",
+        timeout_seconds: 120,
+        requires: %{"snapshot" => "whole-machine", "external_effects" => "durable-intent-commit"},
+        must:
+          ~w(replay-stable checkpoint-recovered fork-diverged effects-exactly-once guest-hash-discriminates)
+      })
+
+    report = Gates.run(host(@wasm, contract: %{claims: [claim]}), persist?: false)
+    assert report.judge == "approved contract"
+    assert [%{id: "durable-order", kind: "runtime", passed: true} = entry] = report.claims
+    assert "effects-exactly-once" in entry.verified
+
+    assert entry.receipt["engine"]["config_hash"] in LdHost.RuntimeEvidence.engine_allowlist()[
+             "wasm-durable-v1"
+           ].config
+
+    assert File.regular?(Path.join(entry.evidence_dir, "provider-calls.jsonl"))
+
+    # Same evidence, revalidated from files alone.
+    assert {:ok, props} =
+             LdHost.RuntimeProfiles.verify_receipt(
+               @wasm,
+               "order.machine.toml",
+               entry.evidence_dir,
+               entry.receipt
+             )
+
+    assert MapSet.member?(props, "checkpoint-recovered")
+
+    # A claim demanding a property the evidence cannot establish fails even
+    # though the executor reported success.
+    greedy = %{claim | id: "durable-greedy", must: ["crash-recovered"]}
+    report = Gates.run(host(@wasm, contract: %{claims: [greedy]}), persist?: false)
+    assert [%{passed: false, reason: reason}] = report.claims
+    assert reason =~ "not independently verified: crash-recovered"
+  end
+
   test "approved contract executes check claims; exit 0 passes" do
     ws = workspace()
     File.write!(Path.join(ws, "hello.txt"), "hi")

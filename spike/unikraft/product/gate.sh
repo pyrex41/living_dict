@@ -118,7 +118,7 @@ for fixture in "$PRODUCT_DIR"/fixtures/*.in; do
 		fi
 		run=$((run + 1))
 	done
-	printf 'PASS %-20s %s (3 fresh boots)\n' "$name" "$wanted"
+	printf 'PASS %-20s %s (3 fresh boots) [unikraft-confined-transducer-experimental]\n' "$name" "$wanted"
 done
 
 # Negative control: a changed input must not accidentally validate against the

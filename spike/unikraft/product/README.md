@@ -1,4 +1,12 @@
-# Deterministic KV product
+# KV product on Unikraft (`unikraft-confined-transducer-experimental`)
+
+> **Profile status:** experimental. This gate demonstrates a confined C
+> transducer behaving consistently across fresh QEMU boots. It is not a claim
+> backend: the base runtime is pulled by tag rather than digest, the CPU model
+> exposes RDRAND/RDSEED, there is no snapshot, no effect journal, and no
+> verifier independent of the boot runner. Its honest capability vector is
+> registered in `beam/lib/ld_host/substrates.ex`; the plan to graduate it is
+> Phase 6 of `docs/design/DURABLE_SYSTEM_PLAN.md`.
 
 This is a deliberately small Living Dictionary product: a C command machine
 whose only state is a byte-sorted in-memory KV table. The product does not
