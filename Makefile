@@ -11,7 +11,7 @@ ifneq ($(wildcard $(SHENSCRIPT)),)
 YGGDRASIL_HOST ?= node $(SHENSCRIPT)
 endif
 
-.PHONY: eval-test eval-oracle harness-test openresty-test eval-resty-config-01 openresty-serve think-config-01 client-test livingdict client-web test browser-test browser-shake browser-serve compare compare-dry scudcheck pack-critic critic-suite beam-deps beam-test beam-run
+.PHONY: eval-test eval-oracle harness-test openresty-test eval-resty-config-01 openresty-serve think-config-01 client-test livingdict client-web test browser-test browser-shake browser-serve architecture-dev architecture-build compare compare-dry scudcheck pack-critic critic-suite beam-deps beam-test beam-run
 
 eval-test:
 	cd eval && python3 -m unittest discover -s tests -v
@@ -106,6 +106,12 @@ critic-suite: pack-critic
 
 browser-serve:
 	python3 -m http.server --directory browser
+
+architecture-dev:
+	cd apps/architecture && npm install && npm run dev
+
+architecture-build:
+	cd apps/architecture && npm install && npm run build
 
 # ---- BEAM host (beam/, Elixir) ----
 beam-deps:

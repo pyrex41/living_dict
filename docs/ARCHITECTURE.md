@@ -5,6 +5,11 @@ emits a Forth episode plus file artifacts. A critic accepts or rejects that
 episode. Only then do capability words mutate the workspace. The model is not
 in the loop while words run.
 
+The interactive companion at [`apps/architecture`](../apps/architecture/)
+traces this boundary stage by stage and labels components as direct hot path,
+conditional mechanism, benchmark orchestration, or alternate deployment. Run
+it with `make architecture-dev`.
+
 ## Components
 
 ```

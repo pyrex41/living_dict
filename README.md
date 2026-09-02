@@ -84,6 +84,11 @@ planting strings to game the one weak claim in the contract.
 
 The rest of this README is the reference: the lab, the bodies, the ABI.
 
+For a visual, skeptical walkthrough of one episode—including an interactive
+Forth VM, critic accept/reject examples, and an explicit account of which
+components are really on the hot path—open the
+[`apps/architecture`](apps/architecture/) site (`make architecture-dev`).
+
 ## Four trees
 
 | Path | What it is |
@@ -264,6 +269,8 @@ make compare PROMPT='…'    # same prompt, three isolated arms
 make browser-shake         # ratatoskr js --web + lua critic
 make browser-test          # node browser/test/node-selftest.mjs
 make browser-serve         # python3 -m http.server in browser/
+make architecture-dev      # evidence-first architecture explainer
+make architecture-build    # production static artifact
 ```
 
 With the host up, the same turns are in the browser at
