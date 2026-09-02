@@ -96,7 +96,9 @@ Registered profiles and their honest vectors:
 
 Rules apply in a fixed order and every step is recorded, so two
 elaborations of one manifest are byte-identical and a rejection lists every
-unmet judgment.
+unmet judgment. The specification is typed Shen
+(`shen/critic/elaborate.shen`, suite in `elaborate-tests.shen`); the Elixir
+body must agree with it step for step (`beam/test/elaborate_shen_test.exs`).
 
 | rule | judgment |
 |---|---|

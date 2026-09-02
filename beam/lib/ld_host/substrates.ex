@@ -82,6 +82,8 @@ defmodule LdHost.Substrates do
   }
 
   def dimensions, do: Map.keys(@orders) ++ [:fault_controls]
+  @doc "Lattice orders per dimension, weakest value first."
+  def orders, do: @orders
   def profiles, do: @profiles
   def profile(name), do: Map.fetch(@profiles, name)
 

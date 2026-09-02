@@ -34,7 +34,7 @@ including the `:durable` end-to-end case):
 | 2a `ld-system/v1` manifest and schema doc | done, `beam/lib/ld_host/system_manifest.ex`, `docs/design/schema/ld-system-v1.md`, `examples/orders/ld-system.json` |
 | 2b substrate capability vectors with per-dimension lattice; `unikraft-confined-transducer-experimental` registered and not claim-capable; claims carry `requires` | done, `beam/lib/ld_host/substrates.ex` |
 | 2c substrate behaviour interface | not done; the kernel (Phase 3) is its first consumer |
-| 2d elaborator producing canonical derivations and obligations | done in Elixir (`beam/lib/ld_host/elaborate.ex`, `mix ld.elaborate`); Shen port pending, see section 9 |
+| 2d elaborator producing canonical derivations and obligations | done twice: typed Shen (`shen/critic/elaborate.shen`, typechecked and shaken by the pinned `tools/critic` toolchain, suite `shen/critic/elaborate-tests.shen`) and Elixir (`beam/lib/ld_host/elaborate.ex`, `mix ld.elaborate`); `beam/test/elaborate_shen_test.exs` requires them to agree on every step, failed judgment, and obligation |
 | Phases 3 to 6 | not started |
 
 Phase 2 exit condition holds: the orders manifest is accepted with a stable
@@ -438,11 +438,14 @@ traces normalized into the choice-log schema) follows.
   parallel path.
 - **Bit-identical Shen derivations.** The review leaves the choice open; this
   plan closes it in favour of bytes, to match the ledger.
-- **The elaborator landed in Elixir first.** The Shen toolchain (nix,
-  shen-erl) was not available in the execution environment, so
-  `LdHost.Elaborate` carries the judgments with fixed rule order and
-  canonical output. Porting it to `shen/critic` keeps the same derivation
-  schema; until then Shen remains the plan-level critic only.
+- **Two elaborators, one conformance suite.** The judgments live in typed
+  Shen (`shen/critic/elaborate.shen`, the specification) and in Elixir
+  (`LdHost.Elaborate`, the executing body inside the BEAM host, which also
+  does the JSON and hashing). `make beam-elaborate-conformance` runs both
+  over the same flattened manifests and fails on any differing step. The
+  shen-erl BEAM target of the elaborator is not built yet (its toolchain
+  needs `shenlanguage.org`, unreachable from the execution environment), so
+  BEAM executes the Elixir body rather than the shaken Shen.
 
 ## 10. Not in this plan
 
@@ -463,6 +466,9 @@ nix develop ./spike/wasm --command cargo test --workspace --locked
 make durable-gate            # kill matrix, provider counts, bad-snapshot rejection
 make beam-durable-e2e        # approved runtime claim through Gates, BEAM verdict from files
 make elaborate-example       # orders manifest -> ld.derivation/v1
+make critic-suite            # packed Shen critic and elaborator suites (ShenScript host)
+make elaborate-js-nix        # typecheck + shake the Shen elaborator (nix)
+make beam-elaborate-conformance   # Elixir vs Shen, step for step
 make -C spike/unikraft product-gate       # experimental; not a claim backend
 make -C spike/unikraft test
 make test                                 # includes wasm-test and durable-gate

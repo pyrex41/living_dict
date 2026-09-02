@@ -11,7 +11,7 @@ ifneq ($(wildcard $(SHENSCRIPT)),)
 YGGDRASIL_HOST ?= node $(SHENSCRIPT)
 endif
 
-.PHONY: eval-test eval-oracle harness-test openresty-test eval-resty-config-01 openresty-serve think-config-01 client-test livingdict client-web test browser-test browser-shake critic-js-nix critic-erl-nix browser-serve architecture-dev architecture-build compare compare-dry scudcheck pack-critic critic-suite beam-deps beam-test beam-run unikraft-spike wasm-toolchain wasm-test durable-gate beam-durable-e2e elaborate-example
+.PHONY: eval-test eval-oracle harness-test openresty-test eval-resty-config-01 openresty-serve think-config-01 client-test livingdict client-web test browser-test browser-shake critic-js-nix critic-erl-nix browser-serve architecture-dev architecture-build compare compare-dry scudcheck pack-critic critic-suite beam-deps beam-test beam-run unikraft-spike wasm-toolchain wasm-test durable-gate beam-durable-e2e elaborate-example pack-elaborate elaborate-js-nix beam-elaborate-conformance
 
 eval-test:
 	cd eval && python3 -m unittest discover -s tests -v
@@ -110,16 +110,41 @@ pack-critic:
 	   cat shen/critic/suite-tests.shen; } > shen/critic/suite.shen
 	@echo "packed -> shen/critic/suite.shen"
 
-# Run the packed critic suite on a local Shen host; ALL PASS or fail.
-critic-suite: pack-critic
-	@if [ -x "$(SHEN_CL)" ]; then \
-	   "$(SHEN_CL)" eval -q -l shen/critic/suite.shen 2>&1 | tee /tmp/critic-suite.out | grep -q 'ALL PASS' \
-	     || { tail -30 /tmp/critic-suite.out; echo "critic-suite: FAIL"; exit 1; }; \
+# elaborate-suite.shen is the same mechanical pack for the ld-system/v1
+# elaborator: header + elaborate.shen + elaborate-tests.shen.
+pack-elaborate:
+	@{ printf '\\\\ Living Dictionary elaborator fixture (bifrost script-mode).\n'; \
+	   printf '\\\\ Self-contained: no load / eval / runtime tc. Marker: ALL PASS\n'; \
+	   printf '\\\\ Packed by make pack-elaborate from elaborate.shen + elaborate-tests.shen.\n'; \
+	   printf '\n'; \
+	   cat shen/critic/elaborate.shen; \
+	   printf '\n'; \
+	   cat shen/critic/elaborate-tests.shen; } > shen/critic/elaborate-suite.shen
+	@echo "packed -> shen/critic/elaborate-suite.shen"
+
+# Run the packed critic and elaborator suites on a local Shen host; ALL PASS or fail.
+critic-suite: pack-critic pack-elaborate
+	@for suite in suite elaborate-suite; do \
+	 if [ -x "$(SHEN_CL)" ]; then \
+	   "$(SHEN_CL)" eval -q -l shen/critic/$$suite.shen 2>&1 | tee /tmp/critic-$$suite.out | grep -q 'ALL PASS' \
+	     || { tail -30 /tmp/critic-$$suite.out; echo "critic-suite ($$suite): FAIL"; exit 1; }; \
 	 elif [ -f "$(SHENSCRIPT)" ]; then \
-	   node "$(SHENSCRIPT)" eval -q -l shen/critic/suite.shen 2>&1 | tee /tmp/critic-suite.out | grep -q 'ALL PASS' \
-	     || { tail -30 /tmp/critic-suite.out; echo "critic-suite: FAIL"; exit 1; }; \
-	 else echo "skip critic-suite: no Shen host (build ../shen-cl or ../ShenScript)"; exit 0; fi
-	@echo "critic-suite: ALL PASS"
+	   node "$(SHENSCRIPT)" eval -q -l shen/critic/$$suite.shen 2>&1 | tee /tmp/critic-$$suite.out | grep -q 'ALL PASS' \
+	     || { tail -30 /tmp/critic-$$suite.out; echo "critic-suite ($$suite): FAIL"; exit 1; }; \
+	 else echo "skip critic-suite: no Shen host (build ../shen-cl or ../ShenScript)"; exit 0; fi; \
+	 echo "critic-suite ($$suite): ALL PASS"; done
+
+# Typecheck and shake the ld-system/v1 elaborator to JS with the pinned toolchain.
+elaborate-js-nix:
+	mkdir -p browser/dist/elaborate
+	nix run path:./tools/critic -- shen/critic/elaborate.shen browser/dist/elaborate
+	@grep -q 'needs-eval=false' browser/dist/elaborate/yggdrasil.manifest.txt
+	@grep -q 'typechecked=true' browser/dist/elaborate/yggdrasil.manifest.txt
+	@echo "pinned shaken js -> browser/dist/elaborate/app.js"
+
+# Elixir elaborator vs typed Shen elaborator, step for step. Needs elaborate-js-nix.
+beam-elaborate-conformance:
+	cd beam && mix test --include shen test/elaborate_shen_test.exs
 
 browser-serve:
 	python3 -m http.server --directory browser

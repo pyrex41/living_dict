@@ -159,13 +159,16 @@ defmodule LdHost.Elaborate do
           not is_nil(e["target"]) and not Map.has_key?(m["externals"], e["target"]) ->
             {false, "target #{e["target"]} is not a declared external"}
 
+          match?(:error, Substrates.profile(owner["substrate"])) ->
+            {false, "substrate #{owner["substrate"]} unknown"}
+
           true ->
             case Substrates.satisfies(%{external_effects: required}, owner["substrate"]) do
               :ok ->
                 {true, "owned by #{e["owner"]} under #{e["protocol"]}"}
 
               {:error, [{dim, req, sup}]} ->
-                {false, "#{dim} needs #{req} got #{sup} on #{owner["substrate"]}"}
+                {false, "#{dim} needs #{fmt(req)} got #{fmt(sup)} on #{owner["substrate"]}"}
 
               {:error, _} ->
                 {false, "substrate #{owner["substrate"]} unknown"}
@@ -201,7 +204,7 @@ defmodule LdHost.Elaborate do
               "substrate-satisfies",
               "#{name}.#{dim}",
               false,
-              "needs #{inspect(req)} got #{inspect(sup)} on #{c["substrate"]}"
+              "needs #{fmt(req)} got #{fmt(sup)} on #{c["substrate"]}"
             )
           end)
       end
@@ -306,6 +309,53 @@ defmodule LdHost.Elaborate do
   defp obligation(tool, kind, subject) do
     body = %{"tool" => tool, "kind" => kind, "subject" => subject, "discharged_by" => nil}
     Map.put(body, "id", "#{tool}:#{kind}:#{subject}")
+  end
+
+  # Detail formatting shared with the Shen elaborator: lists comma-joined,
+  # absent values as "none".
+  defp fmt(nil), do: "none"
+  defp fmt(list) when is_list(list), do: Enum.join(list, ",")
+  defp fmt(other), do: to_string(other)
+
+  @doc """
+  Flatten a validated manifest plus the substrate registry into the fixed
+  shapes the typed Shen elaborator (`shen/critic/elaborate.shen`) takes.
+  """
+  def shen_request(m) do
+    %{
+      "system" => m["system"],
+      "components" =>
+        Enum.map(m["components"], fn {name, c} ->
+          [
+            name,
+            c["contract"],
+            c["substrate"],
+            Enum.map(c["ports"] || %{}, fn {pn, p} -> [pn, p["direction"], p["type"]] end),
+            Enum.map(c["requires"] || %{}, fn {k, v} -> [k, fmt(v)] end)
+          ]
+        end),
+      "channels" =>
+        Enum.map(m["channels"], fn {name, ch} ->
+          [name, ch["from"], ch["to"], ch["delivery"], ch["ordering"]]
+        end),
+      "effects" =>
+        Enum.map(m["effects"], fn {name, e} ->
+          [name, e["owner"], e["protocol"], e["identity"], e["target"] || ""]
+        end),
+      "externals" => Map.keys(m["externals"]),
+      "invariants" => Enum.map(m["invariants"], &[&1["id"], &1["kind"], &1["about"]]),
+      "failures" => m["failure_model"],
+      "profiles" =>
+        Enum.map(Substrates.profiles(), fn {name, p} ->
+          vector =
+            p.vector
+            |> Map.delete(:fault_controls)
+            |> Enum.map(fn {k, v} -> [Atom.to_string(k), v] end)
+
+          [name, p.claims, vector, p.vector.fault_controls]
+        end),
+      "orders" => Enum.map(Substrates.orders(), fn {dim, vals} -> [Atom.to_string(dim), vals] end)
+    }
   end
 
   defp port(m, endpoint) do

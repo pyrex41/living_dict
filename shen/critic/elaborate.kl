@@ -1,0 +1,174 @@
+(defun el-str< (V5520 V5521) (cond ((and (= "" V5520) (= "" V5521)) false) ((= "" V5520) true) ((= "" V5521) false) (true (let W5522 (string->n (hdstr V5520)) (let W5523 (string->n (hdstr V5521)) (if (< W5522 W5523) true (if (> W5522 W5523) false (el-str< (tlstr V5520) (tlstr V5521)))))))))
+
+(defun el-insert-str (V5524 V5525) (cond ((= () V5525) (cons V5524 ())) ((cons? V5525) (if (el-str< V5524 (hd V5525)) (cons V5524 V5525) (cons (hd V5525) (el-insert-str V5524 (tl V5525))))) (true (simple-error "partial function el-insert-str"))))
+
+(defun el-sort-strings (V5526) (cond ((= () V5526) ()) ((cons? V5526) (el-insert-str (hd V5526) (el-sort-strings (tl V5526)))) (true (simple-error "partial function el-sort-strings"))))
+
+(defun el-join (V5527 V5528) (cond ((= () V5528) "") ((and (cons? V5528) (= () (tl V5528))) (hd V5528)) ((cons? V5528) (cn (hd V5528) (cn V5527 (el-join V5527 (tl V5528))))) (true (simple-error "partial function el-join"))))
+
+(defun el-split-h (V5529 V5530 V5531) (cond ((= "" V5530) (cons V5531 ())) (true (if (= (hdstr V5530) V5529) (cons V5531 (el-split-h V5529 (tlstr V5530) "")) (el-split-h V5529 (tlstr V5530) (cn V5531 (hdstr V5530)))))))
+
+(defun el-split (V5532 V5533) (cond ((= "" V5533) ()) (true (el-split-h V5532 V5533 ""))))
+
+(defun el-normalize-dim (V5534) (cond ((= "" V5534) "") (true (cn (if (= (hdstr V5534) "-") "_" (hdstr V5534)) (el-normalize-dim (tlstr V5534))))))
+
+(defun el-not-in (V5535 V5536) (cond ((= () V5535) ()) ((cons? V5535) (if (element? (hd V5535) V5536) (el-not-in (tl V5535) V5536) (cons (hd V5535) (el-not-in (tl V5535) V5536)))) (true (simple-error "partial function el-not-in"))))
+
+(defun el-all-in? (V5537 V5538) (cond ((= () V5537) true) ((cons? V5537) (and (element? (hd V5537) V5538) (el-all-in? (tl V5537) V5538))) (true (simple-error "partial function el-all-in?"))))
+
+(defun pair-key (V5539) (cond ((and (cons? V5539) (and (cons? (tl V5539)) (= () (tl (tl V5539))))) (hd V5539)) (true (simple-error "partial function pair-key"))))
+
+(defun pair-val (V5540) (cond ((and (cons? V5540) (and (cons? (tl V5540)) (= () (tl (tl V5540))))) (hd (tl V5540))) (true (simple-error "partial function pair-val"))))
+
+(defun port-name (V5541) (cond ((and (cons? V5541) (and (cons? (tl V5541)) (and (cons? (tl (tl V5541))) (= () (tl (tl (tl V5541))))))) (hd V5541)) (true (simple-error "partial function port-name"))))
+
+(defun port-dir (V5542) (cond ((and (cons? V5542) (and (cons? (tl V5542)) (and (cons? (tl (tl V5542))) (= () (tl (tl (tl V5542))))))) (hd (tl V5542))) (true (simple-error "partial function port-dir"))))
+
+(defun port-type (V5543) (cond ((and (cons? V5543) (and (cons? (tl V5543)) (and (cons? (tl (tl V5543))) (= () (tl (tl (tl V5543))))))) (hd (tl (tl V5543)))) (true (simple-error "partial function port-type"))))
+
+(defun comp-name (V5544) (cond ((and (cons? V5544) (and (cons? (tl V5544)) (and (cons? (tl (tl V5544))) (and (cons? (tl (tl (tl V5544)))) (and (cons? (tl (tl (tl (tl V5544))))) (= () (tl (tl (tl (tl (tl V5544))))))))))) (hd V5544)) (true (simple-error "partial function comp-name"))))
+
+(defun comp-contract (V5545) (cond ((and (cons? V5545) (and (cons? (tl V5545)) (and (cons? (tl (tl V5545))) (and (cons? (tl (tl (tl V5545)))) (and (cons? (tl (tl (tl (tl V5545))))) (= () (tl (tl (tl (tl (tl V5545))))))))))) (hd (tl V5545))) (true (simple-error "partial function comp-contract"))))
+
+(defun comp-sub (V5546) (cond ((and (cons? V5546) (and (cons? (tl V5546)) (and (cons? (tl (tl V5546))) (and (cons? (tl (tl (tl V5546)))) (and (cons? (tl (tl (tl (tl V5546))))) (= () (tl (tl (tl (tl (tl V5546))))))))))) (hd (tl (tl V5546)))) (true (simple-error "partial function comp-sub"))))
+
+(defun comp-ports (V5547) (cond ((and (cons? V5547) (and (cons? (tl V5547)) (and (cons? (tl (tl V5547))) (and (cons? (tl (tl (tl V5547)))) (and (cons? (tl (tl (tl (tl V5547))))) (= () (tl (tl (tl (tl (tl V5547))))))))))) (hd (tl (tl (tl V5547))))) (true (simple-error "partial function comp-ports"))))
+
+(defun comp-req (V5548) (cond ((and (cons? V5548) (and (cons? (tl V5548)) (and (cons? (tl (tl V5548))) (and (cons? (tl (tl (tl V5548)))) (and (cons? (tl (tl (tl (tl V5548))))) (= () (tl (tl (tl (tl (tl V5548))))))))))) (hd (tl (tl (tl (tl V5548)))))) (true (simple-error "partial function comp-req"))))
+
+(defun chan-name (V5549) (cond ((and (cons? V5549) (and (cons? (tl V5549)) (and (cons? (tl (tl V5549))) (and (cons? (tl (tl (tl V5549)))) (and (cons? (tl (tl (tl (tl V5549))))) (= () (tl (tl (tl (tl (tl V5549))))))))))) (hd V5549)) (true (simple-error "partial function chan-name"))))
+
+(defun chan-from (V5550) (cond ((and (cons? V5550) (and (cons? (tl V5550)) (and (cons? (tl (tl V5550))) (and (cons? (tl (tl (tl V5550)))) (and (cons? (tl (tl (tl (tl V5550))))) (= () (tl (tl (tl (tl (tl V5550))))))))))) (hd (tl V5550))) (true (simple-error "partial function chan-from"))))
+
+(defun chan-to (V5551) (cond ((and (cons? V5551) (and (cons? (tl V5551)) (and (cons? (tl (tl V5551))) (and (cons? (tl (tl (tl V5551)))) (and (cons? (tl (tl (tl (tl V5551))))) (= () (tl (tl (tl (tl (tl V5551))))))))))) (hd (tl (tl V5551)))) (true (simple-error "partial function chan-to"))))
+
+(defun chan-del (V5552) (cond ((and (cons? V5552) (and (cons? (tl V5552)) (and (cons? (tl (tl V5552))) (and (cons? (tl (tl (tl V5552)))) (and (cons? (tl (tl (tl (tl V5552))))) (= () (tl (tl (tl (tl (tl V5552))))))))))) (hd (tl (tl (tl V5552))))) (true (simple-error "partial function chan-del"))))
+
+(defun chan-ord (V5553) (cond ((and (cons? V5553) (and (cons? (tl V5553)) (and (cons? (tl (tl V5553))) (and (cons? (tl (tl (tl V5553)))) (and (cons? (tl (tl (tl (tl V5553))))) (= () (tl (tl (tl (tl (tl V5553))))))))))) (hd (tl (tl (tl (tl V5553)))))) (true (simple-error "partial function chan-ord"))))
+
+(defun eff-name (V5554) (cond ((and (cons? V5554) (and (cons? (tl V5554)) (and (cons? (tl (tl V5554))) (and (cons? (tl (tl (tl V5554)))) (and (cons? (tl (tl (tl (tl V5554))))) (= () (tl (tl (tl (tl (tl V5554))))))))))) (hd V5554)) (true (simple-error "partial function eff-name"))))
+
+(defun eff-owner (V5555) (cond ((and (cons? V5555) (and (cons? (tl V5555)) (and (cons? (tl (tl V5555))) (and (cons? (tl (tl (tl V5555)))) (and (cons? (tl (tl (tl (tl V5555))))) (= () (tl (tl (tl (tl (tl V5555))))))))))) (hd (tl V5555))) (true (simple-error "partial function eff-owner"))))
+
+(defun eff-proto (V5556) (cond ((and (cons? V5556) (and (cons? (tl V5556)) (and (cons? (tl (tl V5556))) (and (cons? (tl (tl (tl V5556)))) (and (cons? (tl (tl (tl (tl V5556))))) (= () (tl (tl (tl (tl (tl V5556))))))))))) (hd (tl (tl V5556)))) (true (simple-error "partial function eff-proto"))))
+
+(defun eff-ident (V5557) (cond ((and (cons? V5557) (and (cons? (tl V5557)) (and (cons? (tl (tl V5557))) (and (cons? (tl (tl (tl V5557)))) (and (cons? (tl (tl (tl (tl V5557))))) (= () (tl (tl (tl (tl (tl V5557))))))))))) (hd (tl (tl (tl V5557))))) (true (simple-error "partial function eff-ident"))))
+
+(defun eff-target (V5558) (cond ((and (cons? V5558) (and (cons? (tl V5558)) (and (cons? (tl (tl V5558))) (and (cons? (tl (tl (tl V5558)))) (and (cons? (tl (tl (tl (tl V5558))))) (= () (tl (tl (tl (tl (tl V5558))))))))))) (hd (tl (tl (tl (tl V5558)))))) (true (simple-error "partial function eff-target"))))
+
+(defun inv-id (V5559) (cond ((and (cons? V5559) (and (cons? (tl V5559)) (and (cons? (tl (tl V5559))) (= () (tl (tl (tl V5559))))))) (hd V5559)) (true (simple-error "partial function inv-id"))))
+
+(defun inv-kind (V5560) (cond ((and (cons? V5560) (and (cons? (tl V5560)) (and (cons? (tl (tl V5560))) (= () (tl (tl (tl V5560))))))) (hd (tl V5560))) (true (simple-error "partial function inv-kind"))))
+
+(defun inv-about (V5561) (cond ((and (cons? V5561) (and (cons? (tl V5561)) (and (cons? (tl (tl V5561))) (= () (tl (tl (tl V5561))))))) (hd (tl (tl V5561)))) (true (simple-error "partial function inv-about"))))
+
+(defun prof-name (V5562) (cond ((and (cons? V5562) (and (cons? (tl V5562)) (and (cons? (tl (tl V5562))) (and (cons? (tl (tl (tl V5562)))) (= () (tl (tl (tl (tl V5562))))))))) (hd V5562)) (true (simple-error "partial function prof-name"))))
+
+(defun prof-claims (V5563) (cond ((and (cons? V5563) (and (cons? (tl V5563)) (and (cons? (tl (tl V5563))) (and (cons? (tl (tl (tl V5563)))) (= () (tl (tl (tl (tl V5563))))))))) (hd (tl V5563))) (true (simple-error "partial function prof-claims"))))
+
+(defun prof-vec (V5564) (cond ((and (cons? V5564) (and (cons? (tl V5564)) (and (cons? (tl (tl V5564))) (and (cons? (tl (tl (tl V5564)))) (= () (tl (tl (tl (tl V5564))))))))) (hd (tl (tl V5564)))) (true (simple-error "partial function prof-vec"))))
+
+(defun prof-faults (V5565) (cond ((and (cons? V5565) (and (cons? (tl V5565)) (and (cons? (tl (tl V5565))) (and (cons? (tl (tl (tl V5565)))) (= () (tl (tl (tl (tl V5565))))))))) (hd (tl (tl (tl V5565))))) (true (simple-error "partial function prof-faults"))))
+
+(defun step-rule (V5566) (cond ((and (cons? V5566) (and (cons? (tl V5566)) (and (cons? (tl (tl V5566))) (and (cons? (tl (tl (tl V5566)))) (= () (tl (tl (tl (tl V5566))))))))) (hd V5566)) (true (simple-error "partial function step-rule"))))
+
+(defun step-subject (V5567) (cond ((and (cons? V5567) (and (cons? (tl V5567)) (and (cons? (tl (tl V5567))) (and (cons? (tl (tl (tl V5567)))) (= () (tl (tl (tl (tl V5567))))))))) (hd (tl V5567))) (true (simple-error "partial function step-subject"))))
+
+(defun step-ok (V5568) (cond ((and (cons? V5568) (and (cons? (tl V5568)) (and (cons? (tl (tl V5568))) (and (cons? (tl (tl (tl V5568)))) (= () (tl (tl (tl (tl V5568))))))))) (hd (tl (tl V5568)))) (true (simple-error "partial function step-ok"))))
+
+(defun el-find-comp (V5569 V5570) (cond ((= () V5570) ()) ((cons? V5570) (if (= (comp-name (hd V5570)) V5569) (cons found (cons (hd V5570) ())) (el-find-comp V5569 (tl V5570)))) (true (simple-error "partial function el-find-comp"))))
+
+(defun el-find-prof (V5571 V5572) (cond ((= () V5572) ()) ((cons? V5572) (if (= (prof-name (hd V5572)) V5571) (cons found (cons (hd V5572) ())) (el-find-prof V5571 (tl V5572)))) (true (simple-error "partial function el-find-prof"))))
+
+(defun el-find-port-in (V5573 V5574) (cond ((= () V5574) ()) ((cons? V5574) (if (= (port-name (hd V5574)) V5573) (cons found (cons (hd V5574) ())) (el-find-port-in V5573 (tl V5574)))) (true (simple-error "partial function el-find-port-in"))))
+
+(defun el-split-dot (V5575 V5576) (cond ((= "" V5576) (cons V5575 (cons "" ()))) (true (if (= (hdstr V5576) ".") (cons V5575 (cons (tlstr V5576) ())) (el-split-dot (cn V5575 (hdstr V5576)) (tlstr V5576))))))
+
+(defun el-port-of (V5577 V5578) (cond ((= () V5577) ()) ((and (cons? V5577) (and (= found (hd V5577)) (and (cons? (tl V5577)) (= () (tl (tl V5577)))))) (el-find-port-in V5578 (comp-ports (hd (tl V5577))))) (true (simple-error "partial function el-port-of"))))
+
+(defun el-find-port (V5579 V5580) (let W5581 (el-split-dot "" V5579) (el-port-of (el-find-comp (pair-key W5581) V5580) (pair-val W5581))))
+
+(defun el-comp-or-empty (V5582) (cond ((= () V5582) (cons "" (cons "" (cons "" (cons () (cons () ())))))) ((and (cons? V5582) (and (= found (hd V5582)) (and (cons? (tl V5582)) (= () (tl (tl V5582)))))) (hd (tl V5582))) (true (simple-error "partial function el-comp-or-empty"))))
+
+(defun el-pick-comps (V5583 V5584) (cond ((= () V5583) ()) ((cons? V5583) (cons (el-comp-or-empty (el-find-comp (hd V5583) V5584)) (el-pick-comps (tl V5583) V5584))) (true (simple-error "partial function el-pick-comps"))))
+
+(defun el-sorted-comps (V5585) (el-pick-comps (el-sort-strings (map (lambda Z5586 (comp-name Z5586)) V5585)) V5585))
+
+(defun el-find-chan (V5587 V5588) (cond ((= () V5588) (cons "" (cons "" (cons "" (cons "" (cons "" ())))))) ((cons? V5588) (if (= (chan-name (hd V5588)) V5587) (hd V5588) (el-find-chan V5587 (tl V5588)))) (true (simple-error "partial function el-find-chan"))))
+
+(defun el-sorted-chans (V5589) (map (lambda Z5590 (el-find-chan Z5590 V5589)) (el-sort-strings (map (lambda Z5591 (chan-name Z5591)) V5589))))
+
+(defun el-find-eff (V5592 V5593) (cond ((= () V5593) (cons "" (cons "" (cons "" (cons "" (cons "" ())))))) ((cons? V5593) (if (= (eff-name (hd V5593)) V5592) (hd V5593) (el-find-eff V5592 (tl V5593)))) (true (simple-error "partial function el-find-eff"))))
+
+(defun el-sorted-effs (V5594) (map (lambda Z5595 (el-find-eff Z5595 V5594)) (el-sort-strings (map (lambda Z5596 (eff-name Z5596)) V5594))))
+
+(defun el-find-inv (V5597 V5598) (cond ((= () V5598) (cons "" (cons "" (cons () ())))) ((cons? V5598) (if (= (inv-id (hd V5598)) V5597) (hd V5598) (el-find-inv V5597 (tl V5598)))) (true (simple-error "partial function el-find-inv"))))
+
+(defun el-sorted-invs (V5599) (map (lambda Z5600 (el-find-inv Z5600 V5599)) (el-sort-strings (map (lambda Z5601 (inv-id Z5601)) V5599))))
+
+(defun el-insert-pair (V5602 V5603) (cond ((= () V5603) (cons V5602 ())) ((cons? V5603) (if (el-str< (pair-key V5602) (pair-key (hd V5603))) (cons V5602 V5603) (cons (hd V5603) (el-insert-pair V5602 (tl V5603))))) (true (simple-error "partial function el-insert-pair"))))
+
+(defun el-sort-pairs (V5604) (cond ((= () V5604) ()) ((cons? V5604) (el-insert-pair (hd V5604) (el-sort-pairs (tl V5604)))) (true (simple-error "partial function el-sort-pairs"))))
+
+(defun el-index (V5605 V5606 V5607) (cond ((= () V5606) -1) ((cons? V5606) (if (= (hd V5606) V5605) V5607 (el-index V5605 (tl V5606) (+ V5607 1)))) (true (simple-error "partial function el-index"))))
+
+(defun el-order-values (V5608 V5609) (cond ((= () V5609) ()) ((and (cons? V5609) (and (cons? (hd V5609)) (and (cons? (tl (hd V5609))) (= () (tl (tl (hd V5609))))))) (if (= (hd (hd V5609)) V5608) (hd (tl (hd V5609))) (el-order-values V5608 (tl V5609)))) (true (simple-error "partial function el-order-values"))))
+
+(defun el-known-dim? (V5610 V5611) (or (= V5610 "fault_controls") (not (= (el-order-values V5610 V5611) ()))))
+
+(defun el-vector-value (V5612 V5613) (cond ((= () V5613) "") ((and (cons? V5613) (and (cons? (hd V5613)) (and (cons? (tl (hd V5613))) (= () (tl (tl (hd V5613))))))) (if (= (hd (hd V5613)) V5612) (hd (tl (hd V5613))) (el-vector-value V5612 (tl V5613)))) (true (simple-error "partial function el-vector-value"))))
+
+(defun el-meets? (V5614 V5615 V5616 V5617) (let W5618 (el-order-values V5614 V5617) (let W5619 (el-index V5615 W5618 0) (let W5620 (el-index V5616 W5618 0) (and (>= W5619 0) (and (>= W5620 0) (>= W5620 W5619)))))))
+
+(defun el-or-none (V5621) (cond ((= "" V5621) "none") (true V5621)))
+
+(defun el-unmet (V5622 V5623 V5624) (cond ((= () V5622) ()) ((and (cons? V5622) (and (cons? (hd V5622)) (and (cons? (tl (hd V5622))) (= () (tl (tl (hd V5622))))))) (let W5625 (el-normalize-dim (hd (hd V5622))) (if (= W5625 "fault_controls") (if (el-all-in? (el-split "," (hd (tl (hd V5622)))) (prof-faults V5623)) (el-unmet (tl V5622) V5623 V5624) (cons (cons W5625 (cons (hd (tl (hd V5622))) (cons (el-join "," (prof-faults V5623)) ()))) (el-unmet (tl V5622) V5623 V5624))) (let W5626 (el-vector-value W5625 (prof-vec V5623)) (if (and (el-known-dim? W5625 V5624) (el-meets? W5625 (hd (tl (hd V5622))) W5626 V5624)) (el-unmet (tl V5622) V5623 V5624) (cons (cons (if (el-known-dim? W5625 V5624) W5625 "unknown") (cons (hd (tl (hd V5622))) (cons (el-or-none W5626) ()))) (el-unmet (tl V5622) V5623 V5624))))))) (true (simple-error "partial function el-unmet"))))
+
+(defun el-r1 (V5627 V5628) (cond ((= () V5627) ()) ((cons? V5627) (let W5629 (not (= (el-find-prof (comp-sub (hd V5627)) V5628) ())) (cons (cons "component-well-formed" (cons (comp-name (hd V5627)) (cons W5629 (cons (if W5629 (cn "contract " (cn (comp-contract (hd V5627)) (cn " on " (comp-sub (hd V5627))))) (cn "unknown substrate " (comp-sub (hd V5627)))) ())))) (el-r1 (tl V5627) V5628)))) (true (simple-error "partial function el-r1"))))
+
+(defun el-r2-judge (V5630 V5631 V5632) (cond ((= () V5631) (cons "channel-endpoints" (cons (chan-name V5630) (cons false (cons (cn "from endpoint " (cn (chan-from V5630) " is not a declared port")) ()))))) ((= () V5632) (cons "channel-endpoints" (cons (chan-name V5630) (cons false (cons (cn "to endpoint " (cn (chan-to V5630) " is not a declared port")) ()))))) ((and (cons? V5631) (and (= found (hd V5631)) (and (cons? (tl V5631)) (and (= () (tl (tl V5631))) (and (cons? V5632) (and (= found (hd V5632)) (and (cons? (tl V5632)) (= () (tl (tl V5632)))))))))) (if (not (= (port-dir (hd (tl V5631))) "out")) (cons "channel-endpoints" (cons (chan-name V5630) (cons false (cons "from endpoint must be an out port" ())))) (if (not (= (port-dir (hd (tl V5632))) "in")) (cons "channel-endpoints" (cons (chan-name V5630) (cons false (cons "to endpoint must be an in port" ())))) (if (not (= (port-type (hd (tl V5631))) (port-type (hd (tl V5632))))) (cons "channel-endpoints" (cons (chan-name V5630) (cons false (cons (cn "port types do not compose: " (cn (port-type (hd (tl V5631))) (cn " vs " (port-type (hd (tl V5632)))))) ())))) (cons "channel-endpoints" (cons (chan-name V5630) (cons true (cons (cn (chan-from V5630) (cn " -> " (cn (chan-to V5630) (cn " : " (cn (port-type (hd (tl V5631))) (cn " " (cn (chan-del V5630) (cn "/" (chan-ord V5630))))))))) ())))))))) (true (simple-error "partial function el-r2-judge"))))
+
+(defun el-r2 (V5633 V5634) (cond ((= () V5633) ()) ((cons? V5633) (cons (el-r2-judge (hd V5633) (el-find-port (chan-from (hd V5633)) V5634) (el-find-port (chan-to (hd V5633)) V5634)) (el-r2 (tl V5633) V5634))) (true (simple-error "partial function el-r2"))))
+
+(defun el-protocol-req (V5635) (cond ((= "durable-intent-commit" V5635) "durable-intent-commit") ((= "recorded" V5635) "recorded") ((= "ambient" V5635) "ambient") (true "")))
+
+(defun el-r3-prof (V5636 V5637 V5638 V5639) (cond ((= () V5638) (cons "effect-owner" (cons (eff-name V5636) (cons false (cons (cn "substrate " (cn (comp-sub V5637) " unknown")) ()))))) ((and (cons? V5638) (and (= found (hd V5638)) (and (cons? (tl V5638)) (= () (tl (tl V5638)))))) (let W5640 (el-protocol-req (eff-proto V5636)) (let W5641 (el-vector-value "external_effects" (prof-vec (hd (tl V5638)))) (if (el-meets? "external_effects" W5640 W5641 V5639) (cons "effect-owner" (cons (eff-name V5636) (cons true (cons (cn "owned by " (cn (eff-owner V5636) (cn " under " (eff-proto V5636)))) ())))) (cons "effect-owner" (cons (eff-name V5636) (cons false (cons (cn "external_effects needs " (cn W5640 (cn " got " (cn (el-or-none W5641) (cn " on " (comp-sub V5637)))))) ())))))))) (true (simple-error "partial function el-r3-prof"))))
+
+(defun el-r3-judge (V5642 V5643 V5644 V5645 V5646) (cond ((= () V5643) (cons "effect-owner" (cons (eff-name V5642) (cons false (cons (cn "owner " (cn (eff-owner V5642) " is not a component")) ()))))) ((and (cons? V5643) (and (= found (hd V5643)) (and (cons? (tl V5643)) (= () (tl (tl V5643)))))) (if (and (= (eff-ident V5642) "host-derived") (not (= (eff-proto V5642) "durable-intent-commit"))) (cons "effect-owner" (cons (eff-name V5642) (cons false (cons "host-derived identity requires the durable-intent-commit protocol" ())))) (if (and (not (= (eff-target V5642) "")) (not (element? (eff-target V5642) V5644))) (cons "effect-owner" (cons (eff-name V5642) (cons false (cons (cn "target " (cn (eff-target V5642) " is not a declared external")) ())))) (el-r3-prof V5642 (hd (tl V5643)) (el-find-prof (comp-sub (hd (tl V5643))) V5645) V5646)))) (true (simple-error "partial function el-r3-judge"))))
+
+(defun el-r3 (V5647 V5648 V5649 V5650 V5651) (cond ((= () V5647) ()) ((cons? V5647) (cons (el-r3-judge (hd V5647) (el-find-comp (eff-owner (hd V5647)) V5648) V5649 V5650 V5651) (el-r3 (tl V5647) V5648 V5649 V5650 V5651))) (true (simple-error "partial function el-r3"))))
+
+(defun el-unmet-step (V5652 V5653) (cond ((and (cons? V5653) (and (cons? (tl V5653)) (and (cons? (tl (tl V5653))) (= () (tl (tl (tl V5653))))))) (cons "substrate-satisfies" (cons (cn (comp-name V5652) (cn "." (hd V5653))) (cons false (cons (cn "needs " (cn (hd (tl V5653)) (cn " got " (cn (hd (tl (tl V5653))) (cn " on " (comp-sub V5652)))))) ()))))) (true (simple-error "partial function el-unmet-step"))))
+
+(defun el-r4-comp (V5654 V5655 V5656) (cond ((= () V5655) (cons (cons "substrate-satisfies" (cons (cn (comp-name V5654) ".profile") (cons false (cons (cn "needs " (cn (comp-sub V5654) (cn " got unknown on " (comp-sub V5654)))) ())))) ())) ((and (cons? V5655) (and (= found (hd V5655)) (and (cons? (tl V5655)) (= () (tl (tl V5655)))))) (let W5657 (el-unmet (el-sort-pairs (comp-req V5654)) (hd (tl V5655)) V5656) (if (= W5657 ()) (cons (cons "substrate-satisfies" (cons (comp-name V5654) (cons true (cons (cn (str (length (comp-req V5654))) (cn " dimension(s) met by " (comp-sub V5654))) ())))) ()) (map (lambda Z5658 (el-unmet-step V5654 Z5658)) W5657)))) (true (simple-error "partial function el-r4-comp"))))
+
+(defun el-r4 (V5659 V5660 V5661) (cond ((= () V5659) ()) ((cons? V5659) (append (el-r4-comp (hd V5659) (el-find-prof (comp-sub (hd V5659)) V5660) V5661) (el-r4 (tl V5659) V5660 V5661))) (true (simple-error "partial function el-r4"))))
+
+(defun el-r5-comp (V5662 V5663) (cond ((= () V5663) (cons "substrate-admissible" (cons (comp-name V5662) (cons false (cons (cn "unknown runtime profile: " (comp-sub V5662)) ()))))) ((and (cons? V5663) (and (= found (hd V5663)) (and (cons? (tl V5663)) (= () (tl (tl V5663)))))) (if (prof-claims (hd (tl V5663))) (cons "substrate-admissible" (cons (comp-name V5662) (cons true (cons (cn (comp-sub V5662) " may back claims") ())))) (cons "substrate-admissible" (cons (comp-name V5662) (cons false (cons (cn "runtime profile " (cn (comp-sub V5662) " is experimental and cannot back a claim")) ())))))) (true (simple-error "partial function el-r5-comp"))))
+
+(defun el-r5 (V5664 V5665) (cond ((= () V5664) ()) ((cons? V5664) (cons (el-r5-comp (hd V5664) (el-find-prof (comp-sub (hd V5664)) V5665)) (el-r5 (tl V5664) V5665))) (true (simple-error "partial function el-r5"))))
+
+(defun el-r6 (V5666 V5667) (cond ((= () V5666) ()) ((cons? V5666) (let W5668 (el-not-in (inv-about (hd V5666)) V5667) (cons (if (= W5668 ()) (cons "invariant-scope" (cons (inv-id (hd V5666)) (cons true (cons (cn (inv-kind (hd V5666)) (cn " over " (el-join ", " (inv-about (hd V5666))))) ())))) (cons "invariant-scope" (cons (inv-id (hd V5666)) (cons false (cons (cn "unknown names: " (el-join ", " W5668)) ()))))) (el-r6 (tl V5666) V5667)))) (true (simple-error "partial function el-r6"))))
+
+(defun el-r7 (V5669) (cond ((= () V5669) ()) ((cons? V5669) (cons (cons "failure-model" (cons (hd V5669) (cons true (cons "in vocabulary" ())))) (el-r7 (tl V5669)))) (true (simple-error "partial function el-r7"))))
+
+(defun el-names (V5670 V5671 V5672 V5673) (append (map (lambda Z5674 (comp-name Z5674)) V5670) (append (map (lambda Z5675 (chan-name Z5675)) V5671) (append (map (lambda Z5676 (eff-name Z5676)) V5672) V5673))))
+
+(defun el-failed (V5677) (cond ((= () V5677) ()) ((cons? V5677) (if (step-ok (hd V5677)) (el-failed (tl V5677)) (cons (cn (step-rule (hd V5677)) (cn ":" (step-subject (hd V5677)))) (el-failed (tl V5677))))) (true (simple-error "partial function el-failed"))))
+
+(defun el-obl-comps (V5678) (cond ((= () V5678) ()) ((cons? V5678) (cons (cn "runtime:replay-stable:" (comp-name (hd V5678))) (cons (cn "runtime:checkpoint-recovered:" (comp-name (hd V5678))) (el-obl-comps (tl V5678))))) (true (simple-error "partial function el-obl-comps"))))
+
+(defun el-obl-chans (V5679) (cond ((= () V5679) ()) ((cons? V5679) (cons (cn "tla:delivery-" (cn (chan-del (hd V5679)) (cn ":" (chan-name (hd V5679))))) (el-obl-chans (tl V5679)))) (true (simple-error "partial function el-obl-chans"))))
+
+(defun el-obl-effs (V5680) (cond ((= () V5680) ()) ((cons? V5680) (if (= (eff-proto (hd V5680)) "durable-intent-commit") (cons (cn "runtime:effects-exactly-once:" (eff-name (hd V5680))) (el-obl-effs (tl V5680))) (el-obl-effs (tl V5680)))) (true (simple-error "partial function el-obl-effs"))))
+
+(defun el-obl-inv (V5681) (let W5682 (inv-kind V5681) (if (= W5682 "forbidden-path") (cn "netkat:isolated:" (el-join "->" (inv-about V5681))) (if (= W5682 "required-waypoint") (cn "netkat:waypoint:" (el-join "->" (inv-about V5681))) (if (= W5682 "liveness") (cn "tla:liveness:" (inv-id V5681)) (cn "tla:invariant:" (inv-id V5681)))))))
+
+(defun el-obl-fails (V5683 V5684) (cond ((= () V5684) ()) ((cons? V5684) (cons (cn "exploration:" (cn (hd V5684) (cn ":" V5683))) (el-obl-fails V5683 (tl V5684)))) (true (simple-error "partial function el-obl-fails"))))
+
+(defun el-obligations (V5685 V5686 V5687 V5688 V5689 V5690) (append (el-obl-comps V5686) (append (el-obl-chans V5687) (append (el-obl-effs V5688) (append (map (lambda Z5691 (el-obl-inv Z5691)) V5689) (el-obl-fails V5685 V5690))))))
+
+(defun el-judge (V5692 V5693 V5694 V5695 V5696 V5697 V5698 V5699 V5700) (let W5701 (el-sorted-comps V5693) (let W5702 (el-sorted-chans V5694) (let W5703 (el-sorted-effs V5695) (let W5704 (el-sorted-invs V5697) (let W5705 (el-sort-strings V5698) (let W5706 (append (el-r1 W5701 V5699) (append (el-r2 W5702 V5693) (append (el-r3 W5703 V5693 V5696 V5699 V5700) (append (el-r4 W5701 V5699 V5700) (append (el-r5 W5701 V5699) (append (el-r6 W5704 (el-names V5693 V5694 V5695 V5696)) (el-r7 W5705))))))) (let W5707 (el-failed W5706) (if (= W5707 ()) (cons accepted (cons W5706 (cons () (cons (el-obligations V5692 W5701 W5702 W5703 W5704 W5705) ())))) (cons rejected (cons W5706 (cons W5707 (cons () ())))))))))))))
+
+(defun elaborate (V5708 V5709 V5710 V5711 V5712 V5713 V5714 V5715 V5716) (trap-error (el-judge V5708 V5709 V5710 V5711 V5712 V5713 V5714 V5715 V5716) (lambda Z5717 (cons rejected (cons (cons (cons "elaborate" (cons "host" (cons false (cons (error-to-string Z5717) ())))) ()) (cons (cons (cn "elaborate:" "host") ()) (cons () ())))))))
+
