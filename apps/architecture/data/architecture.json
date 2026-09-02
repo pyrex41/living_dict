@@ -1,0 +1,30 @@
+{
+  "stages": [
+    {"id":"observe","number":"01","name":"Observe","owner":"Model, bounded","tone":"amber","summary":"The model asks focused questions through read-only repository tools.","detail":"OODA research can list, search, and read a bounded amount of evidence. Its results become planner context, but they carry no write authority.","input":"Goal + workspace manifest","output":"Research brief + evidence hashes","model":"yes","mutation":"no","source":"beam/lib/ld_host/research.ex"},
+    {"id":"plan","number":"02","name":"Plan","owner":"Model","tone":"amber","summary":"One model call proposes an envelope, not a stream of mutations.","detail":"The envelope contains complete artifact bodies, a Forth control program, and an inert rationale. At this point nothing in the workspace has changed.","input":"Goal + observation + feedback","output":"{ program, artifacts, rationale }","model":"yes","mutation":"no","source":"beam/lib/ld_host/planner.ex"},
+    {"id":"critic","number":"03","name":"Critic","owner":"Typed Shen","tone":"violet","summary":"A deterministic abstract interpreter checks the whole proposed program.","detail":"It evaluates stack shape, effects, path globs, artifacts, control structure, and typed dictionary calls. Rejection returns structured errors; it never edits files or asks a model.","input":"Program + policy + catalog","output":"Accept(depth, effects) or Reject(errors)","model":"no","mutation":"no","source":"shen/critic/validate.shen"},
+    {"id":"execute","number":"04","name":"Execute","owner":"BEAM + Forth VM","tone":"green","summary":"Only an accepted program receives host capabilities.","detail":"The Forth VM orders artifact installation and host calls. Workspace confinement is checked again at the capability boundary. The model is not running while these words execute.","input":"Accepted program + artifacts","output":"Mutations + traps + actual word use","model":"no","mutation":"yes","source":"beam/lib/ld_host/forth.ex"},
+    {"id":"judge","number":"05","name":"Judge","owner":"Frozen contract","tone":"blue","summary":"Executable claims—not model confidence—decide whether the task is done.","detail":"Builds, tests, commands, and probes run with bounded time. Judge provenance says whether the contract was approved/hidden or merely model-authored.","input":"Workspace + approved claims","output":"Discharge report","model":"no","mutation":"measured","source":"beam/lib/ld_host/gates.ex"},
+    {"id":"record","number":"06","name":"Record","owner":"Ledger","tone":"blue","summary":"The run leaves a hash-sequenced account rather than asking you to trust a transcript.","detail":"Plans, critic verdicts, mutations, gate results, cache evidence, and receipts are append-only events. Content-addressed tree hashes make before/after state auditable.","input":"Runtime events","output":"events.jsonl + trace.jsonl + receipt","model":"no","mutation":"run state only","source":"beam/lib/ld_host/ledger.ex"}
+  ],
+  "forthSteps": [
+    {"code":"S\" registry.py\"","stack":["registry.py"],"effect":"Push a string. No I/O."},
+    {"code":"USE-ARTIFACT","stack":["<259 bytes>"],"effect":"Resolve an artifact already present in the accepted envelope."},
+    {"code":"S\" pipeline/registry.py\"","stack":["<259 bytes>","pipeline/registry.py"],"effect":"Push the destination path."},
+    {"code":"WRITE-FILE","stack":["true"],"effect":"Host checks the path and writes the bytes. This is real I/O."},
+    {"code":"DROP","stack":[],"effect":"Discard the success flag."},
+    {"code":"RUN-GATES","stack":["true"],"effect":"Execute the frozen acceptance contract."},
+    {"code":"RECEIPT","stack":["true"],"effect":"Persist hashes, effects, and changed files."}
+  ],
+  "runtimeRows": [
+    {"name":"BEAM / OTP host","when":"Every live run","hot":true,"role":"Owns the loop, supervision, timeouts, and process isolation.","source":"beam/lib/ld_host/run.ex"},
+    {"name":"Forth VM","when":"Every accepted episode","hot":true,"role":"Actually dispatches host capabilities; not a prompt decoration.","source":"beam/lib/ld_host/forth.ex"},
+    {"name":"Typed Shen critic","when":"Every proposed episode","hot":true,"role":"Compiled to BEAM bytecode when available; rejects before I/O.","source":"shen/critic/validate.shen"},
+    {"name":"Gates + approved claims","when":"Every episode","hot":true,"role":"Measures completion independently of model stopping.","source":"beam/lib/ld_host/gates.ex"},
+    {"name":"Ledger + receipts","when":"Every run","hot":true,"role":"Records decisions, mutations, and state hashes.","source":"beam/lib/ld_host/ledger.ex"},
+    {"name":"OODA research","when":"When --ooda auto","hot":false,"role":"Bounded read-only context gathering; can be disabled.","source":"beam/lib/ld_host/research.ex"},
+    {"name":"Warm dictionary","when":"When a dictionary is supplied","hot":false,"role":"Loads typed words; measured use is distinct from planner mention.","source":"beam/lib/ld_host/dictionary.ex"},
+    {"name":"Linda + Jido obligations","when":"Demo / benchmark orchestration","hot":false,"role":"Real leased work coordination, not the direct ld.run hot path.","source":"beam/lib/ld_host/obligation.ex"},
+    {"name":"OpenResty + browser bodies","when":"Alternate deployments","hot":false,"role":"Portability proofs sharing critic/ABI—not three layers per run.","source":"docs/ARCHITECTURE.md"}
+  ]
+}

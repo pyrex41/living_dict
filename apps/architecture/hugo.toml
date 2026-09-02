@@ -1,0 +1,27 @@
+baseURL = "/"
+locale = "en-US"
+title = "Inside Living Dictionary"
+publishDir = "dist"
+noBuildLock = true
+disableKinds = ["taxonomy", "term", "RSS", "sitemap", "robotsTXT"]
+
+[params]
+description = "An evidence-first tour of the Living Dictionary coding-agent architecture."
+sourceRoot = "https://github.com/pyrex41/living_dict/blob/main/"
+
+[module]
+  [[module.mounts]]
+    source = "content"
+    target = "content"
+  [[module.mounts]]
+    source = "layouts"
+    target = "layouts"
+  [[module.mounts]]
+    source = "data"
+    target = "data"
+  [[module.mounts]]
+    source = "src"
+    target = "assets"
+  [[module.mounts]]
+    source = "static"
+    target = "static"

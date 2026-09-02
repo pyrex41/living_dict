@@ -108,10 +108,10 @@ browser-serve:
 	python3 -m http.server --directory browser
 
 architecture-dev:
-	cd apps/architecture && npm install && npm run dev
+	cd apps/architecture && hugo server --disableFastRender
 
 architecture-build:
-	cd apps/architecture && npm install && npm run build
+	cd apps/architecture && hugo --minify
 
 # ---- BEAM host (beam/, Elixir) ----
 beam-deps:
