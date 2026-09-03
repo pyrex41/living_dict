@@ -1,10 +1,8 @@
 defmodule LdHost.Planner do
   @moduledoc """
-  The only model-facing module. Calls xAI grok with the Forth-plan system
-  prompt and parses the JSON envelope. Credentials: `XAI_API_KEY`, else
-  the SpaceXAI OAuth session at `~/.grok/auth.json` (access token used
-  as-is; refresh is the reference client's job — run `grok login --oauth`
-  if expired).
+  The only model-facing module. Supports xAI, OpenAI, and Anthropic while
+  preserving the Forth-plan / Shen-critic boundary. OpenAI may use an API
+  key or delegate to the official Codex CLI's OAuth session.
 
   Unlike the Python client, host words are listed WITH their stack
   effects, and colon definitions MUST declare `( ins -- outs | effects )`
@@ -12,20 +10,36 @@ defmodule LdHost.Planner do
   never promoted.
   """
 
-  @default_endpoint "https://api.x.ai/v1/chat/completions"
-  @default_model "grok-4.6"
+  @providers %{
+    "xai" => {"grok-4.6", "https://api.x.ai/v1/chat/completions"},
+    "openai" => {"gpt-5", "https://api.openai.com/v1/responses"},
+    "anthropic" => {"claude-sonnet-4-5", "https://api.anthropic.com/v1/messages"}
+  }
 
   alias LdHost.{CachePolicy, Policy}
 
   @doc """
-  Model resolved at RUNTIME (not compile time): `LIVINGDICT_MODEL` env,
-  else #{inspect(@default_model)}. Compile-time baking would freeze the
-  build machine's env into a release.
+  Model and provider are resolved at runtime so releases remain portable.
   """
-  def model, do: System.get_env("LIVINGDICT_MODEL") || @default_model
+  def provider do
+    case System.get_env("LIVINGDICT_PROVIDER", "xai") |> String.trim() |> String.downcase() do
+      "grok" -> "xai"
+      "codex" -> "openai"
+      "claude" -> "anthropic"
+      name when is_map_key(@providers, name) -> name
+      name -> raise ArgumentError, "unsupported planner provider: #{name}"
+    end
+  end
 
-  @doc "Planner endpoint. Override only for an OpenAI-compatible recorder/proxy."
-  def endpoint, do: System.get_env("LIVINGDICT_PLANNER_ENDPOINT") || @default_endpoint
+  def model do
+    configured = System.get_env("LIVINGDICT_MODEL", "") |> String.trim()
+    if configured == "", do: elem(@providers[provider()], 0), else: configured
+  end
+
+  @doc "Planner endpoint; `LIVINGDICT_PLANNER_ENDPOINT` overrides provider defaults."
+  def endpoint do
+    System.get_env("LIVINGDICT_PLANNER_ENDPOINT") || elem(@providers[provider()], 1)
+  end
 
   @system """
   You are the planner for a general coding harness whose plan language is
@@ -83,57 +97,45 @@ defmodule LdHost.Planner do
   `{:error, reason}`. `telemetry` is `%{input_tokens, output_tokens}`.
   """
   def plan(goal, observation, opts \\ []) do
-    with {:ok, token} <- credentials() do
-      {body, request_meta, headers} = request_shape(goal, observation, opts)
+    {body, request_meta, headers} = request_shape(goal, observation, opts)
+    selected_provider = provider()
+    request_json = JSON.encode!(body)
+    started = System.monotonic_time(:millisecond)
 
+    with {:ok, auth} <- credentials(),
+         {:ok, text, usage, response} <- call_provider(selected_provider, auth, body, headers) do
       # Hard episodes can legitimately reason for minutes; a tight
       # receive_timeout guillotines exactly the calls that matter most
       # (observed: repair-episode planning on parser-02 exceeding 180s
       # repeatedly while trivial episodes returned in seconds).
-      request_json = JSON.encode!(body)
-      started = System.monotonic_time(:millisecond)
+      telemetry = %{
+        input_tokens: usage["prompt_tokens"] || usage["input_tokens"] || 0,
+        output_tokens: usage["completion_tokens"] || usage["output_tokens"] || 0,
+        reasoning_tokens:
+          get_in(usage, ["completion_tokens_details", "reasoning_tokens"]) ||
+            get_in(usage, ["output_tokens_details", "reasoning_tokens"]) || 0,
+        cached_tokens:
+          get_in(usage, ["prompt_tokens_details", "cached_tokens"]) ||
+            get_in(usage, ["input_tokens_details", "cached_tokens"]) ||
+            usage["cache_read_input_tokens"] || 0,
+        total_tokens:
+          usage["total_tokens"] || (usage["input_tokens"] || 0) + (usage["output_tokens"] || 0),
+        duration_ms: System.monotonic_time(:millisecond) - started,
+        request_bytes: byte_size(request_json),
+        response_bytes: byte_size(JSON.encode!(response)),
+        request_sha256: sha256(request_json),
+        endpoint_host: endpoint_host(endpoint()),
+        reasoning_effort: Keyword.get(opts, :reasoning_effort, "high"),
+        cache_scope: request_meta.cache_scope,
+        cache_phase: "planner",
+        cache_key_fingerprint: request_meta.cache_key_fingerprint,
+        message_prefix_sha256: request_meta.message_prefix_sha256,
+        tool_schema_sha256: nil
+      }
 
-      case Req.post(endpoint(),
-             json: body,
-             auth: {:bearer, token},
-             headers: headers,
-             receive_timeout: 600_000,
-             retry: false
-           ) do
-        {:ok, %{status: 200, body: %{"choices" => [choice | _]} = response}} ->
-          text = get_in(choice, ["message", "content"]) || ""
-          usage = response["usage"] || %{}
-
-          telemetry = %{
-            input_tokens: usage["prompt_tokens"] || 0,
-            output_tokens: usage["completion_tokens"] || 0,
-            reasoning_tokens:
-              get_in(usage, ["completion_tokens_details", "reasoning_tokens"]) || 0,
-            cached_tokens: get_in(usage, ["prompt_tokens_details", "cached_tokens"]) || 0,
-            total_tokens: usage["total_tokens"] || 0,
-            duration_ms: System.monotonic_time(:millisecond) - started,
-            request_bytes: byte_size(request_json),
-            response_bytes: byte_size(JSON.encode!(response)),
-            request_sha256: sha256(request_json),
-            endpoint_host: endpoint_host(endpoint()),
-            reasoning_effort: Keyword.get(opts, :reasoning_effort, "high"),
-            cache_scope: request_meta.cache_scope,
-            cache_phase: "planner",
-            cache_key_fingerprint: request_meta.cache_key_fingerprint,
-            message_prefix_sha256: request_meta.message_prefix_sha256,
-            tool_schema_sha256: nil
-          }
-
-          case extract_json_object(text) do
-            {:ok, envelope} -> {:ok, envelope, telemetry}
-            {:error, reason} -> {:error, reason}
-          end
-
-        {:ok, %{status: status, body: body}} ->
-          {:error, "planner HTTP #{status}: #{inspect(body, limit: 10)}"}
-
-        {:error, reason} ->
-          {:error, "planner request failed: #{inspect(reason)}"}
+      case extract_json_object(text) do
+        {:ok, envelope} -> {:ok, envelope, telemetry}
+        {:error, reason} -> {:error, reason}
       end
     end
   end
@@ -152,11 +154,14 @@ defmodule LdHost.Planner do
       %{role: "user", content: sanitize("OBSERVATION:\n#{observation}")}
     ]
 
-    body = %{model: selected_model, messages: messages, temperature: 0.2}
+    body = request_body(provider(), selected_model, messages)
 
     body =
-      case Keyword.get(opts, :reasoning_effort) do
-        effort when effort in ~w(low medium high xhigh) ->
+      case {provider(), Keyword.get(opts, :reasoning_effort)} do
+        {"openai", effort} when effort in ~w(low medium high xhigh) ->
+          Map.put(body, :reasoning, %{effort: effort})
+
+        {"xai", effort} when effort in ~w(low medium high xhigh) ->
           Map.put(body, :reasoning_effort, effort)
 
         _ ->
@@ -175,15 +180,33 @@ defmodule LdHost.Planner do
       message_prefix_sha256: Policy.sha256_hex(JSON.encode!(Enum.take(messages, 2)))
     }
 
-    {body, meta, cache_headers(key)}
+    {body, meta, cache_headers(provider(), key)}
   end
 
-  defp cache_headers(key) do
+  defp request_body("openai", model, [system | messages]) do
+    %{
+      model: model,
+      instructions: system.content,
+      input: messages,
+      text: %{format: %{type: "json_object"}}
+    }
+  end
+
+  defp request_body("anthropic", model, [system | messages]) do
+    %{model: model, system: system.content, messages: messages, max_tokens: 16_384}
+  end
+
+  defp request_body(_provider, model, messages),
+    do: %{model: model, messages: messages, temperature: 0.2}
+
+  defp cache_headers("xai", key) do
     case key do
       key when is_binary(key) and key != "" -> [{"x-grok-conv-id", key}]
       _ -> []
     end
   end
+
+  defp cache_headers(_provider, _key), do: []
 
   defp cache_key(:off, _opts, _model, _schema), do: nil
 
@@ -202,10 +225,148 @@ defmodule LdHost.Planner do
     end
   end
 
+  defp call_provider("openai", :codex_oauth, body, _headers), do: call_codex(body)
+
+  defp call_provider(name, {:api_key, token}, body, affinity_headers) do
+    {auth, headers} =
+      case name do
+        "anthropic" -> {nil, [{"x-api-key", token}, {"anthropic-version", "2023-06-01"}]}
+        _ -> {{:bearer, token}, affinity_headers}
+      end
+
+    options = [json: body, headers: headers, receive_timeout: 600_000, retry: false]
+    options = if auth, do: Keyword.put(options, :auth, auth), else: options
+
+    case Req.post(endpoint(), options) do
+      {:ok, %{status: 200, body: response}} ->
+        decode_provider_response(name, response)
+
+      {:ok, %{status: status, body: response}} ->
+        {:error, "planner HTTP #{status}: #{inspect(response, limit: 10)}"}
+
+      {:error, reason} ->
+        {:error, "planner request failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp decode_provider_response("openai", response) do
+    text =
+      for output <- response["output"] || [],
+          part <- output["content"] || [],
+          part["type"] == "output_text",
+          into: "",
+          do: part["text"] || ""
+
+    {:ok, text, response["usage"] || %{}, response}
+  end
+
+  defp decode_provider_response("anthropic", response) do
+    text =
+      for part <- response["content"] || [],
+          part["type"] == "text",
+          into: "",
+          do: part["text"] || ""
+
+    {:ok, text, response["usage"] || %{}, response}
+  end
+
+  defp decode_provider_response(_name, %{"choices" => [choice | _]} = response) do
+    {:ok, get_in(choice, ["message", "content"]) || "", response["usage"] || %{}, response}
+  end
+
+  defp decode_provider_response(name, response),
+    do: {:error, "#{name} returned no model content: #{inspect(response, limit: 10)}"}
+
+  defp call_codex(body) do
+    with codex when is_binary(codex) <-
+           System.find_executable(System.get_env("CODEX_BIN", "codex")) do
+      prompt =
+        (["SYSTEM:\n" <> body.instructions] ++
+           Enum.map(body.input, fn message ->
+             "#{message.role |> to_string() |> String.upcase()}:\n#{message.content}"
+           end))
+        |> Enum.join("\n\n")
+
+      args = [
+        "exec",
+        "--json",
+        "--ephemeral",
+        "--ignore-rules",
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+        "-m",
+        body.model,
+        prompt
+      ]
+
+      {output, status} = System.cmd(codex, args, stderr_to_stdout: true)
+
+      if status == 0 do
+        {text, usage} =
+          output
+          |> String.split("\n", trim: true)
+          |> Enum.reduce({"", %{}}, fn line, {text, usage} ->
+            case JSON.decode(line) do
+              {:ok,
+               %{
+                 "type" => "item.completed",
+                 "item" => %{"type" => "agent_message", "text" => value}
+               }} ->
+                {value, usage}
+
+              {:ok, %{"type" => "turn.completed", "usage" => value}} ->
+                {text, value}
+
+              _ ->
+                {text, usage}
+            end
+          end)
+
+        if text == "",
+          do: {:error, "Codex OAuth returned no agent message"},
+          else: {:ok, text, usage, %{transport: "codex_oauth"}}
+      else
+        {:error, "Codex OAuth invocation failed (#{status}): #{String.slice(output, -800, 800)}"}
+      end
+    else
+      _ -> {:error, "OpenAI OAuth requires the Codex CLI; install it and run: codex login"}
+    end
+  end
+
   def credentials do
+    case provider() do
+      "openai" -> openai_credentials()
+      "anthropic" -> env_credentials("ANTHROPIC_API_KEY")
+      "xai" -> xai_credentials()
+    end
+  end
+
+  defp openai_credentials do
+    mode = System.get_env("LIVINGDICT_OPENAI_AUTH", "auto") |> String.trim() |> String.downcase()
+    key = System.get_env("OPENAI_API_KEY", "") |> String.trim()
+
+    cond do
+      mode == "oauth" -> {:ok, :codex_oauth}
+      mode == "api_key" and key != "" -> {:ok, {:api_key, key}}
+      mode == "api_key" -> {:error, "OPENAI_API_KEY is not set"}
+      mode == "auto" and key != "" -> {:ok, {:api_key, key}}
+      mode == "auto" -> {:ok, :codex_oauth}
+      true -> {:error, "LIVINGDICT_OPENAI_AUTH must be auto, api_key, or oauth"}
+    end
+  end
+
+  defp env_credentials(name) do
+    case System.get_env(name, "") |> String.trim() do
+      "" -> {:error, "#{name} is not set"}
+      key -> {:ok, {:api_key, key}}
+    end
+  end
+
+  defp xai_credentials do
     case System.get_env("XAI_API_KEY", "") |> String.trim() do
       "" -> oauth_token()
-      key -> {:ok, key}
+      key -> {:ok, {:api_key, key}}
     end
   end
 
@@ -225,7 +386,7 @@ defmodule LdHost.Planner do
       if expired?(rec["expires_at"]) do
         refresh_oauth(path, blob, rec_key, rec)
       else
-        {:ok, rec["key"]}
+        {:ok, {:api_key, rec["key"]}}
       end
     else
       _ ->
@@ -268,7 +429,7 @@ defmodule LdHost.Planner do
             |> put_expiry(payload["expires_in"])
 
           persist_auth(path, Map.put(blob, rec_key, rec))
-          {:ok, access}
+          {:ok, {:api_key, access}}
 
         {:ok, %{status: status}} ->
           {:error, "oauth refresh failed (#{status}); run: grok login --oauth"}

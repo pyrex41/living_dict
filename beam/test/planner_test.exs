@@ -1,6 +1,52 @@
 defmodule LdHost.PlannerTest do
   use ExUnit.Case, async: false
 
+  defp with_env(values, fun) do
+    previous = Map.new(Map.keys(values), &{&1, System.get_env(&1)})
+    Enum.each(values, fn {key, value} -> System.put_env(key, value) end)
+
+    try do
+      fun.()
+    after
+      Enum.each(previous, fn
+        {key, nil} -> System.delete_env(key)
+        {key, value} -> System.put_env(key, value)
+      end)
+    end
+  end
+
+  test "provider-specific defaults and request protocols remain distinct" do
+    with_env(%{"LIVINGDICT_PROVIDER" => "openai", "LIVINGDICT_MODEL" => ""}, fn ->
+      assert LdHost.Planner.provider() == "openai"
+      assert LdHost.Planner.model() == "gpt-5"
+      assert LdHost.Planner.endpoint() == "https://api.openai.com/v1/responses"
+      {body, _meta, headers} = LdHost.Planner.request_shape("goal", "state")
+      assert body.instructions =~ "Forth"
+      assert Enum.at(body.input, 0).content =~ "GOAL"
+      assert body.text.format.type == "json_object"
+      assert headers == []
+    end)
+
+    with_env(%{"LIVINGDICT_PROVIDER" => "anthropic", "LIVINGDICT_MODEL" => ""}, fn ->
+      {body, _meta, headers} = LdHost.Planner.request_shape("goal", "state")
+      assert LdHost.Planner.model() == "claude-sonnet-4-5"
+      assert body.system =~ "Forth"
+      assert body.max_tokens == 16_384
+      assert headers == []
+    end)
+  end
+
+  test "OpenAI OAuth is represented without reading credential files" do
+    with_env(
+      %{
+        "LIVINGDICT_PROVIDER" => "openai",
+        "LIVINGDICT_OPENAI_AUTH" => "oauth",
+        "OPENAI_API_KEY" => ""
+      },
+      fn -> assert LdHost.Planner.credentials() == {:ok, :codex_oauth} end
+    )
+  end
+
   test "planner endpoint can be routed through a run-local recorder" do
     previous = System.get_env("LIVINGDICT_PLANNER_ENDPOINT")
     System.put_env("LIVINGDICT_PLANNER_ENDPOINT", "http://127.0.0.1:8765/v1/chat/completions")
