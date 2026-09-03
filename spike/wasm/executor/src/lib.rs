@@ -358,6 +358,11 @@ impl OplogWriter {
             .create_new(true)
             .append(true)
             .open(path)?;
+        file.sync_all()?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow!("oplog path has no parent"))?;
+        File::open(parent)?.sync_all()?;
         Ok(Self {
             file: Some(file),
             entries: vec![],
@@ -366,7 +371,18 @@ impl OplogWriter {
         })
     }
     pub fn open_existing(path: &Path, ctx: &Ctx, max_bytes: u64) -> Result<Self> {
-        let text = fs::read_to_string(path)?;
+        let raw = fs::read(path)?;
+        let complete = if raw.is_empty() || raw.last() == Some(&b'\n') {
+            raw.len()
+        } else {
+            raw.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1)
+        };
+        if complete != raw.len() {
+            let file = OpenOptions::new().write(true).open(path)?;
+            file.set_len(complete as u64)?;
+            file.sync_all()?;
+        }
+        let text = std::str::from_utf8(&raw[..complete])?;
         let mut entries = vec![];
         for line in text.lines() {
             entries.push(serde_json::from_str::<Entry>(line)?);
@@ -1310,8 +1326,19 @@ fn write_run_state(run_dir: &Path, v: &Value) -> Result<()> {
 }
 fn atomic(path: &Path, data: &[u8]) -> Result<()> {
     let tmp = path.with_extension("tmp");
-    fs::write(&tmp, data)?;
-    fs::rename(tmp, path)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&tmp)?;
+    file.write_all(data)?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(&tmp, path)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("atomic path has no parent"))?;
+    File::open(parent)?.sync_all()?;
     Ok(())
 }
 
@@ -1470,6 +1497,12 @@ fn run_inner(
         .checkpoint
         .clone()
         .ok_or_else(|| anyhow!("checkpoint was not taken"))?;
+    // Publish the checkpoint before any replay/fork work begins. A crash in
+    // a later phase must not erase evidence that the checkpoint boundary was
+    // durably reached.
+    let checkpoint_bytes =
+        canonical(&serde_json::to_value(&checkpoint)?).map_err(|x| anyhow!(x))?;
+    atomic(&run_dir.join("checkpoint.json"), &checkpoint_bytes)?;
     // Lineage anchor for the fork: the parent route's final entry, captured
     // before any other route appends.
     let parent_exit_hash = log.last_hash();
@@ -1645,8 +1678,6 @@ fn run_inner(
         && recovered.live == 0;
 
     // evidence files
-    let checkpoint_bytes =
-        canonical(&serde_json::to_value(&checkpoint)?).map_err(|x| anyhow!(x))?;
     let branch = canonical(&json!({
         "schema":"ld.branch/v1","branch_id":"fork","parent_final_oplog_hash":parent_exit_hash,
         "run_id":rid,"scenario_hash":scenario.hash,
@@ -1655,7 +1686,6 @@ fn run_inner(
         "final_snapshot_hash":fork.snapshot_hash
     }))
     .map_err(|x| anyhow!(x))?;
-    atomic(&run_dir.join("checkpoint.json"), &checkpoint_bytes)?;
     fs::create_dir_all(run_dir.join("branches/fork"))?;
     atomic(&run_dir.join("branches/fork/manifest.json"), &branch)?;
     let jsonl = fs::read(&oplog_path)?;
@@ -2054,6 +2084,15 @@ mod tests {
         client.shutdown().unwrap();
         t.join().unwrap();
 
+        // A process may die halfway through its final append. Restart keeps
+        // the verified newline-terminated prefix and discards only that tail.
+        OpenOptions::new()
+            .append(true)
+            .open(&logp)
+            .unwrap()
+            .write_all(b"{\"schema\":\"torn")
+            .unwrap();
+
         // Restart from the log: k1 is still bound and answered from the
         // log's result bytes; the second canned response is still available
         // for a new key; the chain continues rather than restarting.
@@ -2168,6 +2207,35 @@ mod tests {
             "the refused entry is not in memory either"
         );
         assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn oplog_resume_truncates_only_a_torn_final_record() {
+        let dir = std::env::temp_dir().join(format!("ld-oplog-torn-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let ctx = Ctx {
+            component_hash: "a".repeat(64),
+            worker: "w".into(),
+            seed: 7,
+            run_id: "r".into(),
+        };
+        let path = dir.join("oplog.jsonl");
+        let mut log = OplogWriter::create(&path, 4096).unwrap();
+        log.append("invocation", "parent", &ctx, json!({}), json!({}), "x", "y")
+            .unwrap();
+        drop(log);
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"schema\":\"torn")
+            .unwrap();
+
+        let recovered = OplogWriter::open_existing(&path, &ctx, 4096).unwrap();
+        assert_eq!(recovered.entries.len(), 1);
+        assert!(fs::read(&path).unwrap().ends_with(b"\n"));
         let _ = fs::remove_dir_all(&dir);
     }
 }

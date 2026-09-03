@@ -21,8 +21,8 @@ defmodule LdHost.Substrates do
     clock: ~w(ambient recorded logical),
     entropy: ~w(ambient ambient-seeded seeded-replayable),
     scheduler: ~w(preemptive cooperative host-serialized),
-    filesystem: ~w(ambient mediated read-only-image none),
-    network: ~w(ambient recorded mediated-messages none),
+    filesystem: ~w(none ambient mediated read-only-image),
+    network: ~w(none ambient recorded mediated-messages),
     external_effects: ~w(ambient recorded durable-intent-commit),
     # `component`: the guest declares its own state representation; the host
     # proves it round-trips and hashes it, not that it is complete.
@@ -143,6 +143,12 @@ defmodule LdHost.Substrates do
     do: Enum.all?(required, &(to_string(&1) in supplied))
 
   defp meets?(:fault_controls, _, _), do: false
+
+  # Access modes are semantic alternatives, not ordered strengths: a runtime
+  # with no filesystem cannot satisfy a component that requires a read-only
+  # image, and a runtime with ambient access cannot substitute for mediation.
+  defp meets?(dim, required, supplied) when dim in [:filesystem, :network],
+    do: to_string(required) == supplied and supplied in @orders[dim]
 
   defp meets?(dim, required, supplied) do
     order = @orders[dim]

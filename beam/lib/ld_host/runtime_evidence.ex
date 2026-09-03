@@ -551,6 +551,9 @@ defmodule LdHost.RuntimeEvidence do
       not MapSet.equal?(provider.executed, committed) ->
         false
 
+      not MapSet.equal?(MapSet.new(Map.keys(effects.delivered)), committed) ->
+        false
+
       true ->
         Enum.all?(effects.delivered, fn {k, n} ->
           n >= 1 and Map.has_key?(effects.committed, k)
@@ -643,11 +646,10 @@ defmodule LdHost.RuntimeEvidence do
 
   defp exit_of(entries), do: List.last(entries)
 
-  defp roundtrips_ok?(entries),
-    do:
-      Enum.all?(entries, fn e ->
-        e["kind"] != "snapshot-roundtrip" or e["result"]["equal"] == true
-      end)
+  defp roundtrips_ok?(entries) do
+    roundtrips = Enum.filter(entries, &(&1["kind"] == "snapshot-roundtrip"))
+    roundtrips != [] and Enum.all?(roundtrips, &(&1["result"]["equal"] == true))
+  end
 
   defp replay_stable?(routes, parent) do
     pexit = exit_of(parent.final)

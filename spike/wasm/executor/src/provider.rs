@@ -18,7 +18,7 @@ use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Read, Write},
     os::unix::net::{UnixListener, UnixStream},
     path::{Path, PathBuf},
@@ -194,6 +194,7 @@ impl Server {
             previous: "0".repeat(64),
         };
         if log_path.exists() {
+            truncate_torn_tail(log_path)?;
             let entries = read_log(log_path)?;
             for e in &entries {
                 if e["status"] == "executed" {
@@ -230,12 +231,20 @@ impl Server {
         body["entry_hash"] = json!(entry_hash);
         let mut bytes = canonical(&body).map_err(|e| anyhow!(e))?;
         bytes.push(b'\n');
+        let created = !self.log_path.exists();
         let mut f = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.log_path)?;
         f.write_all(&bytes)?;
         f.sync_data()?;
+        if created {
+            let parent = self
+                .log_path
+                .parent()
+                .ok_or_else(|| anyhow!("provider log path has no parent"))?;
+            File::open(parent)?.sync_all()?;
+        }
         self.seq += 1;
         self.previous = entry_hash;
         Ok(())
@@ -278,30 +287,30 @@ impl Server {
             self.record(e)?;
             return Ok(json!({"status":"duplicate","result_hex":hex(&bound.result)}));
         }
-        let pos = self.consumed.entry(name.clone()).or_default();
-        let Some(value) = self.canned.get(&name).and_then(|x| x.get(*pos)) else {
+        let pos = self.consumed.get(&name).copied().unwrap_or_default();
+        let Some(value) = self.canned.get(&name).and_then(|x| x.get(pos)) else {
             let mut e = meta;
             e["status"] = json!("rejected");
             e["result_hash"] = Value::Null;
             self.record(e)?;
             return Ok(json!({"error":format!("undeclared effect {name}")}));
         };
-        *pos += 1;
         let result = serde_json::to_vec(value)?;
-        self.executed.insert(
-            key,
-            Bound {
-                name,
-                business_key,
-                request_hash,
-                result: result.clone(),
-            },
-        );
+        let bound = Bound {
+            name: name.clone(),
+            business_key: business_key.clone(),
+            request_hash: request_hash.clone(),
+            result: result.clone(),
+        };
         let mut e = meta;
         e["status"] = json!("executed");
         e["result_hash"] = json!(hash(&result));
         e["result_hex"] = json!(hex(&result));
+        // The durable record is the commit point. Never publish volatile
+        // exactly-once state before the append and sync have succeeded.
         self.record(e)?;
+        self.consumed.insert(name, pos + 1);
+        self.executed.insert(key, bound);
         Ok(json!({"status":"executed","result_hex":hex(&result)}))
     }
 }
@@ -333,14 +342,25 @@ pub fn serve(socket: &Path, canned: BTreeMap<String, Vec<Value>>, log: &Path) ->
         }
         // Execute and log before replying, so a client that dies mid-call
         // still leaves the effect executed exactly once.
-        let reply = match server.handle(&request) {
-            Ok(r) => r,
-            Err(e) => json!({"error":e.to_string()}),
-        };
+        // A durability error makes the provider's state uncertain. Fail
+        // closed instead of serving further requests from volatile state.
+        let reply = server.handle(&request)?;
         let mut s = &stream;
         let _ = s.write_all(&serde_json::to_vec(&reply)?);
         let _ = s.write_all(b"\n");
     }
+    Ok(())
+}
+
+fn truncate_torn_tail(path: &Path) -> Result<()> {
+    let bytes = fs::read(path)?;
+    if bytes.is_empty() || bytes.last() == Some(&b'\n') {
+        return Ok(());
+    }
+    let complete = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    let file = OpenOptions::new().write(true).open(path)?;
+    file.set_len(complete as u64)?;
+    file.sync_all()?;
     Ok(())
 }
 

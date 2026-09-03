@@ -28,9 +28,20 @@ defmodule LdHost.RuntimeEvidenceTest do
 
     {lines, _} =
       entries
-      |> Enum.map(edit)
-      |> Enum.map_reduce(zero, fn e, prev ->
-        e = e |> Map.delete("entry_hash") |> Map.put("previous_entry_hash", prev)
+      |> Enum.flat_map(fn entry ->
+        case edit.(entry) do
+          nil -> []
+          edited -> [edited]
+        end
+      end)
+      |> Enum.with_index()
+      |> Enum.map_reduce(zero, fn {e, sequence}, prev ->
+        e =
+          e
+          |> Map.delete("entry_hash")
+          |> Map.put("sequence", sequence)
+          |> Map.put("previous_entry_hash", prev)
+
         h = LdHost.JCS.hash!(e)
         {LdHost.JCS.encode!(Map.put(e, "entry_hash", h)), h}
       end)
@@ -143,6 +154,66 @@ defmodule LdHost.RuntimeEvidenceTest do
 
     assert {:error, reason} = RuntimeEvidence.verify(dir, receipt("order"))
     assert reason =~ "delivered result differs"
+  end
+
+  test "exactly-once requires every committed result to be delivered" do
+    dir = copy("order")
+
+    resign_oplog!(dir, fn
+      %{"kind" => "capability-result", "input" => %{"source" => "provider"}} = e ->
+        _ = e
+        nil
+
+      e ->
+        e
+    end)
+
+    parent_exit =
+      Path.join(dir, "oplog.jsonl")
+      |> File.stream!()
+      |> Stream.map(&JSON.decode!/1)
+      |> Enum.find(&(&1["route"] == "parent" and &1["kind"] == "exit"))
+
+    branch_path = Path.join(dir, "branches/fork/manifest.json")
+
+    branch =
+      branch_path
+      |> File.read!()
+      |> JSON.decode!()
+      |> Map.put("parent_final_oplog_hash", parent_exit["entry_hash"])
+      |> LdHost.JCS.encode!()
+
+    File.write!(branch_path, branch)
+
+    receipt =
+      receipt("order")
+      |> put_in(
+        ["evidence", "oplog", "sha256"],
+        sha(File.read!(Path.join(dir, "oplog.jsonl")))
+      )
+      |> put_in(["evidence", "branch", "sha256"], sha(branch))
+
+    assert {:error, reason} = RuntimeEvidence.verify(dir, receipt)
+    assert reason =~ "effects-exactly-once"
+  end
+
+  test "replay stability requires snapshot roundtrip witnesses" do
+    dir = copy("kv")
+
+    resign_oplog!(dir, fn
+      %{"kind" => "snapshot-roundtrip", "route" => "replay-1"} -> nil
+      e -> e
+    end)
+
+    receipt =
+      put_in(
+        receipt("kv"),
+        ["evidence", "oplog", "sha256"],
+        sha(File.read!(Path.join(dir, "oplog.jsonl")))
+      )
+
+    assert {:error, reason} = RuntimeEvidence.verify(dir, receipt)
+    assert reason =~ "replay-stable"
   end
 
   test "the scenario bytes are bound into the receipt" do

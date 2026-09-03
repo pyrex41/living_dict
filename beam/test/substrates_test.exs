@@ -62,6 +62,19 @@ defmodule LdHost.SubstratesTest do
              Substrates.satisfies(%{fault_controls: ["crash", "drop"]}, "wasm-durable-v1")
   end
 
+  test "absence of filesystem or network does not satisfy access requirements" do
+    assert :ok =
+             Substrates.satisfies(%{filesystem: "none", network: "none"}, "wasm-durable-v1")
+
+    assert {:error, unmet} =
+             Substrates.satisfies(
+               %{filesystem: "read-only-image", network: "mediated-messages"},
+               "wasm-durable-v1"
+             )
+
+    assert Enum.map(unmet, &elem(&1, 0)) |> Enum.sort() == [:filesystem, :network]
+  end
+
   test "only claim-capable profiles have an executor" do
     assert {:ok, "spike/wasm/target/release/ld-wasm"} = Substrates.executor("wasm-durable-v1")
     assert {:error, reason} = Substrates.executor("unikraft-confined-transducer-experimental")

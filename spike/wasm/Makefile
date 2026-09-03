@@ -7,11 +7,11 @@ KILL_POINTS := before-intent after-intent during-provider after-provider-before-
 MATRIX_DIR := .livingdict-run/kill-matrix
 
 build:
-	cargo component build --target wasm32-unknown-unknown --release --locked $(GUESTS)
-	cargo build --release --locked -p ld-wasm
+	cargo component build --offline --target wasm32-unknown-unknown --release --locked $(GUESTS)
+	cargo build --offline --release --locked -p ld-wasm
 
 test:
-	cargo test --workspace --locked
+	cargo test --offline --workspace --locked
 
 # Positive runs, negative fixture, oplog tamper check, then the kill matrix.
 durable-gate: build
