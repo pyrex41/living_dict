@@ -10,7 +10,7 @@ Run a one-task smoke test locally (Docker is required):
 
 ```bash
 PYTHONPATH=. harbor run \
-  --dataset terminal-bench/terminal-bench \
+  --dataset terminal-bench@2.0 \
   --agent bench.harbor_livingdict:LivingDictionary \
   --model xai/grok-4.6 \
   --n-tasks 1 --n-concurrent 1 \

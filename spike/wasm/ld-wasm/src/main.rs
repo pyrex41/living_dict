@@ -99,8 +99,10 @@ fn main() {
         Ok(x) => println!("{}", serde_json::to_string(&x).unwrap()),
         Err(e) => {
             let receipt = failure_receipt(&e);
+            // RuntimeProfiles consumes a single machine-readable stream and
+            // deliberately merges stderr. The receipt already carries the
+            // bounded error, so duplicating it on stderr corrupts the JSON.
             println!("{}", serde_json::to_string(&receipt).unwrap());
-            eprintln!("{}", receipt["reason"].as_str().unwrap_or("runtime failed"));
             process::exit(1)
         }
     }

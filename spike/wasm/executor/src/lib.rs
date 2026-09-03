@@ -1451,12 +1451,19 @@ fn run_inner(
     )?;
 
     let provider_log = run_dir.join("provider-calls.jsonl");
+    // Unix-domain socket paths are severely limited on macOS and Linux.
+    // Evidence directories can be deeply nested, so keep the ephemeral
+    // transport endpoint short while deriving it deterministically for a
+    // provider that must survive executor restart.
+    let socket_id = hash(run_dir.to_string_lossy().as_bytes());
+    let provider_socket =
+        std::env::temp_dir().join(format!("ld-provider-{}.sock", &socket_id[..16]));
     let mut provider = if scenario.providers.is_empty() {
         None
     } else {
         Some(provider::ensure(
             &opts.exe,
-            &run_dir.join("provider.sock"),
+            &provider_socket,
             &scenario_path,
             &provider_log,
         )?)

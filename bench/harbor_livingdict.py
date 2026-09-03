@@ -2,7 +2,7 @@
 
 Use with Harbor's import-path agent support:
 
-    PYTHONPATH=. harbor run -d terminal-bench@2.1 \
+    PYTHONPATH=. harbor run -d terminal-bench@2.0 \
       -a bench.harbor_livingdict:LivingDictionary \
       -m xai/grok-4.6 -l 1
 

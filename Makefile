@@ -230,12 +230,12 @@ beam-release-amd64:
 # Harbor install-only compatibility check of the BEAM shim on one task.
 # Needs the release asset published at the shim's release_url_template.
 bench-beam-smoke:
-	PYTHONPATH=$(REPO) harbor run -d terminal-bench@2.1 -i gpt2-codegolf \
+	PYTHONPATH=$(REPO) harbor run -d terminal-bench@2.0 -i gpt2-codegolf \
 	  -a bench.harbor_ld_beam:LivingDictBeam --install-only
 
 # Two-task live probe of the BEAM shim (XAI_API_KEY must be exported).
 bench-beam-two:
-	PYTHONPATH=$(REPO) harbor run -d terminal-bench@2.1 -l 2 \
+	PYTHONPATH=$(REPO) harbor run -d terminal-bench@2.0 -l 2 \
 	  -a bench.harbor_ld_beam:LivingDictBeam -m xai/grok-4.6 -n 2
 
 # The 15-task family-ordered slice shared by the cold rerun and the warm

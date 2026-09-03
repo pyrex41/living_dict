@@ -4,7 +4,7 @@ Installs a self-contained linux mix release (built by
 bench/release/Dockerfile.release, published as a GitHub release asset)
 into the task container, then drives it through LdHost.CLI.main_from_env.
 
-    PYTHONPATH=. harbor run -d terminal-bench@2.1 \
+    PYTHONPATH=. harbor run -d terminal-bench@2.0 \
       -a bench.harbor_ld_beam:LivingDictBeam -m xai/grok-4.6 -l 1
 
 XAI_API_KEY flows in via harbor --ae/host env; it is never printed here.
