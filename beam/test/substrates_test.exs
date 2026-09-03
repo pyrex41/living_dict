@@ -9,7 +9,7 @@ defmodule LdHost.SubstratesTest do
                %{
                  "clock" => "logical",
                  "entropy" => "seeded-replayable",
-                 "snapshot" => "whole-machine",
+                 "snapshot" => "component",
                  "external-effects" => "durable-intent-commit",
                  "replay" => "cross-process",
                  "fault_controls" => ["crash"]
@@ -21,7 +21,7 @@ defmodule LdHost.SubstratesTest do
   test "weaker requirements are satisfied by stronger guarantees" do
     assert :ok =
              Substrates.satisfies(
-               %{snapshot: "component", replay: "in-process"},
+               %{snapshot: "guest-declared", replay: "in-process"},
                "wasm-durable-v1"
              )
   end
@@ -37,11 +37,16 @@ defmodule LdHost.SubstratesTest do
   test "every unmet dimension is reported, not just the first" do
     assert {:error, unmet} =
              Substrates.satisfies(
-               %{global_checkpoint: "supported", snapshot: "whole-machine", clock: "logical"},
+               %{global_checkpoint: "supported", snapshot: "component", clock: "logical"},
                "unikraft-confined-transducer-experimental"
              )
 
     assert Enum.map(unmet, &elem(&1, 0)) |> Enum.sort() == [:clock, :global_checkpoint, :snapshot]
+  end
+
+  test "no registered profile claims whole-machine snapshots" do
+    assert {:error, [{:snapshot, "whole-machine", "component"}]} =
+             Substrates.satisfies(%{snapshot: "whole-machine"}, "wasm-durable-v1")
   end
 
   test "unknown dimensions and unknown values are unmet, never ignored" do

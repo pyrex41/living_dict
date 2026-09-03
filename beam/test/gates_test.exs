@@ -77,6 +77,22 @@ defmodule LdHost.GatesTest do
     report = Gates.run(host(ws, contract: %{claims: [experimental]}), persist?: false)
     assert [%{passed: false, reason: reason}] = report.claims
     assert reason =~ "experimental and cannot back a claim"
+
+    for bad <- ["yes", 7, %{"clock" => 3}, %{"fault_controls" => [1]}, ["clock"]] do
+      claim =
+        Gates.atomize_claim(%{
+          id: "bad",
+          kind: "runtime",
+          profile: "wasm-durable-v1",
+          config: "machine.toml",
+          requires: bad
+        })
+
+      assert claim.requires == :invalid
+      report = Gates.run(host(ws, contract: %{claims: [claim]}), persist?: false)
+      assert [%{passed: false, reason: reason}] = report.claims
+      assert reason =~ "requires is malformed", inspect(bad)
+    end
   end
 
   @wasm Path.expand("../../spike/wasm", __DIR__)
@@ -94,7 +110,7 @@ defmodule LdHost.GatesTest do
         profile: "wasm-durable-v1",
         config: "order.machine.toml",
         timeout_seconds: 120,
-        requires: %{"snapshot" => "whole-machine", "external_effects" => "durable-intent-commit"},
+        requires: %{"snapshot" => "component", "external_effects" => "durable-intent-commit"},
         must:
           ~w(replay-stable checkpoint-recovered fork-diverged effects-exactly-once guest-hash-discriminates)
       })
@@ -120,6 +136,19 @@ defmodule LdHost.GatesTest do
              )
 
     assert MapSet.member?(props, "checkpoint-recovered")
+
+    # The receipt is bound to the executor binary that produced it.
+    forged = Map.put(entry.receipt, "executor_sha256", String.duplicate("a", 64))
+
+    assert {:error, reason} =
+             LdHost.RuntimeProfiles.verify_receipt(
+               @wasm,
+               "order.machine.toml",
+               entry.evidence_dir,
+               forged
+             )
+
+    assert reason =~ "different executor binary"
 
     # A claim demanding a property the evidence cannot establish fails even
     # though the executor reported success.

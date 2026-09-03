@@ -16,14 +16,16 @@ defmodule LdHost.ElaborateTest do
     assert d1["manifest_hash"] =~ ~r/\A[0-9a-f]{64}\z/
     assert d1["derivation_hash"] =~ ~r/\A[0-9a-f]{64}\z/
 
-    ids = Enum.map(d1["obligations"], & &1["id"])
+    ids = Enum.map(d1["obligations"], & &1["label"])
     assert "runtime:effects-exactly-once:charge-card" in ids
     assert "netkat:isolated:api->card-provider" in ids
     assert "tla:delivery-at-least-once:order-commands" in ids
     assert "tla:liveness:accepted-orders-settle" in ids
     assert "runtime:checkpoint-recovered:worker" in ids
     assert "exploration:crash-after-effect:orders" in ids
-    assert d1["unresolved"] == ids
+    assert d1["unresolved"] == Enum.map(d1["obligations"], & &1["id"])
+    assert Enum.all?(d1["obligations"], &(&1["id"] =~ ~r/\A[0-9a-f]{64}\z/))
+    assert length(Enum.uniq(d1["unresolved"])) == length(d1["unresolved"])
   end
 
   test "moving the payment broker to the experimental profile is rejected on the dimension that fails" do
@@ -84,6 +86,76 @@ defmodule LdHost.ElaborateTest do
     assert {:error, reason} = SystemManifest.validate(m)
     assert reason =~ "meteor"
     assert reason =~ "charge-requests: capacity"
+  end
+
+  test "obligation ids change with the content they cover, labels do not" do
+    {:ok, a} = Elaborate.derive(manifest())
+
+    {:ok, b} =
+      Elaborate.derive(
+        put_in(
+          manifest(),
+          ["components", "worker", "artifact"],
+          "sha256:" <> String.duplicate("b", 64)
+        )
+      )
+
+    label = "runtime:replay-stable:worker"
+    oa = Enum.find(a["obligations"], &(&1["label"] == label))
+    ob = Enum.find(b["obligations"], &(&1["label"] == label))
+    assert oa["label"] == ob["label"]
+    refute oa["id"] == ob["id"]
+    # An obligation whose parameters did not change still moves with the manifest hash.
+    api_a = Enum.find(a["obligations"], &(&1["label"] == "runtime:replay-stable:api"))
+    api_b = Enum.find(b["obligations"], &(&1["label"] == "runtime:replay-stable:api"))
+    refute api_a["id"] == api_b["id"]
+  end
+
+  test "malformed manifests always produce an error tuple, never an exception" do
+    base = manifest()
+
+    cases = [
+      Map.put(base, "components", "nope"),
+      put_in(base, ["components", "api", "requires"], %{"clock" => 3}),
+      put_in(base, ["components", "api", "requires"], %{"fault_controls" => [%{}]}),
+      put_in(base, ["components", "api", "ports"], [1, 2]),
+      Map.put(base, "invariants", ["not-a-map", 7, nil]),
+      Map.put(base, "invariants", [
+        %{"id" => "x", "kind" => "safety", "about" => ["api"]},
+        %{"id" => "x", "kind" => "safety", "about" => ["api"]}
+      ]),
+      Map.put(base, "channels", %{
+        "c" => %{
+          "from" => 1,
+          "to" => nil,
+          "delivery" => "never",
+          "ordering" => [],
+          "capacity" => -1,
+          "faults" => "drop"
+        }
+      }),
+      Map.put(base, "effects", %{"e" => %{"owner" => nil, "protocol" => 1, "identity" => "guess"}}),
+      Map.put(base, "failure_model", %{}),
+      Map.put(base, "system", ""),
+      "not an object",
+      []
+    ]
+
+    for m <- cases do
+      assert {:error, reason} = SystemManifest.validate(m), inspect(m, limit: 40)
+      assert is_binary(reason)
+      assert {:error, _} = Elaborate.derive(m)
+    end
+
+    assert {:error, reason} =
+             SystemManifest.validate(
+               Map.put(base, "invariants", [
+                 %{"id" => "dup", "kind" => "safety", "about" => ["api"]},
+                 %{"id" => "dup", "kind" => "safety", "about" => ["api"]}
+               ])
+             )
+
+    assert reason =~ "duplicate invariant ids: dup"
   end
 
   test "the manifest hash is its canonical content address" do

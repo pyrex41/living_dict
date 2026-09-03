@@ -42,6 +42,8 @@ defmodule LdHost.Elaborate do
     end
   end
 
+  def derive(_), do: {:error, "manifest must be a JSON object"}
+
   def derive_file(path) do
     with {:ok, manifest} <- SystemManifest.load(path) do
       {:ok, derivation(manifest)}
@@ -61,11 +63,12 @@ defmodule LdHost.Elaborate do
       |> Enum.reverse()
 
     accepted = Enum.all?(steps, & &1["ok"])
-    obligations = if accepted, do: obligations(m), else: []
+    manifest_hash = SystemManifest.hash(m)
+    obligations = if accepted, do: obligations(m, manifest_hash), else: []
 
     body = %{
       "schema" => @schema,
-      "manifest_hash" => SystemManifest.hash(m),
+      "manifest_hash" => manifest_hash,
       "system" => m["system"],
       "verdict" => if(accepted, do: "accepted", else: "rejected"),
       "steps" => steps,
@@ -264,37 +267,65 @@ defmodule LdHost.Elaborate do
   end
 
   # Obligations: what later phases must discharge for an accepted manifest.
-  defp obligations(m) do
+  # Obligation identity is content: the manifest hash and the obligation's
+  # own parameters, canonicalised and hashed. `label` is the readable
+  # `tool:kind:subject` form the Shen elaborator also produces.
+  defp obligations(m, manifest_hash) do
     per_component =
       m["components"]
       |> sorted()
-      |> Enum.flat_map(fn {name, _} ->
+      |> Enum.flat_map(fn {name, c} ->
+        params = Map.take(c, ~w(artifact substrate contract))
+
         [
-          obligation("runtime", "replay-stable", name),
-          obligation("runtime", "checkpoint-recovered", name)
+          obligation("runtime", "replay-stable", name, params),
+          obligation("runtime", "checkpoint-recovered", name, params)
         ]
       end)
 
     per_channel =
       m["channels"]
       |> sorted()
-      |> Enum.map(fn {name, ch} -> obligation("tla", "delivery-#{ch["delivery"]}", name) end)
+      |> Enum.map(fn {name, ch} ->
+        obligation(
+          "tla",
+          "delivery-#{ch["delivery"]}",
+          name,
+          Map.take(ch, ~w(from to delivery ordering capacity faults))
+        )
+      end)
 
     per_effect =
       m["effects"]
       |> sorted()
       |> Enum.filter(fn {_, e} -> e["protocol"] == "durable-intent-commit" end)
-      |> Enum.map(fn {name, _} -> obligation("runtime", "effects-exactly-once", name) end)
+      |> Enum.map(fn {name, e} ->
+        obligation(
+          "runtime",
+          "effects-exactly-once",
+          name,
+          Map.take(e, ~w(owner protocol identity target))
+        )
+      end)
 
     per_invariant =
       m["invariants"]
       |> Enum.sort_by(& &1["id"])
       |> Enum.map(fn inv ->
+        params = Map.take(inv, ~w(id kind about))
+
         case inv["kind"] do
-          "forbidden-path" -> obligation("netkat", "isolated", Enum.join(inv["about"], "->"))
-          "required-waypoint" -> obligation("netkat", "waypoint", Enum.join(inv["about"], "->"))
-          "liveness" -> obligation("tla", "liveness", inv["id"])
-          _ -> obligation("tla", "invariant", inv["id"])
+          "forbidden-path" ->
+            obligation("netkat", "isolated", Enum.join(inv["about"], "->"), params)
+
+          "required-waypoint" ->
+            obligation("netkat", "waypoint", Enum.join(inv["about"], "->"), params)
+
+          "liveness" ->
+            obligation("tla", "liveness", inv["id"], params)
+
+          _ ->
+            obligation("tla", "invariant", inv["id"], params)
         end
       end)
 
@@ -303,12 +334,31 @@ defmodule LdHost.Elaborate do
       |> Enum.sort()
       |> Enum.map(&obligation("exploration", &1, m["system"]))
 
-    per_component ++ per_channel ++ per_effect ++ per_invariant ++ per_failure
+    (per_component ++ per_channel ++ per_effect ++ per_invariant ++ per_failure)
+    |> Enum.map(fn o ->
+      id =
+        JCS.hash!(%{
+          "schema" => "ld.obligation/v1",
+          "manifest_hash" => manifest_hash,
+          "tool" => o["tool"],
+          "kind" => o["kind"],
+          "subject" => o["subject"],
+          "parameters" => o["parameters"]
+        })
+
+      Map.put(o, "id", id)
+    end)
   end
 
-  defp obligation(tool, kind, subject) do
-    body = %{"tool" => tool, "kind" => kind, "subject" => subject, "discharged_by" => nil}
-    Map.put(body, "id", "#{tool}:#{kind}:#{subject}")
+  defp obligation(tool, kind, subject, parameters \\ %{}) do
+    %{
+      "tool" => tool,
+      "kind" => kind,
+      "subject" => subject,
+      "parameters" => parameters,
+      "label" => "#{tool}:#{kind}:#{subject}",
+      "discharged_by" => nil
+    }
   end
 
   # Detail formatting shared with the Shen elaborator: lists comma-joined,

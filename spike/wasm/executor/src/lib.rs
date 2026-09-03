@@ -48,6 +48,7 @@ pub const WORLD: &str = "livingdict:durable/product@0.2.0";
 pub const WASMTIME_VERSION: &str = "48.0.1";
 pub const WIT_SOURCE: &str = include_str!("../../wit/durable.wit");
 pub const TOOLCHAIN_SOURCE: &str = include_str!("../../rust-toolchain.toml");
+pub const CARGO_LOCK_SOURCE: &str = include_str!("../../Cargo.lock");
 
 pub const KINDS: [&str; 15] = [
     "worker-creation",
@@ -88,7 +89,38 @@ pub struct Limits {
     pub memory_bytes: u64,
     pub max_invocations: u64,
     pub max_frame_bytes: u64,
+    /// Oplog budget, enforced before every append.
     pub max_log_bytes: u64,
+    /// Largest output frame a guest may return.
+    #[serde(default = "d_output")]
+    pub max_output_bytes: u64,
+    /// Largest snapshot a guest may return.
+    #[serde(default = "d_snapshot")]
+    pub max_snapshot_bytes: u64,
+    /// Largest effect payload or provider result.
+    #[serde(default = "d_effect")]
+    pub max_effect_bytes: u64,
+    /// Cumulative output bytes retained across all routes.
+    #[serde(default = "d_total_output")]
+    pub max_total_output_bytes: u64,
+    /// Upper bound on the scenario's replay_count.
+    #[serde(default = "d_replays")]
+    pub max_replay_count: u64,
+}
+fn d_output() -> u64 {
+    65536
+}
+fn d_snapshot() -> u64 {
+    1 << 20
+}
+fn d_effect() -> u64 {
+    65536
+}
+fn d_total_output() -> u64 {
+    8 << 20
+}
+fn d_replays() -> u64 {
+    8
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -117,6 +149,26 @@ pub struct Scenario {
     /// Effect name the kill matrix targets (first occurrence on `parent`).
     #[serde(default)]
     pub kill_effect: Option<String>,
+    /// Witnesses for `effects-exactly-once`: effect name -> minimum number
+    /// of logical commits the parent history must contain. Empty means the
+    /// property cannot be granted (it would be vacuous).
+    #[serde(default)]
+    pub expected_effects: BTreeMap<String, u64>,
+    /// SHA-256 of the scenario file bytes; filled by `load`, never parsed.
+    #[serde(skip)]
+    pub hash: String,
+}
+
+/// Evidence hashes are RFC 8785 canonical JSON; the BEAM verifier refuses
+/// floats rather than approximating ES6 number formatting, so the producer
+/// refuses them first.
+pub fn no_floats(v: &Value) -> bool {
+    match v {
+        Value::Number(n) => n.is_i64() || n.is_u64(),
+        Value::Array(a) => a.iter().all(no_floats),
+        Value::Object(o) => o.values().all(no_floats),
+        _ => true,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,12 +226,16 @@ fn zero() -> String {
     "0".repeat(64)
 }
 
-/// Run identity: config, scenario, seed. Deterministic across replays and
-/// resumes, so effect keys are stable.
-pub fn run_id(config_hash: &str, scenario_id: &str, seed: u64) -> String {
+/// Run identity: config bytes, scenario bytes, scenario id, seed.
+/// Deterministic across replays and resumes, so effect keys are stable, and
+/// bound to the exact scenario document.
+pub fn run_id(config_hash: &str, scenario_hash: &str, scenario_id: &str, seed: u64) -> String {
     hash(
-        &canonical(&json!({"config_hash":config_hash,"scenario_id":scenario_id,"seed":seed}))
-            .unwrap(),
+        &canonical(
+            &json!({"config_hash":config_hash,"scenario_hash":scenario_hash,
+                           "scenario_id":scenario_id,"seed":seed}),
+        )
+        .unwrap(),
     )
 }
 
@@ -233,6 +289,8 @@ pub fn engine_attestation() -> Value {
         "target_triple": env!("LD_TARGET_TRIPLE"),
         "rustc": env!("LD_RUSTC_VERSION"),
         "toolchain_hash": hash(TOOLCHAIN_SOURCE.as_bytes()),
+        "cargo_lock_hash": hash(CARGO_LOCK_SOURCE.as_bytes()),
+        "executor_source_hash": env!("LD_EXECUTOR_SOURCE_HASH"),
         "world": WORLD,
         "world_hash": hash(WIT_SOURCE.as_bytes())
     })
@@ -292,9 +350,10 @@ pub struct OplogWriter {
     file: Option<File>,
     pub entries: Vec<Entry>,
     pub bytes: u64,
+    max_bytes: u64,
 }
 impl OplogWriter {
-    pub fn create(path: &Path) -> Result<Self> {
+    pub fn create(path: &Path, max_bytes: u64) -> Result<Self> {
         let file = OpenOptions::new()
             .create_new(true)
             .append(true)
@@ -303,9 +362,10 @@ impl OplogWriter {
             file: Some(file),
             entries: vec![],
             bytes: 0,
+            max_bytes,
         })
     }
-    pub fn open_existing(path: &Path, ctx: &Ctx) -> Result<Self> {
+    pub fn open_existing(path: &Path, ctx: &Ctx, max_bytes: u64) -> Result<Self> {
         let text = fs::read_to_string(path)?;
         let mut entries = vec![];
         for line in text.lines() {
@@ -317,6 +377,7 @@ impl OplogWriter {
             file: Some(file),
             bytes: text.len() as u64,
             entries,
+            max_bytes,
         })
     }
     fn memory() -> Self {
@@ -324,6 +385,7 @@ impl OplogWriter {
             file: None,
             entries: vec![],
             bytes: 0,
+            max_bytes: u64::MAX,
         }
     }
     #[allow(clippy::too_many_arguments)]
@@ -361,6 +423,9 @@ impl OplogWriter {
         if let Some(f) = self.file.as_mut() {
             let mut line = canonical(&serde_json::to_value(&e)?).map_err(|x| anyhow!(x))?;
             line.push(b'\n');
+            if self.bytes + line.len() as u64 > self.max_bytes {
+                return Err(anyhow!("log limit exhausted"));
+            }
             f.write_all(&line)?;
             f.sync_data()?;
             self.bytes += line.len() as u64;
@@ -404,18 +469,47 @@ pub struct Committed {
     pub request_hash: String,
     pub result: Vec<u8>,
 }
+/// A journaled intent that has no commit yet. Re-issue after a crash must
+/// carry exactly this request; anything else is a different effect.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Intent {
+    pub name: String,
+    pub business_key: String,
+    pub request_hash: String,
+    pub branch: String,
+    pub event_index: u64,
+    pub effect_index: u64,
+}
 pub struct Journal {
     pub committed: BTreeMap<String, Committed>,
-    pub intents: BTreeSet<String>,
+    pub intents: BTreeMap<String, Intent>,
+}
+impl Journal {
+    fn empty() -> Self {
+        Self {
+            committed: BTreeMap::new(),
+            intents: BTreeMap::new(),
+        }
+    }
 }
 pub fn journal_from(entries: &[Entry]) -> Result<Journal> {
     let mut committed = BTreeMap::new();
-    let mut intents = BTreeSet::new();
+    let mut intents = BTreeMap::new();
     for e in entries {
         let key = e.input["key"].as_str().unwrap_or("").to_string();
         match e.kind.as_str() {
             "effect-intent" => {
-                intents.insert(key);
+                intents.insert(
+                    key,
+                    Intent {
+                        name: e.input["name"].as_str().unwrap_or("").into(),
+                        business_key: e.input["business_key"].as_str().unwrap_or("").into(),
+                        request_hash: e.input["request_hash"].as_str().unwrap_or("").into(),
+                        branch: e.input["branch"].as_str().unwrap_or("").into(),
+                        event_index: e.input["event_index"].as_u64().unwrap_or(u64::MAX),
+                        effect_index: e.input["effect_index"].as_u64().unwrap_or(u64::MAX),
+                    },
+                );
             }
             "effect-commit" => {
                 intents.remove(&key);
@@ -481,6 +575,8 @@ pub struct Checkpoint {
     pub host: HostState,
     pub branch: String,
     pub world_hash: String,
+    pub run_id: String,
+    pub scenario_hash: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -488,9 +584,35 @@ pub enum Mode {
     Record,
     Replay,
 }
+/// How the kill matrix takes the process down. `Abort` journals a
+/// `fault-injection` annotation first; `Sigkill` writes nothing and, when
+/// asked, takes the provider down too, so recovery is exercised the way a
+/// real crash leaves things.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KillMode {
+    Abort,
+    Sigkill,
+}
+impl KillMode {
+    pub fn parse(s: &str) -> Result<Self> {
+        match s {
+            "abort" => Ok(KillMode::Abort),
+            "sigkill" => Ok(KillMode::Sigkill),
+            _ => Err(anyhow!("unknown kill mode {s}")),
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            KillMode::Abort => "abort",
+            KillMode::Sigkill => "sigkill",
+        }
+    }
+}
 #[derive(Clone, Copy)]
 struct Kill {
     point: KillPoint,
+    mode: KillMode,
+    kill_provider: bool,
 }
 
 struct Host {
@@ -502,12 +624,13 @@ struct Host {
     mode: Mode,
     provider: Option<provider::ProviderClient>,
     journal: BTreeMap<String, Committed>,
-    intents: BTreeSet<String>,
+    intents: BTreeMap<String, Intent>,
     log: OplogWriter,
     ctx: Ctx,
     current_state_hash: String,
     kill: Option<Kill>,
     kill_effect: String,
+    max_effect_bytes: u64,
     live: u64,
     replayed: u64,
     effects: Vec<(String, String, String)>, // (key, name, status)
@@ -529,12 +652,29 @@ impl Host {
         if point != KillPoint::AfterTransitionBeforeCheckpoint && effect != self.kill_effect {
             return Ok(());
         }
-        self.append(
-            "fault-injection",
-            json!({"point":point.name(),"effect":effect,"key":key}),
-            json!({"aborting":true}),
-        )?;
-        std::process::abort();
+        provider::die(self.death(point, effect, key)?);
+    }
+    /// The action for a kill point: an annotated abort, or an unannounced
+    /// SIGKILL (optionally taking the provider down first).
+    fn death(&mut self, point: KillPoint, effect: &str, key: &str) -> Result<provider::MidCall> {
+        let k = self.kill.expect("kill configured");
+        match k.mode {
+            KillMode::Abort => {
+                self.append(
+                    "fault-injection",
+                    json!({"point":point.name(),"effect":effect,"key":key,"mode":"abort"}),
+                    json!({"aborting":true}),
+                )?;
+                Ok(provider::MidCall::Abort)
+            }
+            KillMode::Sigkill => Ok(provider::MidCall::Sigkill {
+                provider_pid: if k.kill_provider {
+                    self.provider.as_ref().and_then(|p| p.pid)
+                } else {
+                    None
+                },
+            }),
+        }
     }
 }
 
@@ -569,6 +709,9 @@ impl Host {
             self.state.effect_index,
         );
         self.state.effect_index += 1;
+        if payload.len() as u64 > self.max_effect_bytes {
+            return Err(anyhow!("effect payload limit exhausted"));
+        }
         let request_hash = hash(&payload);
         let meta = json!({
             "key":key,"name":name,"business_key":business_key,"request_hash":request_hash,
@@ -592,36 +735,51 @@ impl Host {
         if self.mode == Mode::Replay {
             return Err(anyhow!("missing committed effect for replay of {name}"));
         }
-        if self.provider.is_none() {
-            return Err(anyhow!("no provider for live effect {name}"));
-        }
-        if self.intents.contains(&key) {
+        let intent = Intent {
+            name: name.clone(),
+            business_key: business_key.clone(),
+            request_hash: request_hash.clone(),
+            branch: self.branch.clone(),
+            event_index: self.state.event_index,
+            effect_index: self.state.effect_index - 1,
+        };
+        if let Some(journaled) = self.intents.get(&key) {
+            if *journaled != intent {
+                return Err(anyhow!(
+                    "reissue of {name} differs from the journaled intent at the same position"
+                ));
+            }
+            if self.provider.is_none() {
+                return Err(anyhow!("no provider for live effect {name}"));
+            }
             self.append("effect-reissue", meta.clone(), json!({}))?;
         } else {
+            if self.provider.is_none() {
+                return Err(anyhow!("no provider for live effect {name}"));
+            }
             self.maybe_kill(KillPoint::BeforeIntent, &name, &key)?;
             self.append("effect-intent", meta.clone(), json!({}))?;
-            self.intents.insert(key.clone());
+            self.intents.insert(key.clone(), intent);
             self.maybe_kill(KillPoint::AfterIntent, &name, &key)?;
         }
         let kill_during = matches!(self.kill, Some(k) if k.point == KillPoint::DuringProvider)
             && name == self.kill_effect;
-        if kill_during {
-            // The abort itself happens inside the provider call, after the
-            // request bytes are on the wire; record the intent to abort first
-            // so the journal shows where the process died.
-            self.append(
-                "fault-injection",
-                json!({"point":KillPoint::DuringProvider.name(),"effect":name,"key":key}),
-                json!({"aborting":true}),
-            )?;
+        let mid = if kill_during {
+            // The process dies inside the provider call, after the request
+            // bytes are on the wire. In abort mode the annotation is written
+            // first; in sigkill mode nothing is.
+            self.death(KillPoint::DuringProvider, &name, &key)?
+        } else {
+            provider::MidCall::Proceed
+        };
+        let (status, result) =
+            self.provider
+                .as_ref()
+                .unwrap()
+                .call(&key, &name, &business_key, &payload, mid)?;
+        if result.len() as u64 > self.max_effect_bytes {
+            return Err(anyhow!("effect result limit exhausted"));
         }
-        let (status, result) = self.provider.as_ref().unwrap().call(
-            &key,
-            &name,
-            &business_key,
-            &payload,
-            kill_during,
-        )?;
         self.maybe_kill(KillPoint::AfterProviderBeforeCommit, &name, &key)?;
         self.append(
             "effect-commit",
@@ -695,7 +853,7 @@ pub struct RouteSpec<'a> {
     pub segments: Vec<Segment<'a>>,
     pub resume_from: Option<&'a Checkpoint>,
     pub checkpoint_after: Option<u64>,
-    pub kill: Option<KillPoint>,
+    kill: Option<Kill>,
     pub kill_effect: String,
 }
 pub struct RouteResult {
@@ -759,12 +917,13 @@ fn roundtrip(
         mode: Mode::Replay,
         provider: None,
         journal: BTreeMap::new(),
-        intents: BTreeSet::new(),
+        intents: BTreeMap::new(),
         log: OplogWriter::memory(),
         ctx: ctx.clone(),
         current_state_hash: zero(),
         kill: None,
         kill_effect: String::new(),
+        max_effect_bytes: m.limits.max_effect_bytes,
         live: 0,
         replayed: 0,
         effects: vec![],
@@ -817,8 +976,9 @@ fn execute(
         log,
         ctx: ctx.clone(),
         current_state_hash: zero(),
-        kill: spec.kill.map(|point| Kill { point }),
+        kill: spec.kill,
         kill_effect: spec.kill_effect.clone(),
+        max_effect_bytes: m.limits.max_effect_bytes,
         live: 0,
         replayed: 0,
         effects: vec![],
@@ -857,6 +1017,7 @@ fn execute(
     let mut transitions = vec![];
     let mut checkpoint = None;
     let mut invocations = 0u64;
+    let mut retained = 0u64;
     for seg in &spec.segments {
         {
             let h = inst.store.data_mut();
@@ -887,7 +1048,17 @@ fn execute(
                 .call_handle(&mut inst.store, &frame)
                 .map_err(|e| anyhow!(e.to_string()))?
                 .map_err(|e| anyhow!(e))?;
+            if out.len() as u64 > m.limits.max_output_bytes {
+                return Err(anyhow!("output limit exhausted"));
+            }
+            retained += out.len() as u64;
+            if retained > m.limits.max_total_output_bytes {
+                return Err(anyhow!("total output limit exhausted"));
+            }
             let snap = wt(inst.bindings.call_snapshot(&mut inst.store))?;
+            if snap.len() as u64 > m.limits.max_snapshot_bytes {
+                return Err(anyhow!("snapshot limit exhausted"));
+            }
             let after = hash(&snap);
             {
                 let h = inst.store.data_mut();
@@ -934,6 +1105,8 @@ fn execute(
                     host: inst.store.data().state.clone(),
                     branch: seg.branch.into(),
                     world_hash: hash(WIT_SOURCE.as_bytes()),
+                    run_id: ctx.run_id.clone(),
+                    scenario_hash: s.hash.clone(),
                 };
                 let ok = roundtrip(engine, component, m, ctx, s.seed, &snap)?;
                 roundtrips_ok &= ok;
@@ -952,6 +1125,9 @@ fn execute(
         }
     }
     let snapshot = wt(inst.bindings.call_snapshot(&mut inst.store))?;
+    if snapshot.len() as u64 > m.limits.max_snapshot_bytes {
+        return Err(anyhow!("snapshot limit exhausted"));
+    }
     let snapshot_hash = hash(&snapshot);
     let guest_state_hash = hex(&wt(inst.bindings.call_state_hash(&mut inst.store))?);
     let ok = roundtrip(engine, component, m, ctx, s.seed, &snapshot)?;
@@ -1003,8 +1179,10 @@ pub struct Receipt {
     pub artifact_hash: String,
     pub machine_config_hash: String,
     pub scenario_id: String,
+    pub scenario_hash: String,
     pub seed: u64,
     pub run_id: String,
+    pub executor_sha256: String,
     pub oplog_hash: String,
     pub checkpoint_hash: String,
     pub final_state_hash: String,
@@ -1026,6 +1204,9 @@ pub struct Receipt {
 
 pub struct RunOptions {
     pub kill: Option<KillPoint>,
+    pub kill_mode: KillMode,
+    /// With `KillMode::Sigkill`: take the provider process down as well.
+    pub kill_provider: bool,
     pub resume: bool,
     /// Executable to spawn as provider (normally `std::env::current_exe()`).
     pub exe: PathBuf,
@@ -1046,6 +1227,7 @@ struct Loaded {
     artifact: Vec<u8>,
     scenario: Scenario,
     scenario_path: PathBuf,
+    scenario_bytes: Vec<u8>,
 }
 fn load(workspace: &Path, config_path: &Path) -> Result<Loaded> {
     let config_path = if config_path.is_absolute() {
@@ -1094,9 +1276,18 @@ fn load(workspace: &Path, config_path: &Path) -> Result<Loaded> {
         workspace,
         m.scenarios.first().ok_or_else(|| anyhow!("no scenario"))?,
     )?;
-    let scenario: Scenario = serde_json::from_slice(&fs::read(&scenario_path)?)?;
+    let scenario_bytes = fs::read(&scenario_path)?;
+    let raw: Value = serde_json::from_slice(&scenario_bytes)?;
+    if !no_floats(&raw) {
+        return Err(anyhow!("scenario contains floating-point values"));
+    }
+    let mut scenario: Scenario = serde_json::from_value(raw)?;
+    scenario.hash = hash(&scenario_bytes);
     if scenario.schema != "livingdict.scenario/v1" || scenario.replay_count == 0 {
         return Err(anyhow!("invalid scenario contract"));
+    }
+    if scenario.replay_count > m.limits.max_replay_count {
+        return Err(anyhow!("replay count exceeds limit"));
     }
     if scenario.checkpoint_index > scenario.prefix.len() + scenario.parent.len() {
         return Err(anyhow!("checkpoint outside parent history"));
@@ -1107,6 +1298,7 @@ fn load(workspace: &Path, config_path: &Path) -> Result<Loaded> {
         artifact,
         scenario,
         scenario_path,
+        scenario_bytes,
     })
 }
 
@@ -1135,10 +1327,17 @@ fn run_inner(
         artifact,
         scenario,
         scenario_path,
+        scenario_bytes,
     } = load(workspace, config_path)?;
     let artifact_hash = hash(&artifact);
     let config_hash = hash(&config_bytes);
-    let rid = run_id(&config_hash, &scenario.id, scenario.seed);
+    let rid = run_id(&config_hash, &scenario.hash, &scenario.id, scenario.seed);
+    let executor_sha256 = hash(&fs::read(&opts.exe)?);
+    let kill = opts.kill.map(|point| Kill {
+        point,
+        mode: opts.kill_mode,
+        kill_provider: opts.kill_provider,
+    });
     let ctx = Ctx {
         component_hash: artifact_hash.clone(),
         worker: scenario.worker_id.clone(),
@@ -1158,15 +1357,20 @@ fn run_inner(
     // journal and dangling intents re-issued under the same host key.
     let (mut log, mut journal, resumed_from) = if opts.resume {
         let state: Value = serde_json::from_slice(&fs::read(run_dir.join("run.json"))?)?;
-        if state["schema"] != RUN_STATE || state["run_id"] != rid {
+        if state["schema"] != RUN_STATE
+            || state["run_id"] != rid
+            || state["scenario_hash"] != scenario.hash
+        {
             return Err(anyhow!("run state does not match this run"));
         }
         if state["status"] == "complete" {
             return Err(anyhow!("run already complete"));
         }
-        let mut log = OplogWriter::open_existing(&oplog_path, &ctx)?;
+        let mut log = OplogWriter::open_existing(&oplog_path, &ctx, m.limits.max_log_bytes)?;
         let journal = journal_from(&log.entries)?;
         let killed_at = state["kill_point"].as_str().map(str::to_string);
+        let killed_mode = state["kill_mode"].as_str().unwrap_or("abort").to_string();
+        let killed_provider = state["kill_provider"].as_bool().unwrap_or(false);
         let pre: Vec<(u64, String, String)> = log
             .entries
             .iter()
@@ -1189,25 +1393,33 @@ fn run_inner(
             &zero(),
             &zero(),
         )?;
-        (log, journal, Some((pre, killed_at)))
+        (
+            log,
+            journal,
+            Some((pre, killed_at, killed_mode, killed_provider)),
+        )
     } else {
         if oplog_path.exists() {
             return Err(anyhow!("run directory already holds an oplog"));
         }
+        atomic(&run_dir.join("scenario.json"), &scenario_bytes)?;
         (
-            OplogWriter::create(&oplog_path)?,
-            Journal {
-                committed: BTreeMap::new(),
-                intents: BTreeSet::new(),
-            },
+            OplogWriter::create(&oplog_path, m.limits.max_log_bytes)?,
+            Journal::empty(),
             None,
         )
     };
+    if hash(&fs::read(run_dir.join("scenario.json"))?) != scenario.hash {
+        return Err(anyhow!(
+            "evidence scenario copy does not match the workspace scenario"
+        ));
+    }
     write_run_state(
         run_dir,
         &json!({"schema":RUN_STATE,"run_id":rid,"profile":PROFILE,"config_hash":config_hash,
-                "artifact_hash":artifact_hash,"scenario_id":scenario.id,
-                "kill_point":opts.kill.map(KillPoint::name),"kill_effect":kill_effect,
+                "artifact_hash":artifact_hash,"scenario_id":scenario.id,"scenario_hash":scenario.hash,
+                "kill_point":opts.kill.map(KillPoint::name),"kill_mode":opts.kill_mode.name(),
+                "kill_provider":opts.kill_provider,"kill_effect":kill_effect,
                 "status":"running","resumed":opts.resume}),
     )?;
 
@@ -1244,7 +1456,7 @@ fn run_inner(
             }],
             resume_from: None,
             checkpoint_after: Some(scenario.checkpoint_index as u64),
-            kill: opts.kill,
+            kill,
             kill_effect: kill_effect.clone(),
         },
         log,
@@ -1258,6 +1470,9 @@ fn run_inner(
         .checkpoint
         .clone()
         .ok_or_else(|| anyhow!("checkpoint was not taken"))?;
+    // Lineage anchor for the fork: the parent route's final entry, captured
+    // before any other route appends.
+    let parent_exit_hash = log.last_hash();
 
     // genesis replays
     let mut replay_equal = parent.roundtrips_ok;
@@ -1363,7 +1578,7 @@ fn run_inner(
         journal,
         provider,
     )?;
-    log = l;
+    drop(l);
     journal = j;
     provider = p;
     let diverged = fork.snapshot_hash != parent.snapshot_hash;
@@ -1378,9 +1593,13 @@ fn run_inner(
     // the re-executed ones for the same event index.
     let killed_at = resumed_from
         .as_ref()
-        .and_then(|(_, k)| k.clone())
+        .and_then(|(_, k, _, _)| k.clone())
         .or_else(|| opts.kill.map(KillPoint::name));
-    let crash_recovered = resumed_from.as_ref().map(|(pre, _)| {
+    let (kill_mode_name, kill_provider) = match resumed_from.as_ref() {
+        Some((_, _, mode, prov)) => (mode.clone(), *prov),
+        None => (opts.kill_mode.name().to_string(), opts.kill_provider),
+    };
+    let crash_recovered = resumed_from.as_ref().map(|(pre, _, _, _)| {
         pre.iter().all(|(i, frame, after)| {
             parent
                 .transitions
@@ -1410,7 +1629,17 @@ fn run_inner(
         }
     }
     let committed_keys: BTreeSet<_> = journal.committed.keys().cloned().collect();
-    let effects_exactly_once = !over_executed
+    let mut commits_by_name: BTreeMap<String, u64> = BTreeMap::new();
+    for c in journal.committed.values() {
+        *commits_by_name.entry(c.name.clone()).or_default() += 1;
+    }
+    let witnessed = !scenario.expected_effects.is_empty()
+        && scenario
+            .expected_effects
+            .iter()
+            .all(|(name, min)| commits_by_name.get(name).copied().unwrap_or(0) >= *min);
+    let effects_exactly_once = witnessed
+        && !over_executed
         && executed_keys == committed_keys
         && journal.intents.is_empty()
         && recovered.live == 0;
@@ -1419,7 +1648,8 @@ fn run_inner(
     let checkpoint_bytes =
         canonical(&serde_json::to_value(&checkpoint)?).map_err(|x| anyhow!(x))?;
     let branch = canonical(&json!({
-        "schema":"ld.branch/v1","branch_id":"fork","parent_final_oplog_hash":log.last_hash(),
+        "schema":"ld.branch/v1","branch_id":"fork","parent_final_oplog_hash":parent_exit_hash,
+        "run_id":rid,"scenario_hash":scenario.hash,
         "cutoff_index":scenario.prefix.len(),
         "cutoff_hash":hash(&canonical(&Value::Array(scenario.prefix.clone())).map_err(|x|anyhow!(x))?),
         "final_snapshot_hash":fork.snapshot_hash
@@ -1428,9 +1658,6 @@ fn run_inner(
     atomic(&run_dir.join("checkpoint.json"), &checkpoint_bytes)?;
     fs::create_dir_all(run_dir.join("branches/fork"))?;
     atomic(&run_dir.join("branches/fork/manifest.json"), &branch)?;
-    if log.bytes > m.limits.max_log_bytes {
-        return Err(anyhow!("log limit exhausted"));
-    }
     let jsonl = fs::read(&oplog_path)?;
     let provider_bytes = if provider_log.exists() {
         Some(fs::read(&provider_log)?)
@@ -1490,7 +1717,8 @@ fn run_inner(
     let mut evidence = json!({
         "oplog":{"path":"oplog.jsonl","sha256":hash(&jsonl)},
         "checkpoint":{"path":"checkpoint.json","sha256":hash(&checkpoint_bytes)},
-        "branch":{"path":"branches/fork/manifest.json","sha256":hash(&branch)}
+        "branch":{"path":"branches/fork/manifest.json","sha256":hash(&branch)},
+        "scenario":{"path":"scenario.json","sha256":scenario.hash}
     });
     if let Some(pb) = &provider_bytes {
         evidence["provider_calls"] = json!({"path":"provider-calls.jsonl","sha256":hash(pb)});
@@ -1499,8 +1727,9 @@ fn run_inner(
     write_run_state(
         run_dir,
         &json!({"schema":RUN_STATE,"run_id":rid,"profile":PROFILE,"config_hash":config_hash,
-                "artifact_hash":artifact_hash,"scenario_id":scenario.id,
-                "kill_point":killed_at,"kill_effect":kill_effect,
+                "artifact_hash":artifact_hash,"scenario_id":scenario.id,"scenario_hash":scenario.hash,
+                "kill_point":killed_at,"kill_mode":kill_mode_name,
+                "kill_provider":kill_provider,"kill_effect":kill_effect,
                 "status":"complete","resumed":opts.resume}),
     )?;
     Ok(Receipt {
@@ -1509,8 +1738,10 @@ fn run_inner(
         artifact_hash,
         machine_config_hash: config_hash,
         scenario_id: scenario.id,
+        scenario_hash: scenario.hash.clone(),
         seed: scenario.seed,
         run_id: rid,
+        executor_sha256,
         oplog_hash: hash(&jsonl),
         checkpoint_hash: hash(&checkpoint_bytes),
         final_state_hash: parent.snapshot_hash,
@@ -1522,6 +1753,8 @@ fn run_inner(
         effects: json!({
             "executed":executed_keys.len(),
             "logical_committed":journal.committed.len(),
+            "by_name":commits_by_name,
+            "expected":scenario.expected_effects,
             "replayed":replayed_total,
             "duplicate_provider_requests":duplicate_requests,
             "dangling_intents":journal.intents.len(),
@@ -1533,7 +1766,8 @@ fn run_inner(
         properties: props.into_iter().map(str::to_string).collect(),
         evidence,
         engine: engine_attestation(),
-        recovery: json!({"kill_point":killed_at,"resumed":opts.resume,
+        recovery: json!({"kill_point":killed_at,"kill_mode":kill_mode_name,
+                         "kill_provider":kill_provider,"resumed":opts.resume,
                          "consistent":crash_recovered}),
         passed,
         reason,
@@ -1659,7 +1893,7 @@ mod tests {
             mode,
             provider: None,
             journal,
-            intents: BTreeSet::new(),
+            intents: BTreeMap::new(),
             log: OplogWriter::memory(),
             ctx: Ctx {
                 component_hash: "c".into(),
@@ -1670,10 +1904,35 @@ mod tests {
             current_state_hash: zero(),
             kill: None,
             kill_effect: String::new(),
+            max_effect_bytes: 65536,
             live: 0,
             replayed: 0,
             effects: vec![],
         }
+    }
+    #[test]
+    fn reissue_must_match_the_journaled_intent() {
+        let key = effect_key("r", "parent", "c", 0, 0);
+        let mut host = test_host(Mode::Record, BTreeMap::new());
+        host.intents.insert(
+            key,
+            Intent {
+                name: "payment.charge".into(),
+                business_key: "k".into(),
+                request_hash: hash(b"original"),
+                branch: "parent".into(),
+                event_index: 0,
+                effect_index: 0,
+            },
+        );
+        let err = host
+            .effect("payment.charge".into(), "k".into(), b"changed".to_vec())
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("differs from the journaled intent"),
+            "{err}"
+        );
     }
     #[test]
     fn replay_serves_journal_and_refuses_unknown_or_mismatched_effects() {
@@ -1718,14 +1977,12 @@ mod tests {
             "no intent is journaled without a provider"
         );
     }
-    #[test]
-    fn provider_is_idempotent_by_host_key_and_logs_every_request() {
-        let dir = std::env::temp_dir().join(format!("ld-prov-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+    fn start_provider(
+        dir: &Path,
+        canned: BTreeMap<String, Vec<Value>>,
+    ) -> (PathBuf, PathBuf, std::thread::JoinHandle<()>) {
         let socket = dir.join("p.sock");
         let logp = dir.join("calls.jsonl");
-        let mut canned = BTreeMap::new();
-        canned.insert("payment.charge".to_string(), vec![json!({"approved":true})]);
         let (s2, l2) = (socket.clone(), logp.clone());
         let t = std::thread::spawn(move || provider::serve(&s2, canned, &l2).unwrap());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1733,36 +1990,184 @@ mod tests {
             assert!(std::time::Instant::now() < deadline);
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+        (socket, logp, t)
+    }
+    fn canned_charge() -> BTreeMap<String, Vec<Value>> {
+        let mut canned = BTreeMap::new();
+        canned.insert(
+            "payment.charge".to_string(),
+            vec![json!({"approved":true}), json!({"approved":false})],
+        );
+        canned
+    }
+    #[test]
+    fn provider_is_idempotent_by_host_key_binds_the_request_and_survives_restart() {
+        let dir = std::env::temp_dir().join(format!("ld-prov-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (socket, logp, t) = start_provider(&dir, canned_charge());
         let client = provider::ProviderClient {
             socket: socket.clone(),
+            pid: None,
         };
         let (s1, r1) = client
-            .call("k1", "payment.charge", "b", b"x", false)
+            .call(
+                "k1",
+                "payment.charge",
+                "b",
+                b"x",
+                provider::MidCall::Proceed,
+            )
             .unwrap();
         let (s2, r2) = client
-            .call("k1", "payment.charge", "b", b"x", false)
+            .call(
+                "k1",
+                "payment.charge",
+                "b",
+                b"x",
+                provider::MidCall::Proceed,
+            )
             .unwrap();
         assert_eq!((s1.as_str(), s2.as_str()), ("executed", "duplicate"));
         assert_eq!(r1, r2);
+        // Same key, different request: refused, never re-executed.
         let err = client
-            .call("k2", "payment.charge", "b", b"x", false)
+            .call(
+                "k1",
+                "payment.charge",
+                "b",
+                b"altered",
+                provider::MidCall::Proceed,
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("bound to a different request"));
+        let err = client
+            .call(
+                "k2",
+                "unknown.effect",
+                "b",
+                b"x",
+                provider::MidCall::Proceed,
+            )
             .unwrap_err();
         assert!(err.to_string().contains("undeclared effect"));
         client.shutdown().unwrap();
         t.join().unwrap();
+
+        // Restart from the log: k1 is still bound and answered from the
+        // log's result bytes; the second canned response is still available
+        // for a new key; the chain continues rather than restarting.
+        let (socket, logp2, t) = start_provider(&dir, canned_charge());
+        assert_eq!(logp, logp2);
+        let client = provider::ProviderClient { socket, pid: None };
+        let (s3, r3) = client
+            .call(
+                "k1",
+                "payment.charge",
+                "b",
+                b"x",
+                provider::MidCall::Proceed,
+            )
+            .unwrap();
+        assert_eq!((s3.as_str(), r3), ("duplicate", r1));
+        let (s4, r4) = client
+            .call(
+                "k3",
+                "payment.charge",
+                "b",
+                b"y",
+                provider::MidCall::Proceed,
+            )
+            .unwrap();
+        assert_eq!(s4, "executed");
+        assert_eq!(r4, serde_json::to_vec(&json!({"approved":false})).unwrap());
+        client.shutdown().unwrap();
+        t.join().unwrap();
+
         let entries = provider::read_log(&logp).unwrap();
         let statuses: Vec<_> = entries
             .iter()
-            .map(|e| e["status"].as_str().unwrap_or(e["kind"].as_str().unwrap()))
+            .map(|e| {
+                e["status"]
+                    .as_str()
+                    .unwrap_or(e["kind"].as_str().unwrap())
+                    .to_string()
+            })
             .collect();
         assert_eq!(
             statuses,
-            ["start", "executed", "duplicate", "rejected", "shutdown"]
+            [
+                "start",
+                "executed",
+                "duplicate",
+                "mismatch",
+                "rejected",
+                "shutdown",
+                "restart",
+                "duplicate",
+                "executed",
+                "shutdown"
+            ]
+        );
+        assert_eq!(
+            entries.iter().filter(|e| e["status"] == "executed").count(),
+            2
         );
         let mut tampered = fs::read_to_string(&logp).unwrap();
         tampered = tampered.replacen("executed", "executex", 1);
         fs::write(&logp, tampered).unwrap();
         assert!(provider::read_log(&logp).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn floats_are_refused_before_execution() {
+        assert!(no_floats(
+            &json!({"a":[1,{"b":"x"}],"c":11400714819323198485u64})
+        ));
+        assert!(!no_floats(&json!({"amount":12.5})));
+        assert!(!no_floats(&json!([1, [2.0]])));
+    }
+    #[test]
+    fn oplog_budget_is_enforced_before_the_write() {
+        let dir = std::env::temp_dir().join(format!("ld-oplog-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let ctx = Ctx {
+            component_hash: "a".repeat(64),
+            worker: "w".into(),
+            seed: 7,
+            run_id: "r".into(),
+        };
+        let path = dir.join("oplog.jsonl");
+        let mut log = OplogWriter::create(&path, 600).unwrap();
+        log.append(
+            "invocation",
+            "parent",
+            &ctx,
+            json!({"v":1}),
+            json!({}),
+            "x",
+            "y",
+        )
+        .unwrap();
+        let err = log
+            .append(
+                "invocation",
+                "parent",
+                &ctx,
+                json!({"v":2}),
+                json!({}),
+                "y",
+                "z",
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("log limit"));
+        assert_eq!(
+            log.entries.len(),
+            1,
+            "the refused entry is not in memory either"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 1);
         let _ = fs::remove_dir_all(&dir);
     }
 }

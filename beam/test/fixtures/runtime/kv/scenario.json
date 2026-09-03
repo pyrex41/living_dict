@@ -1,0 +1,24 @@
+{
+  "schema": "livingdict.scenario/v1",
+  "id": "kv-parent-fork",
+  "seed": 11400714819323198485,
+  "worker_id": "kv-worker-1",
+  "prefix": [
+    {"v":1,"op":"put","key":"a","value":"one"},
+    {"v":1,"op":"put","key":"b","value":"two"}
+  ],
+  "parent": [
+    {"v":1,"op":"get","key":"a"},
+    {"v":1,"op":"get","key":"b"},
+    {"v":1,"op":"dump"}
+  ],
+  "fork": [
+    {"v":1,"op":"delete","key":"b"},
+    {"v":1,"op":"get","key":"b"},
+    {"v":1,"op":"dump"}
+  ],
+  "checkpoint_index": 2,
+  "replay_count": 3,
+  "providers": {},
+  "expected_properties": ["replay-stable","checkpoint-recovered","state-hash-stable","fork-diverged","guest-hash-discriminates"]
+}

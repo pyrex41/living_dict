@@ -19,8 +19,27 @@ defmodule LdHost.RuntimeEvidenceTest do
     tmp
   end
 
+  # Re-sign a whole oplog after editing entries, so only semantic checks can
+  # catch the edit (the chain itself stays valid).
+  defp resign_oplog!(dir, edit) do
+    path = Path.join(dir, "oplog.jsonl")
+    entries = File.read!(path) |> String.split("\n", trim: true) |> Enum.map(&JSON.decode!/1)
+    zero = String.duplicate("0", 64)
+
+    {lines, _} =
+      entries
+      |> Enum.map(edit)
+      |> Enum.map_reduce(zero, fn e, prev ->
+        e = e |> Map.delete("entry_hash") |> Map.put("previous_entry_hash", prev)
+        h = LdHost.JCS.hash!(e)
+        {LdHost.JCS.encode!(Map.put(e, "entry_hash", h)), h}
+      end)
+
+    File.write!(path, Enum.join(lines, "\n") <> "\n")
+  end
+
   test "every property the executor claims is re-derived from the files" do
-    for name <- ~w(kv order order-resumed) do
+    for name <- ~w(kv order order-resumed order-sigkill order-sigkill-provider) do
       receipt = receipt(name)
 
       assert {:ok, %{properties: props, summary: summary}} =
@@ -45,6 +64,143 @@ defmodule LdHost.RuntimeEvidenceTest do
     assert summary.resumed
     assert summary.provider_executed == 4
   end
+
+  test "a SIGKILLed run recovers without any fault-injection marker" do
+    for name <- ~w(order-sigkill order-sigkill-provider) do
+      oplog = File.read!(Path.join(fixture(name), "oplog.jsonl"))
+      refute oplog =~ ~s("kind":"fault-injection"), name
+      receipt = receipt(name)
+      assert receipt["recovery"]["kill_mode"] == "sigkill"
+
+      assert {:ok, %{properties: props, summary: summary}} =
+               RuntimeEvidence.verify(fixture(name), receipt)
+
+      assert MapSet.member?(props, "crash-recovered"), name
+      assert MapSet.member?(props, "effects-exactly-once"), name
+      assert summary.interrupted_segments == 1
+    end
+
+    provider = File.read!(Path.join(fixture("order-sigkill-provider"), "provider-calls.jsonl"))
+    assert provider =~ ~s("kind":"restart")
+    assert receipt("order-sigkill-provider")["recovery"]["kill_provider"] == true
+  end
+
+  test "the branch manifest must name the parent route's own final entry" do
+    dir = copy("order")
+    path = Path.join(dir, "branches/fork/manifest.json")
+    m = File.read!(path) |> JSON.decode!()
+    # Substitute another valid oplog hash: the fork route's exit entry.
+    fork_exit =
+      File.read!(Path.join(dir, "oplog.jsonl"))
+      |> String.split("\n", trim: true)
+      |> Enum.map(&JSON.decode!/1)
+      |> Enum.find(&(&1["route"] == "fork" and &1["kind"] == "exit"))
+
+    refute m["parent_final_oplog_hash"] == fork_exit["entry_hash"]
+
+    File.write!(
+      path,
+      LdHost.JCS.encode!(Map.put(m, "parent_final_oplog_hash", fork_exit["entry_hash"]))
+    )
+
+    receipt = put_in(receipt("order"), ["evidence", "branch", "sha256"], sha(File.read!(path)))
+    assert {:error, reason} = RuntimeEvidence.verify(dir, receipt)
+    assert reason =~ "parent route's final entry"
+  end
+
+  test "a reissue whose request differs from the journaled intent is rejected" do
+    dir = copy("order-resumed")
+
+    resign_oplog!(dir, fn
+      %{"kind" => "effect-reissue"} = e ->
+        put_in(e, ["input", "request_hash"], String.duplicate("e", 64))
+
+      e ->
+        e
+    end)
+
+    receipt =
+      put_in(
+        receipt("order-resumed"),
+        ["evidence", "oplog", "sha256"],
+        sha(File.read!(Path.join(dir, "oplog.jsonl")))
+      )
+
+    assert {:error, reason} = RuntimeEvidence.verify(dir, receipt)
+    assert reason =~ "reissue differs from the journaled intent"
+  end
+
+  test "a delivered result that differs from its commit is rejected" do
+    dir = copy("order")
+
+    resign_oplog!(dir, fn
+      %{"kind" => "capability-result", "input" => %{"source" => "provider"}} = e ->
+        put_in(e, ["result", "result_hash"], String.duplicate("d", 64))
+
+      e ->
+        e
+    end)
+
+    assert {:error, reason} = RuntimeEvidence.verify(dir, receipt("order"))
+    assert reason =~ "delivered result differs"
+  end
+
+  test "the scenario bytes are bound into the receipt" do
+    dir = copy("order")
+    path = Path.join(dir, "scenario.json")
+
+    File.write!(
+      path,
+      String.replace(File.read!(path), ~s("advance_ms":250), ~s("advance_ms":251))
+    )
+
+    assert {:error, "scenario hash mismatch"} = RuntimeEvidence.verify(dir, receipt("order"))
+  end
+
+  test "exactly-once is never vacuous and needs its witnesses" do
+    refute "effects-exactly-once" in receipt("kv")["properties"]
+    dir = copy("order")
+    path = Path.join(dir, "scenario.json")
+    s = File.read!(path) |> JSON.decode!() |> put_in(["expected_effects", "payment.charge"], 2)
+    bytes = JSON.encode!(s)
+    File.write!(path, bytes)
+    receipt = receipt("order") |> Map.put("scenario_hash", sha(bytes))
+    # run_id no longer derives (it includes the scenario hash) so fix it up too.
+    receipt =
+      Map.put(
+        receipt,
+        "run_id",
+        LdHost.JCS.hash!(%{
+          "config_hash" => receipt["machine_config_hash"],
+          "scenario_hash" => receipt["scenario_hash"],
+          "scenario_id" => receipt["scenario_id"],
+          "seed" => receipt["seed"]
+        })
+      )
+
+    assert {:error, reason} = RuntimeEvidence.verify(dir, receipt)
+
+    # Keys no longer derive from the changed run id: the evidence is bound to the original scenario.
+    assert reason =~ "effect key is not host-derived" or reason =~ "checkpoint"
+  end
+
+  test "the engine attestation is recomputed, not trusted" do
+    receipt = put_in(receipt("kv"), ["engine", "settings", "wasm_threads"], true)
+
+    assert {:error, "engine config_hash does not match its settings"} =
+             RuntimeEvidence.verify(fixture("kv"), receipt)
+
+    receipt = put_in(receipt("kv"), ["engine", "target_triple"], "wasm32-wasip1")
+
+    assert {:error, "target triple is not allowlisted"} =
+             RuntimeEvidence.verify(fixture("kv"), receipt)
+
+    receipt = put_in(receipt("kv"), ["engine", "toolchain_hash"], String.duplicate("1", 64))
+    assert {:error, reason} = RuntimeEvidence.verify(fixture("kv"), receipt)
+    assert reason =~ "toolchain hash"
+  end
+
+  defp sha(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
 
   test "a flipped byte in the oplog breaks the chain" do
     dir = copy("kv")
@@ -92,6 +248,18 @@ defmodule LdHost.RuntimeEvidenceTest do
 
   test "engine attestation must be allowlisted" do
     receipt = put_in(receipt("kv"), ["engine", "config_hash"], String.duplicate("f", 64))
+
+    assert {:error, "engine config_hash does not match its settings"} =
+             RuntimeEvidence.verify(fixture("kv"), receipt)
+
+    # Consistent but not allowlisted: settings changed and hash recomputed.
+    settings =
+      Map.put(receipt("kv")["engine"]["settings"], "cranelift_nan_canonicalization", false)
+
+    receipt =
+      receipt("kv")
+      |> put_in(["engine", "settings"], settings)
+      |> put_in(["engine", "config_hash"], LdHost.JCS.hash!(settings))
 
     assert {:error, "engine configuration is not allowlisted"} =
              RuntimeEvidence.verify(fixture("kv"), receipt)

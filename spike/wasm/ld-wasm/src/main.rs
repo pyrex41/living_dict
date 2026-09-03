@@ -1,4 +1,4 @@
-use ld_durable_executor::{KillPoint, RunOptions, engine_attestation, provider};
+use ld_durable_executor::{KillMode, KillPoint, RunOptions, engine_attestation, provider};
 use std::{collections::BTreeMap, env, fs, path::PathBuf, process};
 
 fn value(args: &[String], key: &str) -> Result<PathBuf, String> {
@@ -15,19 +15,19 @@ fn optional(args: &[String], key: &str) -> Option<String> {
         .cloned()
 }
 
-const USAGE: &str = "usage:\n  ld-wasm run --workspace DIR --run-dir DIR --config FILE [--kill-at POINT]\n  ld-wasm resume --workspace DIR --run-dir DIR --config FILE\n  ld-wasm provider --socket PATH --scenario FILE --log FILE\n  ld-wasm engine";
+const USAGE: &str = "usage:\n  ld-wasm run --workspace DIR --run-dir DIR --config FILE [--kill-at POINT] [--kill-mode abort|sigkill] [--kill-provider]\n  ld-wasm resume --workspace DIR --run-dir DIR --config FILE\n  ld-wasm provider --socket PATH --scenario FILE --log FILE\n  ld-wasm engine";
 
 fn failure_receipt(reason: &str) -> serde_json::Value {
     let reason: String = reason.chars().take(500).collect();
     let zero = "0".repeat(64);
     serde_json::json!({
         "protocol":"ld.runtime.receipt/v1","profile":"wasm-durable-v1",
-        "artifact_hash":zero,"machine_config_hash":zero,"scenario_id":"initialization-failed","seed":0,
-        "run_id":zero,"oplog_hash":zero,"checkpoint_hash":zero,"final_state_hash":zero,"guest_state_hash":zero,
+        "artifact_hash":zero,"machine_config_hash":zero,"scenario_id":"initialization-failed","scenario_hash":zero,"seed":0,
+        "run_id":zero,"executor_sha256":zero,"oplog_hash":zero,"checkpoint_hash":zero,"final_state_hash":zero,"guest_state_hash":zero,
         "semantic_output_hash":zero,"replay_count":0,"replay_equal":false,"fork":{"diverged":false},
         "effects":{"executed":0,"replayed":0,"logical_committed":0},
         "limits":{},"traps":[reason.clone()],"properties":[],"evidence":{},
-        "engine":engine_attestation(),"recovery":{"kill_point":null,"resumed":false},
+        "engine":engine_attestation(),"recovery":{"kill_point":null,"kill_mode":"abort","kill_provider":false,"resumed":false},
         "passed":false,"reason":reason
     })
 }
@@ -73,8 +73,27 @@ fn main() {
             Some(_) => return Err("--kill-at is not accepted on resume".into()),
             None => None,
         };
+        let kill_mode = match optional(&a, "--kill-mode") {
+            Some(m) => KillMode::parse(&m).map_err(|e| e.to_string())?,
+            None => KillMode::Abort,
+        };
+        let kill_provider = a.iter().any(|x| x == "--kill-provider");
+        if kill_provider && kill_mode != KillMode::Sigkill {
+            return Err("--kill-provider requires --kill-mode sigkill".into());
+        }
         let exe = env::current_exe().map_err(|e| e.to_string())?;
-        ld_durable_executor::run(&w, &c, &r, RunOptions { kill, resume, exe })
+        ld_durable_executor::run(
+            &w,
+            &c,
+            &r,
+            RunOptions {
+                kill,
+                kill_mode,
+                kill_provider,
+                resume,
+                exe,
+            },
+        )
     })();
     match result {
         Ok(x) => println!("{}", serde_json::to_string(&x).unwrap()),

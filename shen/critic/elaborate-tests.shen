@@ -15,14 +15,14 @@
       ["floating_point" ["platform" "canonical"]]
       ["global_checkpoint" ["unsupported" "supported"]]
       ["replay" ["none" "rerun-only" "in-process" "cross-process"]]
-      ["snapshot" ["none" "component" "whole-machine"]]])
+      ["snapshot" ["none" "guest-declared" "component" "whole-machine"]]])
 
 (define el-profiles
   -> [["wasm-durable-v1" true
-       [["build_reproducibility" "attested"] ["clock" "logical"]
+       [["build_reproducibility" "pinned"] ["clock" "logical"]
         ["entropy" "seeded-replayable"] ["external_effects" "durable-intent-commit"]
         ["floating_point" "canonical"] ["global_checkpoint" "unsupported"]
-        ["replay" "cross-process"] ["snapshot" "whole-machine"]]
+        ["replay" "cross-process"] ["snapshot" "component"]]
        ["crash"]]
       ["unikraft-confined-transducer-experimental" false
        [["build_reproducibility" "unpinned"] ["clock" "ambient"]
@@ -35,15 +35,15 @@
   PaymentSub WorkerCmdType ->
     [["api" "order-api/v1" "wasm-durable-v1"
       [["commands" "out" "order-command/v1"]]
-      [["clock" "logical"] ["entropy" "seeded-replayable"] ["snapshot" "whole-machine"]
+      [["clock" "logical"] ["entropy" "seeded-replayable"] ["snapshot" "component"]
        ["replay" "cross-process"] ["floating_point" "canonical"]]]
      ["worker" "order-worker/v1" "wasm-durable-v1"
       [["commands" "in" WorkerCmdType] ["charges" "out" "charge-request/v1"]]
-      [["clock" "logical"] ["entropy" "seeded-replayable"] ["snapshot" "whole-machine"]
+      [["clock" "logical"] ["entropy" "seeded-replayable"] ["snapshot" "component"]
        ["replay" "cross-process"] ["fault_controls" "crash"]]]
      ["payment" "payment-broker/v1" PaymentSub
       [["charges" "in" "charge-request/v1"]]
-      [["external_effects" "durable-intent-commit"] ["snapshot" "whole-machine"]
+      [["external_effects" "durable-intent-commit"] ["snapshot" "component"]
        ["replay" "cross-process"]]]])
 
 (define el-channels

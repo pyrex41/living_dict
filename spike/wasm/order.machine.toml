@@ -10,6 +10,11 @@ memory_bytes=16777216
 max_invocations=1000
 max_frame_bytes=65536
 max_log_bytes=8388608
+max_output_bytes=65536
+max_snapshot_bytes=1048576
+max_effect_bytes=65536
+max_total_output_bytes=8388608
+max_replay_count=8
 [capabilities]
 clock="virtual"
 random="seeded"

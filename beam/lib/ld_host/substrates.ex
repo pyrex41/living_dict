@@ -24,7 +24,11 @@ defmodule LdHost.Substrates do
     filesystem: ~w(ambient mediated read-only-image none),
     network: ~w(ambient recorded mediated-messages none),
     external_effects: ~w(ambient recorded durable-intent-commit),
-    snapshot: ~w(none component whole-machine),
+    # `component`: the guest declares its own state representation; the host
+    # proves it round-trips and hashes it, not that it is complete.
+    # `whole-machine`: linear memories, tables, globals, and host state are
+    # captured by the host itself. No registered profile provides it yet.
+    snapshot: ~w(none guest-declared component whole-machine),
     global_checkpoint: ~w(unsupported supported),
     floating_point: ~w(platform canonical),
     memory_growth: ~w(platform bounded deterministic),
@@ -45,14 +49,17 @@ defmodule LdHost.Substrates do
         filesystem: "none",
         network: "none",
         external_effects: "durable-intent-commit",
-        snapshot: "whole-machine",
+        snapshot: "component",
         global_checkpoint: "unsupported",
         floating_point: "canonical",
         memory_growth: "bounded",
         replay: "cross-process",
         branching: "supported",
         fault_controls: ~w(crash),
-        build_reproducibility: "attested"
+        # Toolchain, lockfile, source, and executor digests are bound into
+        # every receipt, but the runner is a checkout path, not a host-owned
+        # immutable artifact: pinned, not attested.
+        build_reproducibility: "pinned"
       }
     },
     # The Unikraft product gate as it exists: a static musl PIE booted by an

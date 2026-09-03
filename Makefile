@@ -11,7 +11,7 @@ ifneq ($(wildcard $(SHENSCRIPT)),)
 YGGDRASIL_HOST ?= node $(SHENSCRIPT)
 endif
 
-.PHONY: eval-test eval-oracle harness-test openresty-test eval-resty-config-01 openresty-serve think-config-01 client-test livingdict client-web test browser-test browser-shake critic-js-nix critic-erl-nix browser-serve architecture-dev architecture-build compare compare-dry scudcheck pack-critic critic-suite beam-deps beam-test beam-run unikraft-spike wasm-toolchain wasm-test durable-gate beam-durable-e2e elaborate-example pack-elaborate elaborate-js-nix beam-elaborate-conformance
+.PHONY: eval-test eval-oracle harness-test openresty-test eval-resty-config-01 openresty-serve think-config-01 client-test livingdict client-web test browser-test browser-shake critic-js-nix critic-erl-nix browser-serve architecture-dev architecture-build compare compare-dry scudcheck pack-critic critic-suite beam-deps beam-test beam-run unikraft-spike wasm-toolchain wasm-test durable-gate beam-durable-e2e verify-kill-matrix elaborate-example pack-elaborate elaborate-js-nix beam-elaborate-conformance
 
 eval-test:
 	cd eval && python3 -m unittest discover -s tests -v
@@ -59,7 +59,7 @@ compare:
 client-web:
 	cd client/web && npm install && npm run build
 
-test: eval-test harness-test openresty-test critic-suite beam-test scudcheck unikraft-spike wasm-test durable-gate
+test: eval-test harness-test openresty-test critic-suite beam-test scudcheck unikraft-spike wasm-test durable-gate beam-durable-e2e
 
 scudcheck:
 	@if ! command -v go >/dev/null 2>&1; then echo "skip scudcheck: go not found"; exit 0; fi
@@ -182,10 +182,17 @@ wasm-test: wasm-toolchain
 durable-gate: wasm-toolchain
 	$(MAKE) -C spike/wasm durable-gate
 
-# Approved wasm-durable-v1 claim driven through BEAM's gate, verified from
-# evidence files by LdHost.RuntimeEvidence. Needs `make durable-gate` first.
+# Approved wasm-durable-v1 claim driven through BEAM's gate, plus independent
+# verification of every evidence directory the kill matrix just produced.
+# Needs `make durable-gate` first. Like beam-test, skips only when mix is
+# absent (the Rust gate above has already failed loudly without cargo).
 beam-durable-e2e:
-	cd beam && mix test --include durable test/gates_test.exs
+	@if ! command -v mix >/dev/null 2>&1; then echo "skip beam-durable-e2e: elixir not found"; exit 0; fi
+	cd beam && mix test --include durable test/gates_test.exs test/kill_matrix_test.exs
+
+# Same verification as a CLI, for evidence produced elsewhere.
+verify-kill-matrix:
+	cd beam && mix ld.verify_runtime --workspace ../spike/wasm --config order.machine.toml --evidence ../spike/wasm/.livingdict-run/kill-matrix
 
 # Elaborate the example system manifest into a canonical derivation.
 elaborate-example:

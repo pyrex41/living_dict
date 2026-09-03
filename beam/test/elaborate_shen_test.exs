@@ -32,7 +32,7 @@ defmodule LdHost.ElaborateShenTest do
       "verdict" => d["verdict"],
       "steps" => Enum.map(d["steps"], &[&1["rule"], &1["subject"], &1["ok"], &1["detail"]]),
       "failed" => d["failed"],
-      "obligations" => Enum.map(d["obligations"], & &1["id"])
+      "obligations" => Enum.map(d["obligations"], & &1["label"])
     }
   end
 

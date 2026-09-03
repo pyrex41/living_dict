@@ -12,7 +12,7 @@
       "requires": {
         "clock": "logical",
         "entropy": "seeded-replayable",
-        "snapshot": "whole-machine",
+        "snapshot": "component",
         "replay": "cross-process",
         "floating_point": "canonical"
       }
@@ -28,7 +28,7 @@
       "requires": {
         "clock": "logical",
         "entropy": "seeded-replayable",
-        "snapshot": "whole-machine",
+        "snapshot": "component",
         "replay": "cross-process",
         "fault_controls": ["crash"]
       }
@@ -42,7 +42,7 @@
       },
       "requires": {
         "external_effects": "durable-intent-commit",
-        "snapshot": "whole-machine",
+        "snapshot": "component",
         "replay": "cross-process"
       }
     }

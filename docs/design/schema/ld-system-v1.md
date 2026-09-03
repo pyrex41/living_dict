@@ -72,7 +72,7 @@ dimensions or values are unmet, never ignored.
 | `filesystem` | ambient, mediated, read-only-image, none |
 | `network` | ambient, recorded, mediated-messages, none |
 | `external_effects` | ambient, recorded, durable-intent-commit |
-| `snapshot` | none, component, whole-machine |
+| `snapshot` | none, guest-declared, component, whole-machine |
 | `global_checkpoint` | unsupported, supported |
 | `floating_point` | platform, canonical |
 | `memory_growth` | platform, bounded, deterministic |
@@ -84,9 +84,14 @@ dimensions or values are unmet, never ignored.
 Registered profiles and their honest vectors:
 
 - `wasm-durable-v1`: wasm-component, logical, seeded-replayable,
-  host-serialized, none, none, durable-intent-commit, whole-machine,
+  host-serialized, none, none, durable-intent-commit, component,
   unsupported, canonical, bounded, cross-process, supported, [crash],
-  attested. Claim-capable.
+  pinned. Claim-capable. `component`, not `whole-machine`: the guest
+  declares its state representation and the host proves it round-trips and
+  hashes it, but cannot prove it is complete (hidden linear-memory state is
+  invisible to the ABI). `pinned`, not `attested`: toolchain, lockfile,
+  source, and executor digests are bound into every receipt, but the runner
+  is a checkout path rather than a host-owned immutable artifact.
 - `unikraft-confined-transducer-experimental`: microvm, ambient,
   ambient-seeded, cooperative, read-only-image, none, ambient, none,
   unsupported, platform, platform, rerun-only, unsupported, [], unpinned.
@@ -110,7 +115,11 @@ body must agree with it step for step (`beam/test/elaborate_shen_test.exs`).
 | `invariant-scope` | `about` names only declared things |
 | `failure-model` | entries are in the vocabulary |
 
-An accepted manifest yields obligations, each `tool:kind:subject`:
+An accepted manifest yields obligations. Each carries a readable `label`
+(`tool:kind:subject`) and a content-addressed `id`:
+`sha256(jcs({schema, manifest_hash, tool, kind, subject, parameters}))`,
+so changing an artifact, a channel's delivery, or the manifest at all moves
+the id while the label stays. Labels:
 
 - `runtime:replay-stable:<component>`, `runtime:checkpoint-recovered:<component>`
 - `tla:delivery-<delivery>:<channel>`

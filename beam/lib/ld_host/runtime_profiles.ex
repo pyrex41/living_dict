@@ -19,7 +19,7 @@ defmodule LdHost.RuntimeProfiles do
   """
   alias LdHost.{Cmd, RuntimeEvidence, Substrates}
   @protocol "ld.runtime.receipt/v1"
-  @required ~w(protocol profile artifact_hash machine_config_hash scenario_id seed run_id oplog_hash checkpoint_hash final_state_hash guest_state_hash semantic_output_hash replay_count replay_equal fork effects limits traps properties evidence engine recovery passed reason)
+  @required ~w(protocol profile artifact_hash machine_config_hash scenario_id scenario_hash seed run_id executor_sha256 oplog_hash checkpoint_hash final_state_hash guest_state_hash semantic_output_hash replay_count replay_equal fork effects limits traps properties evidence engine recovery passed reason)
 
   def run(workspace, claim) do
     with :ok <- requires(claim),
@@ -41,6 +41,7 @@ defmodule LdHost.RuntimeProfiles do
          {:ok, receipt} when is_map(receipt) <- JSON.decode(outcome.output),
          :ok <- validate(receipt, claim.profile),
          :ok <- validate_hashes(receipt, config, evidence),
+         :ok <- executor_bound(receipt, executable),
          {:ok, verified} <- RuntimeEvidence.verify(evidence, receipt),
          :ok <- properties(verified.properties, claim.must),
          true <-
@@ -67,10 +68,38 @@ defmodule LdHost.RuntimeProfiles do
     with {:ok, config} <- confined_file(workspace, config_rel),
          :ok <- validate(receipt, receipt["profile"]),
          :ok <- validate_hashes(receipt, config, evidence_dir),
+         :ok <- executor_matches_installed(receipt),
          {:ok, verified} <- RuntimeEvidence.verify(evidence_dir, receipt) do
       {:ok, verified.properties}
     end
   end
+
+  # The receipt names the digest of the executor that produced it; it must
+  # be the binary this host ran.
+  defp executor_bound(receipt, executable) do
+    case File.read(executable) do
+      {:ok, bytes} ->
+        if digest(bytes) == receipt["executor_sha256"],
+          do: :ok,
+          else: {:error, "runtime receipt was produced by a different executor binary"}
+
+      _ ->
+        {:error, "runtime executor unreadable"}
+    end
+  end
+
+  # Offline revalidation: when the profile's executor is installed, the
+  # receipt must have come from it.
+  defp executor_matches_installed(receipt) do
+    case executable(receipt["profile"]) do
+      {:ok, exe} -> executor_bound(receipt, exe)
+      {:error, "profile not installed"} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp requires(%{requires: :invalid}),
+    do: {:error, "runtime claim requires is malformed: expected dimension => value"}
 
   defp requires(%{requires: r, profile: profile}) when is_map(r) and map_size(r) > 0 do
     case Substrates.satisfies(r, profile) do
@@ -149,7 +178,7 @@ defmodule LdHost.RuntimeProfiles do
         {:error, "runtime receipt invariants disagree"}
 
       Enum.any?(
-        ~w(artifact_hash machine_config_hash oplog_hash checkpoint_hash final_state_hash guest_state_hash semantic_output_hash run_id),
+        ~w(artifact_hash machine_config_hash scenario_hash executor_sha256 oplog_hash checkpoint_hash final_state_hash guest_state_hash semantic_output_hash run_id),
         &(not sha256?(receipt[&1]))
       ) ->
         {:error, "runtime receipt hash syntax mismatch"}
@@ -170,6 +199,12 @@ defmodule LdHost.RuntimeProfiles do
          true <-
            digest(component_bytes) == receipt["artifact_hash"] ||
              {:error, "runtime artifact hash mismatch"},
+         {:ok, scenario_rel} <- scenario_path(config_bytes),
+         {:ok, scenario} <- confined_file(Path.dirname(config), scenario_rel),
+         {:ok, scenario_bytes} <- File.read(scenario),
+         true <-
+           digest(scenario_bytes) == receipt["scenario_hash"] ||
+             {:error, "runtime scenario hash mismatch"},
          :ok <- validate_evidence(receipt["evidence"], evidence),
          true <-
            receipt["oplog_hash"] == get_in(receipt, ["evidence", "oplog", "sha256"]) ||
@@ -185,7 +220,7 @@ defmodule LdHost.RuntimeProfiles do
   end
 
   defp validate_evidence(entries, root) do
-    required = ~w(oplog checkpoint branch)
+    required = ~w(oplog checkpoint branch scenario)
 
     if Enum.any?(required, &(not Map.has_key?(entries, &1))) do
       {:error, "runtime evidence is missing oplog, checkpoint, or branch"}
@@ -200,6 +235,13 @@ defmodule LdHost.RuntimeProfiles do
           _ -> {:halt, {:error, "runtime evidence file missing or hash mismatch"}}
         end
       end)
+    end
+  end
+
+  defp scenario_path(bytes) do
+    case Regex.run(~r/^scenarios\s*=\s*\[\s*"([^"]+)"/m, bytes) do
+      [_, path] -> {:ok, path}
+      _ -> {:error, "runtime config scenario missing"}
     end
   end
 

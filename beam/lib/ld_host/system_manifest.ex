@@ -105,18 +105,39 @@ defmodule LdHost.SystemManifest do
       |> check(nonempty?(c["substrate"]), "component #{name}: substrate required")
       |> check(map_of_maps?(c["ports"] || %{}), "component #{name}: ports must be an object")
       |> check(is_map(c["requires"] || %{}), "component #{name}: requires must be an object")
+      |> requires(name, c["requires"] || %{})
       |> ports(name, c["ports"] || %{})
     end)
   end
 
-  defp ports(problems, cname, ports) do
-    Enum.reduce(ports, problems, fn {pname, p}, acc ->
-      acc
-      |> check(
-        p["direction"] in ~w(in out),
-        "port #{cname}.#{pname}: direction must be in or out"
+  # requires: dimension => string | [string]; anything else is refused here
+  # rather than tolerated by the elaborator.
+  defp requires(problems, _cname, requires) when not is_map(requires), do: problems
+
+  defp requires(problems, cname, requires) do
+    Enum.reduce(requires, problems, fn {dim, v}, acc ->
+      check(
+        acc,
+        is_binary(dim) and (is_binary(v) or (is_list(v) and Enum.all?(v, &is_binary/1))),
+        "component #{cname}: requires.#{inspect(dim)} must be a string or a list of strings"
       )
-      |> check(nonempty?(p["type"]), "port #{cname}.#{pname}: type required")
+    end)
+  end
+
+  defp ports(problems, _cname, ports) when not is_map(ports), do: problems
+
+  defp ports(problems, cname, ports) do
+    Enum.reduce(ports, problems, fn
+      {pname, p}, acc when is_map(p) ->
+        acc
+        |> check(
+          p["direction"] in ~w(in out),
+          "port #{cname}.#{pname}: direction must be in or out"
+        )
+        |> check(nonempty?(p["type"]), "port #{cname}.#{pname}: type required")
+
+      {pname, _}, acc ->
+        check(acc, false, "port #{cname}.#{inspect(pname)}: must be an object")
     end)
   end
 
@@ -164,16 +185,23 @@ defmodule LdHost.SystemManifest do
   end
 
   defp invariants(problems, invariants) do
+    ids = for inv <- invariants, is_map(inv), is_binary(inv["id"]), do: inv["id"]
+    dups = ids -- Enum.uniq(ids)
+
+    problems =
+      check(problems, dups == [], "duplicate invariant ids: #{Enum.join(Enum.uniq(dups), ", ")}")
+
     Enum.reduce(invariants, problems, fn inv, acc ->
       acc
+      |> check(is_map(inv), "invariant must be an object")
       |> check(is_map(inv) and nonempty?(inv["id"]), "invariant must have an id")
       |> check(
         is_map(inv) and inv["kind"] in @invariant_kinds,
-        "invariant #{inspect(inv["id"])}: kind must be one of #{Enum.join(@invariant_kinds, ", ")}"
+        "invariant #{inspect(is_map(inv) && inv["id"])}: kind must be one of #{Enum.join(@invariant_kinds, ", ")}"
       )
       |> check(
         is_map(inv) and is_list(inv["about"]) and inv["about"] != [],
-        "invariant #{inspect(inv["id"])}: about must list the names it constrains"
+        "invariant #{inspect(is_map(inv) && inv["id"])}: about must list the names it constrains"
       )
     end)
   end

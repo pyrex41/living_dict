@@ -41,6 +41,24 @@ Phase 2 exit condition holds: the orders manifest is accepted with a stable
 derivation hash, and moving the payment broker to the experimental profile
 is rejected naming `payment.external_effects`.
 
+Second review pass (PR #16, head `bc1f41e`) found twelve gaps; all are
+closed on this branch:
+
+| finding | change |
+|---|---|
+| fork manifest named the fork's own final entry as its parent | parent exit hash captured right after the parent route; verifier requires equality with the parent route's final `entry_hash` and compares the fork's replayed prefix transition for transition |
+| provider idempotency was in-memory only | provider rebuilds executed keys, bound requests, result bytes, consumption positions, sequence and previous hash from its verified log; kill matrix gains `sigkill-provider` (18 cases) |
+| dangling intents were bare keys | intents carry `{name, business_key, request_hash, branch, event_index, effect_index}`; reissue must match; provider refuses a key reused for a different request; verifier cross-checks intent, reissue, commit, provider entry, and delivered result hash |
+| recovery required the `fault-injection` marker | verifier accepts any chain-valid interrupted segment; `--kill-mode sigkill` dies without writing anything; fixtures and matrix cover it |
+| receipt not bound to the scenario | `scenario_hash` in run id, receipt, checkpoint, branch manifest, `run.json`; `scenario.json` copied into evidence; BEAM hashes the workspace scenario too; `expected_effects` witnesses make exactly-once non-vacuous |
+| engine attestation self-reported | BEAM recomputes `config_hash` from settings, checks target, rustc, toolchain/lockfile/world hashes against repo files, requires `executor_sha256` to equal the binary it ran; profile downgraded to `build_reproducibility: pinned` |
+| `snapshot: whole-machine` overstated | lattice gains `guest-declared`; `wasm-durable-v1` declares `component` |
+| limits late or absent | oplog budget enforced before each append; output, snapshot, effect payload/result, cumulative output, and replay-count limits |
+| `make test` skipped BEAM verification of fresh evidence | `beam-durable-e2e` in `make test`; `kill_matrix_test` verifies all 18 fresh directories; `mix ld.verify_runtime` CLI |
+| malformed `requires` silently dropped | claims fail closed with `requires is malformed`; manifest validates `requires` values, invariant shape, duplicate ids; table test over malformed JSON |
+| obligation ids were labels | `id = sha256(jcs({schema, manifest_hash, tool, kind, subject, parameters}))`, `label` kept |
+| floats accepted by the producer | scenarios containing floats are refused before execution |
+
 Not reproduced here: the Unikraft QEMU gate (`make -C spike/unikraft
 product-gate`) needs Nix and Kraft, which this environment does not have.
 Its rename to experimental is text and registry only.
