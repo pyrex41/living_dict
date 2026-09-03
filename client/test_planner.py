@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from job import ensure_job_files, ensure_run_gates, imply_artifact_writes
 from planner import (
@@ -15,7 +16,13 @@ from planner import (
     repair_context,
     GATE_AUDIT_SYSTEM,
     _chat_request,
+    _anthropic_api,
+    _codex_oauth,
+    _openai_api,
+    api_base,
+    model,
     normalize_cache_scope,
+    provider,
     provider_cache_key,
 )
 
@@ -35,7 +42,9 @@ class PlannerParseTests(unittest.TestCase):
         self.assertNotIn("continue", env)
 
     def test_ignores_model_continue_field(self) -> None:
-        env = normalize_envelope(extract_json_object('{"program":"RECEIPT","continue":true}'))
+        env = normalize_envelope(
+            extract_json_object('{"program":"RECEIPT","continue":true}')
+        )
         self.assertNotIn("continue", env)
 
     def test_system_omits_continue_and_job_file_traps(self) -> None:
@@ -54,7 +63,12 @@ class PlannerParseTests(unittest.TestCase):
         self.assertIn("MUST include a check that invokes the product", SYSTEM)
 
     def test_repair_context_preserves_failure_and_contract(self) -> None:
-        text = repair_context({"contract": {"claims": []}, "last_failure": {"failed_claims": [{"id": "run"}]}})
+        text = repair_context(
+            {
+                "contract": {"claims": []},
+                "last_failure": {"failed_claims": [{"id": "run"}]},
+            }
+        )
         self.assertIn("contract is frozen", text)
         self.assertIn("failed_claims", text)
 
@@ -108,7 +122,7 @@ class PlannerParseTests(unittest.TestCase):
     def test_ensure_run_gates_inserts_before_receipt(self) -> None:
         self.assertIn("RUN-GATES", ensure_run_gates("RECEIPT"))
         self.assertEqual(ensure_run_gates("RUN-GATES RECEIPT"), "RUN-GATES RECEIPT")
-        self.assertTrue(ensure_run_gates("S\" a\" INSTALL").endswith("RUN-GATES RECEIPT"))
+        self.assertTrue(ensure_run_gates('S" a" INSTALL').endswith("RUN-GATES RECEIPT"))
 
     def test_imply_artifact_writes_zips_plain_write_file(self) -> None:
         program = 'S" fizzbuzz.py" WRITE-FILE\nRUN-GATES\nRECEIPT'
@@ -122,11 +136,15 @@ class PlannerParseTests(unittest.TestCase):
         first = provider_cache_key("run", run_id="a", phase="planner", system=SYSTEM)
         again = provider_cache_key("run", run_id="a", phase="planner", system=SYSTEM)
         other = provider_cache_key("run", run_id="b", phase="planner", system=SYSTEM)
-        shared = provider_cache_key("shared", run_id=None, phase="planner", system=SYSTEM)
+        shared = provider_cache_key(
+            "shared", run_id=None, phase="planner", system=SYSTEM
+        )
         self.assertEqual(first, again)
         self.assertNotEqual(first, other)
         self.assertTrue(shared and shared.startswith("ld-"))
-        self.assertIsNone(provider_cache_key("off", run_id="a", phase="planner", system=SYSTEM))
+        self.assertIsNone(
+            provider_cache_key("off", run_id="a", phase="planner", system=SYSTEM)
+        )
 
     def test_xai_affinity_header_is_only_sent_when_key_exists(self) -> None:
         payload = {"model": "grok-4.6", "messages": []}
@@ -141,6 +159,67 @@ class PlannerParseTests(unittest.TestCase):
         self.assertEqual(normalize_cache_scope("RUN"), "run")
         with self.assertRaises(Exception):
             normalize_cache_scope("global")
+
+    def test_provider_defaults_and_aliases(self) -> None:
+        with patch.dict("os.environ", {"LIVINGDICT_PROVIDER": "claude"}, clear=False):
+            self.assertEqual(provider(), "anthropic")
+            self.assertEqual(model(), "claude-sonnet-4-5")
+            self.assertEqual(api_base(), "https://api.anthropic.com/v1")
+
+    @patch("planner._json_request")
+    def test_openai_uses_responses_api(self, request) -> None:
+        request.return_value = {
+            "output": [{"content": [{"type": "output_text", "text": '{"ok":true}'}]}],
+            "usage": {"input_tokens": 3, "output_tokens": 2},
+        }
+        with patch.dict(
+            "os.environ",
+            {"LIVINGDICT_PROVIDER": "openai", "OPENAI_API_KEY": "key"},
+            clear=False,
+        ):
+            text, usage, auth = _openai_api(
+                [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+            )
+        self.assertEqual(text, '{"ok":true}')
+        self.assertEqual(auth, "api_key")
+        self.assertEqual(usage["input_tokens"], 3)
+        self.assertTrue(request.call_args.args[0].endswith("/responses"))
+
+    @patch("planner._json_request")
+    def test_anthropic_uses_messages_api(self, request) -> None:
+        request.return_value = {
+            "content": [{"type": "text", "text": '{"ok":true}'}],
+            "usage": {},
+        }
+        with patch.dict(
+            "os.environ",
+            {"LIVINGDICT_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "key"},
+            clear=False,
+        ):
+            text, _usage, auth = _anthropic_api(
+                [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+            )
+        self.assertEqual((text, auth), ('{"ok":true}', "api_key"))
+        self.assertTrue(request.call_args.args[0].endswith("/messages"))
+        self.assertEqual(request.call_args.args[2]["anthropic-version"], "2023-06-01")
+
+    @patch("planner.subprocess.run")
+    @patch("planner.shutil.which", return_value="/usr/bin/codex")
+    def test_openai_oauth_delegates_to_codex(self, _which, run) -> None:
+        run.return_value.returncode = 0
+        run.return_value.stderr = ""
+        run.return_value.stdout = "\n".join(
+            [
+                '{"type":"item.completed","item":{"type":"agent_message","text":"{\\"ok\\":true}"}}',
+                '{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":2}}',
+            ]
+        )
+        with patch.dict("os.environ", {"LIVINGDICT_PROVIDER": "openai"}, clear=False):
+            text, usage, auth = _codex_oauth([{"role": "system", "content": "s"}])
+        self.assertEqual(text, '{"ok":true}')
+        self.assertEqual(auth, "oauth")
+        self.assertEqual(usage["output_tokens"], 2)
+        self.assertIn("read-only", run.call_args.args[0])
 
 
 class StreamParseTests(unittest.TestCase):

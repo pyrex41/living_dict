@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Turn-based Living Dictionary client. Talks to OpenResty /think.
 
-Each turn is a goal. The host asks grok-4.6 (OAuth or XAI_API_KEY) for a
+Each turn is a goal. The host asks the configured xAI, OpenAI, or Anthropic model for a
 Forth envelope, then Shen checks it and Forth runs. /forth sends raw Forth.
 """
 
@@ -168,7 +168,8 @@ turns
   /help             this text
   /quit             leave
 
-Auth: grok login --oauth  (reads ~/.grok/auth.json)  or  XAI_API_KEY
+Auth: XAI_API_KEY/Grok OAuth, OPENAI_API_KEY/Codex OAuth, or ANTHROPIC_API_KEY
+Provider: LIVINGDICT_PROVIDER=xai|openai|anthropic; model: LIVINGDICT_MODEL
 Shen still rejects bad plans before any write.
 """
 
@@ -303,7 +304,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Turn-based client for the Living Dictionary host")
     parser.add_argument("--base", default=DEFAULT_BASE, help=f"host URL (default {DEFAULT_BASE})")
     parser.add_argument("-e", "--eval", dest="program", help="send one Forth program and exit")
-    parser.add_argument("-g", "--goal", help="plan with grok-4.6 then /think")
+    parser.add_argument("-g", "--goal", help="plan with the configured provider then /think")
     parser.add_argument("--load", type=Path, help="send one envelope JSON and exit")
     parser.add_argument("--health", action="store_true", help="print /health and exit")
     args = parser.parse_args(argv)

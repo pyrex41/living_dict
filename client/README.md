@@ -1,13 +1,25 @@
 # Living Dictionary client
 
 Turn-based front end for the OpenResty host. A normal turn is a **goal**:
-the host calls **grok-4.6**, Shen checks the envelope, Forth runs. Forth is
+the host calls the configured model, Shen checks the envelope, Forth runs. Forth is
 the harness. The goal is whatever product you want built.
 
 Auth (server-side, never in the page):
 
-1. `grok login --oauth` — reads `~/.grok/auth.json` (SpaceXAI OAuth)
-2. or `export XAI_API_KEY=...`
+Choose a provider (xAI remains the default):
+
+```bash
+export LIVINGDICT_PROVIDER=xai       # XAI_API_KEY or: grok login --oauth
+export LIVINGDICT_PROVIDER=anthropic # ANTHROPIC_API_KEY
+export LIVINGDICT_PROVIDER=openai    # OPENAI_API_KEY, or Codex OAuth below
+export LIVINGDICT_MODEL=<model-id>    # optional provider-specific override
+```
+
+For OpenAI OAuth, install the official Codex CLI and run either `codex login`
+or `python3 client/planner.py --login openai`. Living Dictionary delegates each
+OAuth-backed inference call to `codex exec` in a read-only sandbox and never
+reads Codex's credential files. Set `LIVINGDICT_OPENAI_AUTH=api_key|oauth|auto`
+to override the default (`auto`, preferring `OPENAI_API_KEY` when present).
 
 ## CLI
 
