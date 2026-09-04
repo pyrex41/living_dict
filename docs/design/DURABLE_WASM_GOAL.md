@@ -1,5 +1,15 @@
 # Durable Wasm Execution Profile for Living Dictionary
 
+> **Status (2026-09-02):** this is the record of what shipped in PR #14.
+> Several claims below were ahead of that implementation (host-derived
+> effect identity, host-state checkpoints, process-kill fault injection).
+> They are now implemented; the current runtime is described in
+> [`../../spike/wasm/README.md`](../../spike/wasm/README.md) and the plan
+> that drove the change is [`DURABLE_SYSTEM_PLAN.md`](DURABLE_SYSTEM_PLAN.md),
+> answering [`reviews/durable-runtime.md`](reviews/durable-runtime.md).
+> The WIT world is now `livingdict:durable/product@0.2.0` and the oplog is
+> `ld.oplog/v2`.
+
 ## Goal
 
 Ship an opt-in `wasm-durable-v1` product runtime beneath Living Dictionary's existing planner, typed critic, frozen six-word Forth ABI, `RUN-GATES`, and claim-discharge loop. The guarantee is **controlled semantic execution with seeded replay**, not universal instruction-level determinism. Golem's operation-log, checkpoint recovery, and fork/revert model is the architectural reference; Golem is not a deployed dependency.

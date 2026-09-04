@@ -1,5 +1,12 @@
 # Unikraft components for the harness — spike verdict
 
+> **Status (2026-09-02):** the "what to port" order below is superseded by
+> [`DURABLE_SYSTEM_PLAN.md`](DURABLE_SYSTEM_PLAN.md). Wasm is the reference
+> semantics; the product gate under `spike/unikraft/product/` is to be
+> renamed `unikraft-confined-transducer-experimental` and returns as a
+> claim backend only in Phase 6. The Lua simulator is a model of the BEAM
+> host, not a second implementation (see finding 10 in the plan).
+
 **Branch:** `spike/unikraft-harness`
 **Worktree:** `../living_dict-unikraft-spike` (this tree)
 **Runnable evidence:** `make -C spike/unikraft test` (Lua/luajit; no Python)

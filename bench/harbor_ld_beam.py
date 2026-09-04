@@ -4,10 +4,13 @@ Installs a self-contained linux mix release (built by
 bench/release/Dockerfile.release, published as a GitHub release asset)
 into the task container, then drives it through LdHost.CLI.main_from_env.
 
-    PYTHONPATH=. harbor run -d terminal-bench@2.1 \
+    PYTHONPATH=. harbor run -d terminal-bench@2.0 \
       -a bench.harbor_ld_beam:LivingDictBeam -m xai/grok-4.6 -l 1
 
-XAI_API_KEY flows in via harbor --ae/host env; it is never printed here.
+Provider configuration and API credentials flow in via Harbor `--agent-env`;
+they are never printed here. For OAuth-backed OpenAI runs, point
+`LIVINGDICT_PLANNER_ENDPOINT` at a short-lived host-side Responses bridge so
+Codex credentials remain outside the task container.
 The wrapped command ALWAYS exits 0 — the release's honest exit code lands
 in /logs/agent/exit_status instead, so Harbor's verifier (not
 NonZeroAgentExitCodeError) decides the reward.

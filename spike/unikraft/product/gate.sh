@@ -56,6 +56,10 @@ prepare_runtime()
 	# kernel in the foreground with the QEMU command line Kraft generated.
 	machine="ld-kv-gate-$$"
 	mkdir -p "$RUN_DIR/kraft-tmp"
+	# Kraft requires the declared rootfs directory to exist even though this
+	# resolution-only machine is never started and the real fixture initrd is
+	# assembled below.
+	mkdir -p "$PRODUCT_DIR/loader/rootfs"
 	(
 		cd "$PRODUCT_DIR/loader"
 		TMPDIR="$RUN_DIR/kraft-tmp" kraft --no-prompt --no-emojis \
@@ -118,7 +122,7 @@ for fixture in "$PRODUCT_DIR"/fixtures/*.in; do
 		fi
 		run=$((run + 1))
 	done
-	printf 'PASS %-20s %s (3 fresh boots)\n' "$name" "$wanted"
+	printf 'PASS %-20s %s (3 fresh boots) [unikraft-confined-transducer-experimental]\n' "$name" "$wanted"
 done
 
 # Negative control: a changed input must not accidentally validate against the

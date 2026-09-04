@@ -228,7 +228,11 @@ and the metadata-only request recorder are documented in
 - Canned `config-01` through `livingdict-resty` + ldeval succeeds (hidden verifier + policy).
 - `GET /health` and `POST /think` serve that same path.
 - Browser body specified in [`docs/BROWSER.md`](docs/BROWSER.md); built by `/shenscript-browser` (vanilla JS + `ratatoskr --target js --web`, same critic shaken `--target lua`).
-- Planner: grok-4.6 via SpaceXAI OAuth (`~/.grok/auth.json`) or `XAI_API_KEY`. Client default turn is a goal.
+- Planner: select `xai`, `openai`, or `anthropic` with `LIVINGDICT_PROVIDER`
+  and optionally `LIVINGDICT_MODEL`. xAI uses `XAI_API_KEY` or Grok OAuth;
+  Anthropic uses `ANTHROPIC_API_KEY`; OpenAI uses `OPENAI_API_KEY`, or an
+  official Codex OAuth session after `codex login` when no API key is set.
+  Client default turn is a goal.
 - Live `/think` persists colon words under `dictionary_dir/words/` and reloads them next turn.
 - Live loop contract: [`docs/HARNESS.md`](docs/HARNESS.md). Host allocates job files before plan; every episode runs `RUN-GATES`.
 - SCUD child: `livingdict run` speaks `rho.run/v1` (`docs/SCUD.md`).

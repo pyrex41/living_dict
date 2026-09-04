@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Grok 4.6 planner: goal + observation → plan envelope.
+"""Provider-neutral planner: goal + observation → plan envelope.
 
-Auth (highest wins):
-  1. XAI_API_KEY
-  2. SpaceXAI OAuth session in ~/.grok/auth.json (grok login --oauth)
+Supported providers are xAI, OpenAI, and Anthropic. OpenAI can use an API
+key or the official Codex CLI's ChatGPT OAuth session; this module never
+reads or copies Codex's private credential store.
 """
 
 from __future__ import annotations
@@ -12,7 +12,9 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import time
 import urllib.error
@@ -25,8 +27,11 @@ from typing import Any
 from job import ensure_job_files
 
 
-MODEL = os.environ.get("LIVINGDICT_MODEL", "grok-4.6")
-API_BASE = os.environ.get("LIVINGDICT_API_BASE", "https://api.x.ai/v1")
+PROVIDER_DEFAULTS = {
+    "xai": ("grok-4.6", "https://api.x.ai/v1"),
+    "openai": ("gpt-5.4", "https://api.openai.com/v1"),
+    "anthropic": ("claude-sonnet-4-5", "https://api.anthropic.com/v1"),
+}
 TOKEN_URL = "https://auth.x.ai/oauth2/token"
 AUTH_PATH = Path(os.environ.get("GROK_HOME", Path.home() / ".grok")) / "auth.json"
 
@@ -123,6 +128,32 @@ class PlannerError(Exception):
     pass
 
 
+def provider() -> str:
+    value = os.environ.get("LIVINGDICT_PROVIDER", "xai").strip().lower()
+    aliases = {"grok": "xai", "claude": "anthropic", "codex": "openai"}
+    value = aliases.get(value, value)
+    if value not in PROVIDER_DEFAULTS:
+        raise PlannerError(f"unsupported planner provider: {value}")
+    return value
+
+
+def model() -> str:
+    return (
+        os.environ.get("LIVINGDICT_MODEL", "").strip()
+        or PROVIDER_DEFAULTS[provider()][0]
+    )
+
+
+def api_base() -> str:
+    name = provider()
+    specific = os.environ.get(f"{name.upper()}_BASE_URL", "").strip()
+    return (
+        specific
+        or os.environ.get("LIVINGDICT_API_BASE", "").strip()
+        or PROVIDER_DEFAULTS[name][1]
+    )
+
+
 def extract_json_object(text: str) -> dict[str, Any]:
     raw = text.strip()
     if raw.startswith("```"):
@@ -161,11 +192,19 @@ def _normalize_nodes(value: Any) -> list[dict[str, Any]] | None:
         if not isinstance(ident, str) or not ident.strip():
             raise PlannerError(f"envelope.nodes[{index}].id must be a string")
         writes = raw.get("writes") or []
-        if not isinstance(writes, list) or not all(isinstance(item, str) for item in writes):
-            raise PlannerError(f"envelope.nodes[{index}].writes must be an array of strings")
+        if not isinstance(writes, list) or not all(
+            isinstance(item, str) for item in writes
+        ):
+            raise PlannerError(
+                f"envelope.nodes[{index}].writes must be an array of strings"
+            )
         deps = raw.get("depends_on") or []
-        if not isinstance(deps, list) or not all(isinstance(item, str) for item in deps):
-            raise PlannerError(f"envelope.nodes[{index}].depends_on must be an array of strings")
+        if not isinstance(deps, list) or not all(
+            isinstance(item, str) for item in deps
+        ):
+            raise PlannerError(
+                f"envelope.nodes[{index}].depends_on must be an array of strings"
+            )
         program = raw.get("program")
         if program is None:
             program = ""
@@ -179,7 +218,9 @@ def _normalize_nodes(value: Any) -> list[dict[str, Any]] | None:
         }
         if "allowed_globs" in raw:
             allowed = raw.get("allowed_globs")
-            if not isinstance(allowed, list) or not all(isinstance(entry, str) for entry in allowed):
+            if not isinstance(allowed, list) or not all(
+                isinstance(entry, str) for entry in allowed
+            ):
                 raise PlannerError(
                     f"envelope.nodes[{index}].allowed_globs must be an array of strings"
                 )
@@ -237,7 +278,16 @@ def observe_workspace(root: Path, limit: int = 80_000) -> str:
         return f"(no workspace at {root})"
     chunks: list[str] = []
     used = 0
-    skip = {".git", "__pycache__", ".livingdict-run", "node_modules", "dist", "build", ".vite", ".sb"}
+    skip = {
+        ".git",
+        "__pycache__",
+        ".livingdict-run",
+        "node_modules",
+        "dist",
+        "build",
+        ".vite",
+        ".sb",
+    }
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
@@ -291,7 +341,11 @@ def observe_dictionary(root: Path | None, limit: int = 20_000) -> str:
             break
         chunks.append(piece)
         used += len(piece)
-    return "\n".join(chunks) if chunks else "(empty dictionary — define colon words in this program to grow the harness)"
+    return (
+        "\n".join(chunks)
+        if chunks
+        else "(empty dictionary — define colon words in this program to grow the harness)"
+    )
 
 
 def _parse_expires(value: str | None) -> datetime | None:
@@ -322,7 +376,9 @@ def _refresh_oauth(path: Path, rec_key: str, rec: dict[str, Any]) -> str:
     client_id = rec.get("oidc_client_id")
     refresh = rec.get("refresh_token")
     if not client_id or not refresh:
-        raise PlannerError("oauth session is missing refresh_token; run: grok login --oauth")
+        raise PlannerError(
+            "oauth session is missing refresh_token; run: grok login --oauth"
+        )
     body = urllib.parse.urlencode(
         {
             "grant_type": "refresh_token",
@@ -333,7 +389,10 @@ def _refresh_oauth(path: Path, rec_key: str, rec: dict[str, Any]) -> str:
     req = urllib.request.Request(
         TOKEN_URL,
         data=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
         method="POST",
     )
     try:
@@ -352,10 +411,14 @@ def _refresh_oauth(path: Path, rec_key: str, rec: dict[str, Any]) -> str:
         rec["refresh_token"] = payload["refresh_token"]
     expires_in = payload.get("expires_in")
     if isinstance(expires_in, (int, float)):
-        rec["expires_at"] = datetime.fromtimestamp(
-            datetime.now(timezone.utc).timestamp() + float(expires_in),
-            tz=timezone.utc,
-        ).isoformat().replace("+00:00", "Z")
+        rec["expires_at"] = (
+            datetime.fromtimestamp(
+                datetime.now(timezone.utc).timestamp() + float(expires_in),
+                tz=timezone.utc,
+            )
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
     blob = json.loads(path.read_text(encoding="utf-8"))
     blob[rec_key] = rec
     tmp = path.with_suffix(".json.tmp")
@@ -376,7 +439,9 @@ def bearer_token() -> tuple[str, str]:
         )
     path, rec_key, rec = found
     token = str(rec["key"])
-    expires = _parse_expires(rec.get("expires_at") if isinstance(rec.get("expires_at"), str) else None)
+    expires = _parse_expires(
+        rec.get("expires_at") if isinstance(rec.get("expires_at"), str) else None
+    )
     now = datetime.now(timezone.utc)
     if expires is not None and expires <= now:
         token = _refresh_oauth(path, rec_key, rec)
@@ -394,16 +459,139 @@ def _chat_request(
     if cache_key:
         headers["x-grok-conv-id"] = cache_key
     return urllib.request.Request(
-        f"{API_BASE.rstrip('/')}/chat/completions",
+        f"{api_base().rstrip('/')}/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
         headers=headers,
         method="POST",
     )
 
 
+def _json_request(
+    url: str, payload: dict[str, Any], headers: dict[str, str]
+) -> dict[str, Any]:
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:800]
+        raise PlannerError(f"{provider()} HTTP {exc.code}: {detail}") from exc
+    except (urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise PlannerError(f"{provider()} request failed: {exc}") from exc
+
+
+def _openai_api(messages: list[dict[str, str]]) -> tuple[str, dict[str, Any], str]:
+    key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not key:
+        raise PlannerError("OPENAI_API_KEY is not set")
+    payload = {
+        "model": model(),
+        "instructions": messages[0]["content"],
+        "input": messages[1:],
+        "text": {"format": {"type": "json_object"}},
+    }
+    effort = os.environ.get("LIVINGDICT_REASONING", "low").strip()
+    if effort:
+        payload["reasoning"] = {"effort": effort}
+    raw = _json_request(
+        f"{api_base().rstrip('/')}/responses",
+        payload,
+        {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+    )
+    parts = [
+        item.get("text", "")
+        for output in raw.get("output") or []
+        for item in output.get("content") or []
+        if item.get("type") == "output_text"
+    ]
+    return "".join(parts), raw.get("usage") or {}, "api_key"
+
+
+def _codex_oauth(messages: list[dict[str, str]]) -> tuple[str, dict[str, Any], str]:
+    executable = shutil.which(os.environ.get("CODEX_BIN", "codex"))
+    if not executable:
+        raise PlannerError(
+            "OpenAI OAuth requires the Codex CLI; install it and run: codex login"
+        )
+    prompt = "\n\n".join(f"{m['role'].upper()}:\n{m['content']}" for m in messages)
+    cmd = [
+        executable,
+        "exec",
+        "--json",
+        "--ephemeral",
+        "--ignore-rules",
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+        "-m",
+        model(),
+        "-",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd, input=prompt, text=True, capture_output=True, timeout=600
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise PlannerError(f"Codex OAuth invocation failed: {exc}") from exc
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+    if proc.returncode:
+        raise PlannerError(
+            f"Codex OAuth invocation failed ({proc.returncode}); run: codex login"
+        )
+    text = ""
+    usage: dict[str, Any] = {}
+    for line in proc.stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        item = event.get("item") or {}
+        if (
+            event.get("type") == "item.completed"
+            and item.get("type") == "agent_message"
+        ):
+            text = item.get("text") or text
+        if event.get("type") == "turn.completed":
+            usage = event.get("usage") or usage
+    if not text:
+        raise PlannerError("Codex OAuth invocation returned no agent message")
+    return text, usage, "oauth"
+
+
+def _anthropic_api(messages: list[dict[str, str]]) -> tuple[str, dict[str, Any], str]:
+    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not key:
+        raise PlannerError("ANTHROPIC_API_KEY is not set")
+    raw = _json_request(
+        f"{api_base().rstrip('/')}/messages",
+        {
+            "model": model(),
+            "max_tokens": int(os.environ.get("LIVINGDICT_MAX_OUTPUT_TOKENS", "16384")),
+            "system": messages[0]["content"],
+            "messages": messages[1:],
+        },
+        {
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        },
+    )
+    text = "".join(
+        part.get("text", "")
+        for part in raw.get("content") or []
+        if part.get("type") == "text"
+    )
+    return text, raw.get("usage") or {}, "api_key"
+
+
 def _open_chat(payload: dict[str, Any], token: str, source: str, cache_key: str | None):
     try:
-        return urllib.request.urlopen(_chat_request(payload, token, cache_key), timeout=180)
+        return urllib.request.urlopen(
+            _chat_request(payload, token, cache_key), timeout=180
+        )
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:400]
         if exc.code == 401 and source == "oauth":
@@ -441,7 +629,11 @@ def _consume_stream(resp) -> tuple[str, dict[str, Any]]:
     column = 0
     said_thinking = False
     for raw in resp:
-        line = raw.decode("utf-8", errors="replace").strip() if isinstance(raw, bytes) else str(raw).strip()
+        line = (
+            raw.decode("utf-8", errors="replace").strip()
+            if isinstance(raw, bytes)
+            else str(raw).strip()
+        )
         if not line.startswith("data:"):
             continue
         body = line[5:].strip()
@@ -489,10 +681,12 @@ def provider_cache_key(
     if scope == "off" or (scope == "run" and not run_id):
         return None
     schema = hashlib.sha256(system.encode("utf-8")).hexdigest()
+    selected_model = model()
+    selected_provider = provider()
     identity = (
-        f"run\0{run_id}\0{MODEL}\0chat-completions\0{phase}\0{schema}"
+        f"run\0{run_id}\0{selected_provider}\0{selected_model}\0{phase}\0{schema}"
         if scope == "run"
-        else f"shared\0{MODEL}\0chat-completions\0{phase}\0{schema}"
+        else f"shared\0{selected_provider}\0{selected_model}\0{phase}\0{schema}"
     )
     return "ld-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
@@ -506,7 +700,6 @@ def complete_json(
     run_id: str | None = None,
     phase: str = "planner",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    token, source = bearer_token()
     scope = normalize_cache_scope(cache_scope)
     cache_key = provider_cache_key(scope, run_id=run_id, phase=phase, system=system)
     messages = [{"role": "system", "content": system}]
@@ -515,42 +708,74 @@ def complete_json(
         messages.append({"role": "user", "content": f"OBSERVATION:\n{user}"})
     else:
         messages.append({"role": "user", "content": user})
-    payload = {
-        "model": MODEL,
-        "messages": messages,
-        "response_format": {"type": "json_object"},
-        "reasoning_effort": os.environ.get("LIVINGDICT_REASONING", "low"),
-    }
-    stream = os.environ.get("LIVINGDICT_STREAM", "1") != "0"
-    if stream:
-        payload["stream"] = True
-        payload["stream_options"] = {"include_usage": True}
     started = time.monotonic()
-    resp = _open_chat(payload, token, source, cache_key)
-    if stream:
-        with resp:
-            content, usage = _consume_stream(resp)
+    selected_provider = provider()
+    if selected_provider == "openai":
+        auth_mode = os.environ.get("LIVINGDICT_OPENAI_AUTH", "auto").strip().lower()
+        if auth_mode not in {"auto", "api_key", "oauth"}:
+            raise PlannerError("LIVINGDICT_OPENAI_AUTH must be auto, api_key, or oauth")
+        if auth_mode == "api_key" or (
+            auth_mode == "auto" and os.environ.get("OPENAI_API_KEY", "").strip()
+        ):
+            content, usage, source = _openai_api(messages)
+        else:
+            content, usage, source = _codex_oauth(messages)
+    elif selected_provider == "anthropic":
+        content, usage, source = _anthropic_api(messages)
     else:
-        with resp:
-            raw = json.loads(resp.read().decode("utf-8"))
-        choices = raw.get("choices") or []
-        if not choices:
-            raise PlannerError("xAI returned no choices")
-        content = choices[0].get("message", {}).get("content") or ""
-        usage = raw.get("usage") or {}
+        token, source = bearer_token()
+        payload = {
+            "model": model(),
+            "messages": messages,
+            "response_format": {"type": "json_object"},
+            "reasoning_effort": os.environ.get("LIVINGDICT_REASONING", "low"),
+        }
+        stream = os.environ.get("LIVINGDICT_STREAM", "1") != "0"
+        if stream:
+            payload["stream"] = True
+            payload["stream_options"] = {"include_usage": True}
+        resp = _open_chat(payload, token, source, cache_key)
+        if stream:
+            with resp:
+                content, usage = _consume_stream(resp)
+        else:
+            with resp:
+                raw = json.loads(resp.read().decode("utf-8"))
+            choices = raw.get("choices") or []
+            if not choices:
+                raise PlannerError("xAI returned no choices")
+            content = choices[0].get("message", {}).get("content") or ""
+            usage = raw.get("usage") or {}
     if not content:
-        raise PlannerError("xAI returned no content")
+        raise PlannerError(f"{selected_provider} returned no content")
     prompt_details = usage.get("prompt_tokens_details") or {}
     completion_details = usage.get("completion_tokens_details") or {}
     prefix = json.dumps(messages[:2], ensure_ascii=False, sort_keys=True)
     telemetry: dict[str, Any] = {
-        "input_tokens": int(usage.get("prompt_tokens") or 0),
-        "output_tokens": int(usage.get("completion_tokens") or 0),
-        "reasoning_tokens": int(completion_details.get("reasoning_tokens") or 0),
-        "cached_tokens": int(prompt_details.get("cached_tokens") or 0),
-        "total_tokens": int(usage.get("total_tokens") or 0),
+        "input_tokens": int(
+            usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+        ),
+        "output_tokens": int(
+            usage.get("completion_tokens") or usage.get("output_tokens") or 0
+        ),
+        "reasoning_tokens": int(
+            completion_details.get("reasoning_tokens")
+            or (usage.get("output_tokens_details") or {}).get("reasoning_tokens")
+            or 0
+        ),
+        "cached_tokens": int(
+            prompt_details.get("cached_tokens")
+            or (usage.get("input_tokens_details") or {}).get("cached_tokens")
+            or usage.get("cache_read_input_tokens")
+            or 0
+        ),
+        "total_tokens": int(
+            usage.get("total_tokens")
+            or ((usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0))
+        ),
         "duration_ms": round((time.monotonic() - started) * 1000),
-        "model": MODEL,
+        "provider": selected_provider,
+        "model": model(),
         "auth": source,
         "cache_scope": scope,
         "cache_phase": phase,
@@ -604,7 +829,9 @@ def plan(
     return envelope, telemetry
 
 
-def draft_claims(goal: str, workspace: Path, prior: Any = None, feedback: str = "") -> dict[str, Any]:
+def draft_claims(
+    goal: str, workspace: Path, prior: Any = None, feedback: str = ""
+) -> dict[str, Any]:
     """Contract pass: propose acceptance claims for user sign-off."""
     listing = observe_workspace(workspace, limit=8_000)
     user = [f"GOAL: {goal}", "", "WORKSPACE:", listing]
@@ -622,23 +849,33 @@ def draft_claims(goal: str, workspace: Path, prior: Any = None, feedback: str = 
 
 def repair_context(payload: dict[str, Any]) -> str:
     """Render durable harness state into the next planner prompt."""
-    fields = {key: payload[key] for key in ("contract", "last_failure", "attempt_history", "oracle_feedback") if payload.get(key) is not None}
+    fields = {
+        key: payload[key]
+        for key in ("contract", "last_failure", "attempt_history", "oracle_feedback")
+        if payload.get(key) is not None
+    }
     if not fields:
         return ""
-    return "REPAIR STATE (contract is frozen; repair the product, never weaken it):\n" + json.dumps(fields, ensure_ascii=False, sort_keys=True)
+    return (
+        "REPAIR STATE (contract is frozen; repair the product, never weaken it):\n"
+        + json.dumps(fields, ensure_ascii=False, sort_keys=True)
+    )
 
 
 def audit_gate(payload: dict[str, Any]) -> dict[str, Any]:
     goal = str(payload.get("goal") or "")
     workspace = Path(str(payload.get("workspace") or "."))
     product = observe_workspace(workspace)
-    user = "\n".join([
-        f"GOAL:\n{goal}",
-        "FROZEN CONTRACT:\n" + json.dumps(payload.get("contract"), sort_keys=True),
-        "FAILED GATE:\n" + json.dumps(payload.get("report"), sort_keys=True),
-        "FAILED CLAIMS:\n" + json.dumps(payload.get("failed_claims") or [], sort_keys=True),
-        "WORKSPACE STATE:\n" + product,
-    ])
+    user = "\n".join(
+        [
+            f"GOAL:\n{goal}",
+            "FROZEN CONTRACT:\n" + json.dumps(payload.get("contract"), sort_keys=True),
+            "FAILED GATE:\n" + json.dumps(payload.get("report"), sort_keys=True),
+            "FAILED CLAIMS:\n"
+            + json.dumps(payload.get("failed_claims") or [], sort_keys=True),
+            "WORKSPACE STATE:\n" + product,
+        ]
+    )
     result, _telemetry = complete_json(GATE_AUDIT_SYSTEM, user)
     if not isinstance(result, dict):
         raise PlannerError("gate audit response is not an object")
@@ -646,11 +883,23 @@ def audit_gate(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Living Dictionary Grok 4.6 planner")
+    parser = argparse.ArgumentParser(
+        description="Living Dictionary multi-provider planner"
+    )
     parser.add_argument("--goal", help="natural-language goal")
     parser.add_argument("--workspace", type=Path, default=Path("."))
-    parser.add_argument("--stdin", action="store_true", help="read {goal, extra} JSON from stdin")
+    parser.add_argument(
+        "--stdin", action="store_true", help="read {goal, extra} JSON from stdin"
+    )
+    parser.add_argument(
+        "--login", choices=("openai",), help="authenticate with a provider"
+    )
     args = parser.parse_args(argv)
+    if args.login == "openai":
+        executable = shutil.which(os.environ.get("CODEX_BIN", "codex"))
+        if not executable:
+            raise PlannerError("OpenAI OAuth requires the Codex CLI")
+        return subprocess.call([executable, "login"])
     extra = ""
     goal = args.goal or ""
     dictionary: Path | None = None

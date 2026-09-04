@@ -1,0 +1,95 @@
+{
+  "schema": "ld-system/v1",
+  "system": "orders",
+  "components": {
+    "api": {
+      "contract": "order-api/v1",
+      "artifact": "sha256:75476ee3c8a9c2e0769b770755d28ebb49d4c0d304c4bd46e3e62dbc1a43e942",
+      "substrate": "wasm-durable-v1",
+      "ports": {
+        "commands": {"direction": "out", "type": "order-command/v1"}
+      },
+      "requires": {
+        "clock": "logical",
+        "entropy": "seeded-replayable",
+        "snapshot": "component",
+        "replay": "cross-process",
+        "floating_point": "canonical"
+      }
+    },
+    "worker": {
+      "contract": "order-worker/v1",
+      "artifact": "sha256:75476ee3c8a9c2e0769b770755d28ebb49d4c0d304c4bd46e3e62dbc1a43e942",
+      "substrate": "wasm-durable-v1",
+      "ports": {
+        "commands": {"direction": "in", "type": "order-command/v1"},
+        "charges": {"direction": "out", "type": "charge-request/v1"}
+      },
+      "requires": {
+        "clock": "logical",
+        "entropy": "seeded-replayable",
+        "snapshot": "component",
+        "replay": "cross-process",
+        "fault_controls": ["crash"]
+      }
+    },
+    "payment": {
+      "contract": "payment-broker/v1",
+      "artifact": "sha256:75476ee3c8a9c2e0769b770755d28ebb49d4c0d304c4bd46e3e62dbc1a43e942",
+      "substrate": "wasm-durable-v1",
+      "ports": {
+        "charges": {"direction": "in", "type": "charge-request/v1"}
+      },
+      "requires": {
+        "external_effects": "durable-intent-commit",
+        "snapshot": "component",
+        "replay": "cross-process"
+      }
+    }
+  },
+  "externals": {
+    "card-provider": {"kind": "provider", "protocol": "https"}
+  },
+  "channels": {
+    "order-commands": {
+      "from": "api.commands",
+      "to": "worker.commands",
+      "delivery": "at-least-once",
+      "ordering": "per-key",
+      "capacity": 16,
+      "faults": ["drop", "duplicate", "delay", "reorder"]
+    },
+    "charge-requests": {
+      "from": "worker.charges",
+      "to": "payment.charges",
+      "delivery": "at-least-once",
+      "ordering": "per-key",
+      "capacity": 4,
+      "faults": ["duplicate", "delay"]
+    }
+  },
+  "effects": {
+    "charge-card": {
+      "owner": "payment",
+      "protocol": "durable-intent-commit",
+      "identity": "host-derived",
+      "target": "card-provider"
+    }
+  },
+  "invariants": [
+    {"id": "no-double-charge", "kind": "safety", "about": ["charge-card"]},
+    {"id": "committed-order-has-payment", "kind": "safety", "about": ["worker", "payment"]},
+    {"id": "terminal-orders-never-regress", "kind": "safety", "about": ["worker"]},
+    {"id": "only-payment-reaches-card-provider", "kind": "forbidden-path", "about": ["api", "card-provider"]},
+    {"id": "accepted-orders-settle", "kind": "liveness", "about": ["order-commands", "charge-requests"]}
+  ],
+  "failure_model": [
+    "crash-before-effect",
+    "crash-after-effect",
+    "crash-after-commit",
+    "message-duplicate",
+    "message-reorder",
+    "partition",
+    "heal"
+  ]
+}

@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-EPISODE = REPO / "compare" / "runs" / "20260815T191456Z" / "livingdict" / "_episodes.json"
+EPISODE = Path(__file__).resolve().parent / "fixtures" / "fizzbuzz_historical_episodes.json"
 CLAIMS = REPO / "compare" / "fixtures" / "fizzbuzz" / "claims.json"
 
 FIZZBUZZ_PY = '''def fizzbuzz(n):

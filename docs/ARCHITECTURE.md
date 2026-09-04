@@ -141,9 +141,11 @@ Shen spec exists) and that report is the success measure.
 
 ## Planner
 
-`POST /think` with `{ "goal": "..." }` runs `client/planner.py` (grok-4.6).
-Auth: SpaceXAI OAuth in `~/.grok/auth.json` (`grok login --oauth`), else
-`XAI_API_KEY`. The browser never sees a key. The model only writes the
+`POST /think` with `{ "goal": "..." }` runs `client/planner.py`. Select xAI,
+OpenAI, or Anthropic with `LIVINGDICT_PROVIDER` and a model with
+`LIVINGDICT_MODEL`. xAI accepts SpaceXAI OAuth or `XAI_API_KEY`; Anthropic
+uses `ANTHROPIC_API_KEY`; OpenAI uses `OPENAI_API_KEY` or delegates to the
+official Codex CLI OAuth session (`codex login`). The browser never sees a key. The model only writes the
 envelope; Shen still Accept/Rejects before Forth mutates.
 
 See [`HARNESS.md`](HARNESS.md) for the live loop contract. Job state

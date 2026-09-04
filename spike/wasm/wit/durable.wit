@@ -1,16 +1,26 @@
-package livingdict:durable@0.1.0;
+package livingdict:durable@0.2.0;
 
 interface capabilities {
+  /// Logical time. Advances only through scenario events; restored from
+  /// the host half of a checkpoint.
   virtual-time: func() -> u64;
+  /// Seeded ChaCha20 stream. The host records the stream position in the
+  /// checkpoint so a restored instance continues rather than restarts.
   seeded-random: func(length: u32) -> list<u8>;
-  external-effect: func(name: string, idempotency-key: string, payload: list<u8>) -> result<list<u8>, string>;
+  /// Named external effect. `business-key` is guest metadata only: the host
+  /// keys its intent/commit journal on (run, branch, component, event, effect)
+  /// and never on the guest's string.
+  external-effect: func(name: string, business-key: string, payload: list<u8>) -> result<list<u8>, string>;
 }
 
 world product {
   import capabilities;
   export init: func(seed: u64);
   export handle: func(frame: list<u8>) -> result<list<u8>, string>;
+  /// Complete guest state. The host hashes these bytes itself, restores them
+  /// into a fresh instance, and snapshots again; the bytes must round-trip.
   export snapshot: func() -> list<u8>;
   export restore: func(state: list<u8>) -> result<_, string>;
+  /// Guest-defined semantic hash. Advisory evidence only.
   export state-hash: func() -> list<u8>;
 }

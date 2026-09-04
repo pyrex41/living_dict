@@ -179,7 +179,8 @@ defmodule LdHost.Research do
   defp consume_denied(%{calls_left: left} = budget), do: %{budget | calls_left: max(left - 1, 0)}
 
   defp request(messages, cache, tool_choice) do
-    with {:ok, token} <- Planner.credentials() do
+    with "xai" <- Planner.provider(),
+         {:ok, {:api_key, token}} <- Planner.credentials() do
       body = request_body(messages, tool_choice)
 
       started = System.monotonic_time(:millisecond)
@@ -214,6 +215,12 @@ defmodule LdHost.Research do
         {:error, reason} ->
           {:error, "research request failed: #{inspect(reason)}"}
       end
+    else
+      provider when is_binary(provider) ->
+        {:error, "research tool calls are not yet mapped for provider #{provider}"}
+
+      error ->
+        error
     end
   end
 

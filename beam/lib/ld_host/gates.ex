@@ -90,9 +90,27 @@ defmodule LdHost.Gates do
       depends_on: List.wrap(claim["depends_on"] || []) |> Enum.map(&to_string/1),
       profile: claim["profile"] && to_string(claim["profile"]),
       config: claim["config"] && to_string(claim["config"]),
+      requires: requires_or_invalid(claim["requires"]),
       must: List.wrap(claim["must"] || []) |> Enum.map(&to_string/1)
     }
   end
+
+  # A runtime claim's `requires` is dimension => string | [string]. Anything
+  # else is not silently dropped: the claim is marked invalid and fails.
+  defp requires_or_invalid(nil), do: %{}
+
+  defp requires_or_invalid(r) when is_map(r) do
+    ok? =
+      Enum.all?(r, fn
+        {k, v} when is_binary(k) and is_binary(v) -> true
+        {k, v} when is_binary(k) and is_list(v) -> Enum.all?(v, &is_binary/1)
+        _ -> false
+      end)
+
+    if ok?, do: r, else: :invalid
+  end
+
+  defp requires_or_invalid(_), do: :invalid
 
   defp needles(nil), do: []
   defp needles(value) when is_binary(value), do: [String.downcase(value)]

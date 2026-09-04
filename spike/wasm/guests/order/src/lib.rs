@@ -9,6 +9,12 @@ struct State {
     seed: u64,
     status: String,
     order_id: String,
+    /// Logical time observed at reservation: exercises host clock restore.
+    reserved_at: u64,
+    /// Seeded bytes drawn at charge: exercises host RNG position restore.
+    charge_nonce: String,
+    last_audit_at: u64,
+    audit_nonce: String,
 }
 static mut STATE: Option<State> = None;
 fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
@@ -20,6 +26,12 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
         f((*state).as_mut().unwrap())
     }
 }
+fn nonce() -> String {
+    capabilities::seeded_random(8)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
 struct Component;
 impl Guest for Component {
     fn init(seed: u64) {
@@ -29,6 +41,10 @@ impl Guest for Component {
                 seed,
                 status: "created".into(),
                 order_id: String::new(),
+                reserved_at: 0,
+                charge_nonce: String::new(),
+                last_audit_at: 0,
+                audit_nonce: String::new(),
             }
         })
     }
@@ -45,6 +61,7 @@ impl Guest for Component {
                     Ok(json!({"v":1,"status":s.status}))
                 }
                 "reserve" if s.status == "created" => {
+                    s.reserved_at = capabilities::virtual_time();
                     capabilities::external_effect(
                         "inventory.reserve",
                         &format!("{}:reserve", s.order_id),
@@ -55,6 +72,7 @@ impl Guest for Component {
                     Ok(json!({"v":1,"status":s.status}))
                 }
                 "charge" if s.status == "inventory-reserved" => {
+                    s.charge_nonce = nonce();
                     let r = capabilities::external_effect(
                         "payment.charge",
                         &format!("{}:charge", s.order_id),
@@ -71,6 +89,7 @@ impl Guest for Component {
                     Ok(json!({"v":1,"status":s.status}))
                 }
                 "charge-declined" if s.status == "inventory-reserved" => {
+                    s.charge_nonce = nonce();
                     let r = capabilities::external_effect(
                         "payment.charge.declined",
                         &format!("{}:charge", s.order_id),
@@ -96,7 +115,15 @@ impl Guest for Component {
                     s.status = "receipt-sent".into();
                     Ok(json!({"v":1,"status":s.status}))
                 }
-                "status" => Ok(json!({"v":1,"status":s.status})),
+                // Post-checkpoint observation of both host capabilities: a
+                // restored instance whose clock or RNG position was reset
+                // produces a different frame and a different snapshot here.
+                "audit" => {
+                    s.last_audit_at = capabilities::virtual_time();
+                    s.audit_nonce = nonce();
+                    Ok(json!({"v":1,"status":s.status,"audited_at":s.last_audit_at,"audit_nonce":s.audit_nonce}))
+                }
+                "status" => Ok(json!({"v":1,"status":s.status,"reserved_at":s.reserved_at,"charge_nonce":s.charge_nonce,"audited_at":s.last_audit_at,"audit_nonce":s.audit_nonce})),
                 _ => Err("invalid order transition".into()),
             }
             .and_then(|x| serde_json::to_vec(&x).map_err(|e| e.to_string()))

@@ -8,10 +8,17 @@ import os
 import shlex
 import sys
 import traceback
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, TextIO
 
-from .cli import CLIError, DEFAULT_MAX_TURNS, default_planner_cmd, resolve_argv_files, run_job
+from .cli import (
+    CLIError,
+    DEFAULT_MAX_TURNS,
+    default_planner_cmd,
+    resolve_argv_files,
+    run_job,
+)
 from .rho import (
     EventStream,
     GrantError,
@@ -78,7 +85,13 @@ def _max_turns(req: WireRequest, override: int | None) -> int:
 
 def _emit_limit_budget(stream: EventStream, req: WireRequest) -> None:
     payload: dict[str, Any] = {}
-    for key in ("max_turns", "max_input_tokens", "max_output_tokens", "max_cost_micros", "deadline"):
+    for key in (
+        "max_turns",
+        "max_input_tokens",
+        "max_output_tokens",
+        "max_cost_micros",
+        "deadline",
+    ):
         if key in req.limits and req.limits[key] is not None:
             payload[key] = req.limits[key]
     if not payload:
@@ -122,14 +135,34 @@ def _forward_trace(stream: EventStream, event: dict[str, Any]) -> None:
     stream.emit(typ, data)
 
 
-def _fail(stream: EventStream, code: str, message: str, receipt: dict[str, Any] | None = None) -> int:
+def _fail(
+    stream: EventStream, code: str, message: str, receipt: dict[str, Any] | None = None
+) -> int:
     if receipt is not None:
         stream.emit("livingdict.receipt", receipt)
     stream.emit("run.failed", {"code": code, "message": message})
     return 0
 
 
-LIVE_PLANNER_PROVIDERS = ("xai",)
+LIVE_PLANNER_PROVIDERS = ("xai", "openai", "anthropic")
+
+
+@contextmanager
+def _planner_environment(provider: str, model: str):
+    previous = {
+        name: os.environ.get(name)
+        for name in ("LIVINGDICT_PROVIDER", "LIVINGDICT_MODEL")
+    }
+    os.environ["LIVINGDICT_PROVIDER"] = provider
+    os.environ["LIVINGDICT_MODEL"] = model
+    try:
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def _grant_list(grant: dict[str, Any], key: str) -> list[str]:
@@ -139,7 +172,9 @@ def _grant_list(grant: dict[str, Any], key: str) -> list[str]:
     return [str(item) for item in value if str(item).strip()]
 
 
-def _provider_gate(req: WireRequest, planner_cmd: list[str] | None) -> tuple[str, str] | None:
+def _provider_gate(
+    req: WireRequest, planner_cmd: list[str] | None
+) -> tuple[str, str] | None:
     """Refuse unrecognized providers before any planner can be spawned.
 
     grant.providers / grant.models are enforced whenever present. Without an
@@ -149,7 +184,10 @@ def _provider_gate(req: WireRequest, planner_cmd: list[str] | None) -> tuple[str
     """
     providers = _grant_list(req.grant, "providers")
     if providers and req.model_provider not in providers:
-        return "grant_invalid", f"provider {req.model_provider!r} is not in grant.providers"
+        return (
+            "grant_invalid",
+            f"provider {req.model_provider!r} is not in grant.providers",
+        )
     models = _grant_list(req.grant, "models")
     if models and req.model_id not in models:
         return "grant_invalid", f"model {req.model_id!r} is not in grant.models"
@@ -207,7 +245,9 @@ def execute_request(
                 stream,
                 "grant_expired",
                 "grant expires_at is in the past",
-                _grant_receipt(digest, "grant_expired", "grant expires_at is in the past"),
+                _grant_receipt(
+                    digest, "grant_expired", "grant expires_at is in the past"
+                ),
             )
         gate = _provider_gate(req, planner_cmd)
         if gate is not None:
@@ -229,7 +269,12 @@ def execute_request(
         def on_kernel(kind: str, payload: dict[str, Any]) -> None:
             _forward_kernel(stream, kind, payload)
 
-        with live_sink(lambda event: _forward_trace(stream, event)):
+        planner_env = (
+            _planner_environment(req.model_provider, req.model_id)
+            if planner_cmd is None
+            else nullcontext()
+        )
+        with planner_env, live_sink(lambda event: _forward_trace(stream, event)):
             _code, receipt = run_job(
                 req.prompt,
                 workspace,
@@ -287,17 +332,25 @@ def build_run_parser() -> argparse.ArgumentParser:
         prog="livingdict run",
         description="rho.run/v1 child: one JSON wireRequest on stdin, JSONL events on stdout",
     )
-    parser.add_argument("--request-file", default="-", help="wireRequest JSON path, or - for stdin")
-    parser.add_argument("--events", default="jsonl", choices=("jsonl",), help="event encoding")
+    parser.add_argument(
+        "--request-file", default="-", help="wireRequest JSON path, or - for stdin"
+    )
+    parser.add_argument(
+        "--events", default="jsonl", choices=("jsonl",), help="event encoding"
+    )
     parser.add_argument(
         "--planner-cmd",
         nargs="+",
         metavar="ARG",
         help="argv that reads observation JSON on stdin and writes envelope JSON on stdout",
     )
-    parser.add_argument("--claims", type=Path, help="hidden claims.json used for discharge")
+    parser.add_argument(
+        "--claims", type=Path, help="hidden claims.json used for discharge"
+    )
     parser.add_argument("--run-dir", type=Path, help="job state directory")
-    parser.add_argument("--cwd", type=Path, help="process working directory (SCUD sets cmd.Dir)")
+    parser.add_argument(
+        "--cwd", type=Path, help="process working directory (SCUD sets cmd.Dir)"
+    )
     parser.add_argument("--wave-workers", type=int, default=4)
     parser.add_argument("--serial", action="store_true")
     parser.add_argument("--max-turns", type=int, default=None)

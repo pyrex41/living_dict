@@ -21,7 +21,7 @@ The trinity, each in its right place:
 ## The loop (`run.ex`)
 
 ```
-goal + observation ──▶ planner (grok-4.6; the ONLY model-facing module)
+goal + observation ──▶ planner (xAI/OpenAI/Anthropic; the ONLY model-facing module)
         │ envelope {program, artifacts, rationale}   fingerprinted; identical
         ▼                                            resubmission is blocked
    critic.validate(program, catalog)  ──reject──▶ next episode's feedback
@@ -40,6 +40,12 @@ goal + observation ──▶ planner (grok-4.6; the ONLY model-facing module)
 
 Every episode lands in a per-run `events.jsonl` (closed kind set,
 monotonic sequence, single writer) + `trace.jsonl`.
+
+Provider selection is runtime-only: `LIVINGDICT_PROVIDER=xai|openai|anthropic`
+and optional `LIVINGDICT_MODEL`. xAI accepts `XAI_API_KEY` or Grok OAuth,
+Anthropic uses `ANTHROPIC_API_KEY`, and OpenAI accepts `OPENAI_API_KEY` or
+delegates OAuth to the official Codex CLI (`LIVINGDICT_OPENAI_AUTH=oauth`).
+The BEAM host never reads Codex credential files.
 
 The critic validates `envelope.program` against the bound catalog. Colon
 bodies are checked at promotion (`validate/6` of `: NAME (c) body ;`).
