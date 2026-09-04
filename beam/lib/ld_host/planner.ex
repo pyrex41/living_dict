@@ -12,11 +12,11 @@ defmodule LdHost.Planner do
 
   @providers %{
     "xai" => {"grok-4.6", "https://api.x.ai/v1/chat/completions"},
-    "openai" => {"gpt-5", "https://api.openai.com/v1/responses"},
+    "openai" => {"gpt-5.4", "https://api.openai.com/v1/responses"},
     "anthropic" => {"claude-sonnet-4-5", "https://api.anthropic.com/v1/messages"}
   }
 
-  alias LdHost.{CachePolicy, Policy}
+  alias LdHost.{CachePolicy, Cmd, Policy}
 
   @doc """
   Model and provider are resolved at runtime so releases remain portable.
@@ -287,51 +287,69 @@ defmodule LdHost.Planner do
            end))
         |> Enum.join("\n\n")
 
-      args = [
-        "exec",
-        "--json",
-        "--ephemeral",
-        "--ignore-rules",
-        "--sandbox",
-        "read-only",
-        "--skip-git-repo-check",
-        "-m",
-        body.model,
-        prompt
-      ]
+      {executable, args} = codex_command(codex, body.model, prompt)
+      result = Cmd.exec(executable, args, File.cwd!(), 600_000)
 
-      {output, status} = System.cmd(codex, args, stderr_to_stdout: true)
+      cond do
+        result.timed_out ->
+          {:error, "Codex OAuth invocation timed out after 600 seconds"}
 
-      if status == 0 do
-        {text, usage} =
-          output
-          |> String.split("\n", trim: true)
-          |> Enum.reduce({"", %{}}, fn line, {text, usage} ->
-            case JSON.decode(line) do
-              {:ok,
-               %{
-                 "type" => "item.completed",
-                 "item" => %{"type" => "agent_message", "text" => value}
-               }} ->
-                {value, usage}
+        result.returncode == 0 ->
+          decode_codex_output(result.output)
 
-              {:ok, %{"type" => "turn.completed", "usage" => value}} ->
-                {text, value}
-
-              _ ->
-                {text, usage}
-            end
-          end)
-
-        if text == "",
-          do: {:error, "Codex OAuth returned no agent message"},
-          else: {:ok, text, usage, %{transport: "codex_oauth"}}
-      else
-        {:error, "Codex OAuth invocation failed (#{status}): #{String.slice(output, -800, 800)}"}
+        true ->
+          {:error,
+           "Codex OAuth invocation failed (#{result.returncode}): #{String.slice(result.output, -800, 800)}"}
       end
     else
       _ -> {:error, "OpenAI OAuth requires the Codex CLI; install it and run: codex login"}
     end
+  end
+
+  @doc false
+  def codex_command(codex, model, prompt) do
+    args = [
+      "exec",
+      "--json",
+      "--ephemeral",
+      "--ignore-rules",
+      "--sandbox",
+      "read-only",
+      "--skip-git-repo-check",
+      "-m",
+      model,
+      prompt
+    ]
+
+    # System.cmd inherits the caller's stdin. Codex appends piped stdin even
+    # when PROMPT is supplied, so an open parent pipe can hang forever.
+    {"/bin/sh", ["-c", "exec \"$@\" </dev/null", "ld-codex", codex | args]}
+  end
+
+  defp decode_codex_output(output) do
+    {text, usage} =
+      output
+      |> String.split("\n", trim: true)
+      |> Enum.reduce({"", %{}}, fn line, {text, usage} ->
+        case JSON.decode(line) do
+          {:ok,
+           %{
+             "type" => "item.completed",
+             "item" => %{"type" => "agent_message", "text" => value}
+           }} ->
+            {value, usage}
+
+          {:ok, %{"type" => "turn.completed", "usage" => value}} ->
+            {text, value}
+
+          _ ->
+            {text, usage}
+        end
+      end)
+
+    if text == "",
+      do: {:error, "Codex OAuth returned no agent message"},
+      else: {:ok, text, usage, %{transport: "codex_oauth"}}
   end
 
   def credentials do

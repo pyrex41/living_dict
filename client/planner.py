@@ -29,7 +29,7 @@ from job import ensure_job_files
 
 PROVIDER_DEFAULTS = {
     "xai": ("grok-4.6", "https://api.x.ai/v1"),
-    "openai": ("gpt-5", "https://api.openai.com/v1"),
+    "openai": ("gpt-5.4", "https://api.openai.com/v1"),
     "anthropic": ("claude-sonnet-4-5", "https://api.anthropic.com/v1"),
 }
 TOKEN_URL = "https://auth.x.ai/oauth2/token"

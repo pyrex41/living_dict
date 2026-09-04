@@ -19,7 +19,7 @@ REPO = Path(__file__).resolve().parents[2]
 CLI = REPO / "client" / "cli.py"
 PLANNER = Path(__file__).resolve().parent / "fizzbuzz_planner.py"
 CLAIMS = REPO / "compare" / "fixtures" / "fizzbuzz" / "claims.json"
-EPISODES = REPO / "compare" / "runs" / "20260815T191456Z" / "livingdict" / "_episodes.json"
+EPISODES = Path(__file__).resolve().parent / "fixtures" / "fizzbuzz_historical_episodes.json"
 HISTORICAL = (
     'S" claims.json" WRITE-FILE\n'
     'S" fizzbuzz.py" WRITE-FILE\n'

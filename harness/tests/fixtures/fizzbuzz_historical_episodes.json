@@ -1,0 +1,6 @@
+[
+  {
+    "program": "S\" claims.json\" WRITE-FILE\nS\" fizzbuzz.py\" WRITE-FILE\nS\" test_fizzbuzz.py\" WRITE-FILE\nS\" README.md\" WRITE-FILE\nRUN-GATES\nRECEIPT",
+    "rationale": ""
+  }
+]

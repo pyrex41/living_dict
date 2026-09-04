@@ -56,6 +56,10 @@ prepare_runtime()
 	# kernel in the foreground with the QEMU command line Kraft generated.
 	machine="ld-kv-gate-$$"
 	mkdir -p "$RUN_DIR/kraft-tmp"
+	# Kraft requires the declared rootfs directory to exist even though this
+	# resolution-only machine is never started and the real fixture initrd is
+	# assembled below.
+	mkdir -p "$PRODUCT_DIR/loader/rootfs"
 	(
 		cd "$PRODUCT_DIR/loader"
 		TMPDIR="$RUN_DIR/kraft-tmp" kraft --no-prompt --no-emojis \

@@ -18,7 +18,7 @@ defmodule LdHost.PlannerTest do
   test "provider-specific defaults and request protocols remain distinct" do
     with_env(%{"LIVINGDICT_PROVIDER" => "openai", "LIVINGDICT_MODEL" => ""}, fn ->
       assert LdHost.Planner.provider() == "openai"
-      assert LdHost.Planner.model() == "gpt-5"
+      assert LdHost.Planner.model() == "gpt-5.4"
       assert LdHost.Planner.endpoint() == "https://api.openai.com/v1/responses"
       {body, _meta, headers} = LdHost.Planner.request_shape("goal", "state")
       assert body.instructions =~ "Forth"
@@ -34,6 +34,14 @@ defmodule LdHost.PlannerTest do
       assert body.max_tokens == 16_384
       assert headers == []
     end)
+  end
+
+  test "Codex OAuth command closes inherited stdin and is bounded by the caller" do
+    {executable, args} = LdHost.Planner.codex_command("/nix/store/codex", "gpt-5.4", "prompt")
+    assert executable == "/bin/sh"
+    assert Enum.take(args, 3) == ["-c", "exec \"$@\" </dev/null", "ld-codex"]
+    assert Enum.at(args, 3) == "/nix/store/codex"
+    assert Enum.take(args, -3) == ["gpt-5.4", "prompt"] |> List.insert_at(0, "-m")
   end
 
   test "OpenAI OAuth is represented without reading credential files" do
